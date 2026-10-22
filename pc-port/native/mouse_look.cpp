@@ -14,9 +14,16 @@
 // camera+0x470 is the right stick's state (0 still, 1 moving, 2 full) and +0x474.. the times it
 // changed (eboot+0x149050, clock eboot+0xe162a4): it is set to moving while the mouse moves, so the
 // camera's return to its default pitch waits for the mouse to stop as it does for the stick.
+// The camera also swings back behind the player by itself (auto-follow). The right stick turns that off
+// through the game's ManualCamera event; the mouse does not send it. The only reader of the game's
+// "no auto-follow" byte (eboot+0xe16c40) is eboot+0x14936e, in eboot+0x149360, which then takes the
+// game's own off path. So the byte is set while the mouse moves and cleared a few seconds after the
+// last move (ISS_MOUSE_FOLLOW_HOLD, seconds, default 5; 0 leaves auto-follow alone). Found in
+// github.com/axylpup/shadPS4 (src/core/mouse_aim.cpp), checked against this eboot.
 #include "mouse_look.h"
 #include "ultrawide.h"
 #include "../src/runtime.h"
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -25,7 +32,7 @@
 #define ISS_SYSV __attribute__((sysv_abi))
 #endif
 namespace {
-constexpr std::uint64_t kIntegrate=0x14d6f0,kCall=0x14e95a,kJump=0x140641,kClock=0xe162a4,kInvertX=0xefb3cd,kInvertY=0xefb3ce;
+constexpr std::uint64_t kIntegrate=0x14d6f0,kCall=0x14e95a,kJump=0x140641,kClock=0xe162a4,kInvertX=0xefb3cd,kInvertY=0xefb3ce,kNoFollow=0xe16c40;
 struct Region{std::uint64_t at,size,hash;};
 constexpr Region kRegions[]={{kIntegrate,0x5a0,0xacc7d72b517b0c5bULL},{0x14e936,0x29,0xc881e6b33e4db34cULL},{kJump,0xf,0xbf8ae185c163fd17ULL}};
 // Radians per mouse count at 100% (mouse_sensitivity): 0.046 degrees, 7854 counts a turn.
@@ -35,6 +42,16 @@ using IntegrateFn=void(ISS_SYSV*)(unsigned char*,unsigned char*,unsigned char*,v
 IntegrateFn original;
 unsigned char *game;
 float scale;
+double followHold=5;
+std::chrono::steady_clock::time_point lastMove;
+
+// Auto-follow is off from the mouse's last move until followHold seconds later.
+void Follow(bool moved){
+    if(followHold<=0)return;
+    const auto now=std::chrono::steady_clock::now();
+    if(moved)lastMove=now;
+    game[kNoFollow]=lastMove.time_since_epoch().count()!=0&&std::chrono::duration<double>(now-lastMove).count()<followHold;
+}
 
 void ISS_SYSV Integrate(unsigned char *camera,unsigned char *settings,unsigned char *mode,void *target,float *angles,float *rates,float x,float y){
     float dx,dy;
@@ -44,6 +61,7 @@ void ISS_SYSV Integrate(unsigned char *camera,unsigned char *settings,unsigned c
         if(state[0]==0)state[1]=now;
         if(state[0]!=1){state[0]=1;state[2]=now;}
     }
+    Follow(moved);
     original(camera,settings,mode,target,angles,rates,x,y);
     if(!moved)return;
     if(game[kInvertX])dx=-dx;
@@ -65,6 +83,8 @@ int InstallMouseLook(unsigned char *image,std::uint64_t size){
     const char *sens=std::getenv("ISS_MOUSE_SENS");
     const float percent=sens?float(std::atof(sens)):100.f;
     scale=kRadiansPerCount*(percent>0?percent:100.f)/100.f;
+    const char *hold=std::getenv("ISS_MOUSE_FOLLOW_HOLD");
+    if(hold)followHold=std::atof(hold);
     game=image;original=reinterpret_cast<IntegrateFn>(image+kIntegrate);
     // movabs rax, Integrate; jmp rax (in the padding), and the call to it.
     unsigned char jump[12]={0x48,0xb8};const auto address=reinterpret_cast<std::uintptr_t>(&Integrate);

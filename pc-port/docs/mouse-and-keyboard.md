@@ -61,7 +61,12 @@ and paid out as stick deflection, K = 2400 px/s at 100%, `pad_info` then reports
 5. Identity checks (FNV-1a 64, `CodeHash` from `ultrawide.cpp`): the integrator (`+0x14d6f0`, 0x5a0
    bytes), the call site's argument setup (`+0x14e936`, 0x29 bytes) and the padding. On a mismatch the
    patch is skipped and the mouse falls back to the stick.
-6. `src/pad.c` gathers the counts in `look[]` under the pad lock; `pad_look_take` hands them to the
+6. Auto-follow: the camera swings back behind the player by itself. The right stick turns that off through
+   the ManualCamera event, the mouse does not. The only reader of the game's "no auto-follow" byte
+   (eboot `+0xe16c40`) is `+0x14936e`, in `+0x149360`, which then takes the game's own off path. The hook
+   sets the byte while the mouse moves and clears it `ISS_MOUSE_FOLLOW_HOLD` seconds (default 5, 0 = leave
+   auto-follow alone) after the last move. Found in axylpup/shadPS4 (`src/core/mouse_aim.cpp`).
+7. `src/pad.c` gathers the counts in `look[]` under the pad lock; `pad_look_take` hands them to the
    camera and clears them. If the camera has not taken them for two pad reads (menus, cutscenes), they
    are dropped, so the view does not jump when play resumes. `pad_look_direct` is set by the installer.
 
