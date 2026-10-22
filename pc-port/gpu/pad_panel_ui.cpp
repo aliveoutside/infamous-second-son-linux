@@ -3,7 +3,7 @@
 // like the save dialog: it works the same on X11, Wayland and fullscreen. The runtime (src/pad.c)
 // reads it through iss_gpu_pad_panel_*. TOUCHPAD: a pad to press and drag with the mouse, the
 // sides, click and swipes of PhonePad Desktop, and the mouse as touchpad (F6). SPRAY: the spray
-// can of the graffiti missions (F7), its speed and a guide.
+// can of the graffiti missions (F7), and its speed.
 #include <SDL3/SDL.h>
 #include <imgui.h>
 #include <algorithm>
@@ -22,21 +22,6 @@ enum { B_TAB_TOUCH, B_TAB_SPRAY, B_CLOSE, B_LEFT, B_BOTH, B_RIGHT, B_CLICK, B_UP
 const char* const labels[B_COUNT] = {"TOUCHPAD", "SPRAY", "X", "Left", "Both", "Right", "Click", "Up  Swipe",
     "Down  Swipe", "Left  Swipe", "Right  Swipe", "Mouse touchpad   (F6)", "Options (pause)", "START SPRAY MODE   (F7)",
     "Recenter", "-", "+"};
-const char* const touch_guide =
-    "Drag on the pad: a finger.  Right button: click.  Shift: two fingers.\n"
-    "Left / Right / Both: press that side of the touchpad (the game's touchpad prompts). Click: the middle.\n"
-    "Swipes: the game's swipe prompts.\n"
-    "Mouse as touchpad (F6): in the game window the left button is a finger, the right button clicks.\n"
-    "Xbox / other gamepad: View and Menu are the left and right side, Guide is Options (pause). Hold L3 + R3: the right stick is the finger, "
-    "the D-pad swipes, A clicks.";
-const char* const spray_guide =
-    "For the graffiti missions:\n\n"
-    "1.  At a graffiti spot, press START SPRAY MODE (or F7). The controller is held like a spray can "
-    "and the cursor is hidden in the game window.\n\n"
-    "2.  Shake the can: hold the right mouse button.\n\n"
-    "3.  Spray: hold the left mouse button and move the mouse to paint. Shift: fine aim. "
-    "Middle button: recenter.\n\n"
-    "4.  Press F7 to end spray mode and get the cursor back.";
 constexpr float W = 420, H = 660, TITLE = 30, PAD_X = 12, PAD_Y = 74, PAD_W = 396, PAD_H = 194; // the pad is 1920:942
 
 struct Rect { float l, t, r, b; };
@@ -300,8 +285,6 @@ void Draw(float width, float height) {
         centered(r, label, b <= B_TAB_SPRAY && !tab_on ? dim : fg, fs);
     }
     DrawLive(dl, font, s, small, alpha);
-    const Rect g = s.tab == 0 ? screen_rect(s, {14, 394, W - 14, LIVE_Y - 6}) : screen_rect(s, {14, 178, W - 14, LIVE_Y - 6});
-    dl->AddText(font, small, {g.l, g.t}, dim, s.tab == 0 ? touch_guide : spray_guide, nullptr, g.r - g.l);
 }
 }
 
