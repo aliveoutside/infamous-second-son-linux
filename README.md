@@ -1,6 +1,6 @@
 # inFAMOUS Second Son: native Linux port
 
-![Delsin at a D.U.P. checkpoint in the forest](docs/media/forest-checkpoint.jpg)
+![Delsin above Seattle at night, neon power](docs/media/game.jpg)
 
 An experimental native Linux port of the PS4 game *inFAMOUS Second Son*. The game's own x86-64
 code runs directly on your CPU. Its rendering goes to Vulkan through a renderer built on
@@ -29,6 +29,8 @@ out: it contains no game files. Players choose their own unpacked copy of the ga
 launcher, and the first PLAY prepares it into `~/.local/share/iss-pc/appimage/`.
 
 Settings are in `~/.config/iss-pc/settings.toml`.
+
+<img src="docs/media/launcher.png" alt="The launcher, controls tab" width="600">
 
 ## Controls
 
