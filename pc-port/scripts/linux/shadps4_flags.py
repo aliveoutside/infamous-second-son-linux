@@ -28,6 +28,10 @@ for lib in libraries:
     # The bundled ffmpeg is static and not PIC; a shared object links the system one.
     if '/ffmpeg-' in lib:
         continue
+    # SDL3 is the shared one the host program uses (gpu/CMakeLists.txt): a second copy inside the
+    # library would own the window while the pad code asks the host's copy, which has none.
+    if lib.endswith('/libSDL3.a'):
+        continue
     if lib.startswith('-') or lib.startswith('/'):
         resolved.append(lib)
     else:
