@@ -75,6 +75,7 @@ struct PipePacket {
     u64 fence_seq;
     bool indirect; std::array<u64,5> ind; // address, offset, stride, max count, count address
     bool compute,indexed,verify,async;
+    bool submit; // the end of a guest submission: OnSubmit and Flush in queue order
     int queue_id;
     u64 context_changes;
     std::array<AmdGpu::CbDbExtent,AmdGpu::NUM_COLOR_BUFFERS> cb;
@@ -89,6 +90,12 @@ void Rasterizer::InitializeDrawPipe(){
     if(host_markers_enabled||guest_markers_enabled||iss::command_trace::enabled||
        PipeFlag("ISS_COMPUTE_PHASES")||PipeFlag("ISS_FEEDBACK_EARLY_SUBMIT")){
         std::fprintf(stderr,"ISS_DRAW_PIPE fallback: incompatible marker/legacy trace/phase mode\n");return;
+    }
+    // Native shadow/G-buffer batches and native pass segments jump over their packets and write
+    // the registers they leave directly (their NOP markers pass BeforeDrawPipePacket unmarked):
+    // stage B's register copy would miss them.
+    if(iss::native_shadow::Enabled()||iss::native_gbuffer::Enabled()||iss::native_passes::Enabled()){
+        std::fprintf(stderr,"ISS_DRAW_PIPE fallback: incompatible with native shadow/gbuffer/passes\n");return;
     }
     draw_pipe_state=std::make_unique<DrawPipeState>();auto& s=*draw_pipe_state;
     s.Mark(0,AmdGpu::Regs::NumRegs);
@@ -242,6 +249,78 @@ bool Rasterizer::BeforeDrawPipePacket(u32 op,const u32* words,u32 count,int asc_
     if(count>=2)s.Mark(base+(words[1]&0xffff),count-2);
     return false;
 }
+// ISS_DRAW_PIPE_REUSE=1: stage A takes the previous draw's pipeline instead of the full lookup
+// (key, programs, runtime info: ~20% of A in the city) when nothing it depends on changed: no
+// config/context/uconfig register write since, the same vertex/pixel program registers (the
+// vertex user data aside), the same pixel user data, the same attachment extents, and the same
+// format words of every vertex buffer and fetch attribute V# (their addresses may differ). The
+// stages' user data and flattened copies are refreshed as the lookup does.
+// ISS_DRAW_PIPE_REUSE_VERIFY=1 also runs the full lookup and asserts the same pipeline.
+static bool PipeReuseEnabled(){static const bool on=PipeFlag("ISS_DRAW_PIPE_REUSE");return on;}
+static bool PipeReuseVerify(){static const bool on=PipeFlag("ISS_DRAW_PIPE_REUSE_VERIFY");return on;}
+struct PipeReuse {
+    const GraphicsPipeline* pipeline{};
+    u64 context_changes{};
+    std::array<u8,offsetof(AmdGpu::ShaderProgram,user_data)> vs{},ps{};
+    std::array<u32,Shader::NUM_USER_DATA_REGS> ps_ud{};
+    std::array<AmdGpu::CbDbExtent,AmdGpu::NUM_COLOR_BUFFERS> cb{};
+    AmdGpu::CbDbExtent db{};
+    std::vector<u32> formats;
+    u64 hits{},checks{};
+};
+static PipeReuse g_pipe_reuse; // stage A only
+static void PipeVsFormats(const GraphicsPipeline& pipeline,const Shader::Info& vs,std::vector<u32>& out){
+    out.clear();
+    const auto add=[&](const AmdGpu::Buffer& b){std::array<u32,4> w;std::memcpy(w.data(),&b,sizeof(w));out.push_back(w[1]>>12);out.push_back(w[3]);};
+    for(const auto& desc:vs.buffers)if(!desc.IsSpecial())add(desc.GetSharp(vs));
+    for(const auto& attr:pipeline.GetFetchShader().attributes)add(vs.ReadUdReg<AmdGpu::Buffer>(attr.sgpr_base,attr.dword_offset));
+}
+const GraphicsPipeline* Rasterizer::PipeLookupGraphics(){
+    auto& r=g_pipe_reuse;const auto& regs=liverpool->regs;
+    constexpr size_t n=offsetof(AmdGpu::ShaderProgram,user_data);
+    const auto full=[&]{
+        const auto* pipeline=LookupNativeGraphicsPipeline();
+        r.pipeline=nullptr;
+        if(!pipeline||!pipeline->GetStages()[u32(Shader::SwStage::Vertex)]||!pipeline->GetStages()[u32(Shader::SwStage::Fragment)])return pipeline;
+        for(u32 i=0;i<pipeline->GetStages().size();++i)
+            if(pipeline->GetStages()[i]&&i!=u32(Shader::SwStage::Vertex)&&i!=u32(Shader::SwStage::Fragment))return pipeline;
+        r.pipeline=pipeline;r.context_changes=liverpool->ContextRegChanges();
+        std::memcpy(r.vs.data(),&regs.vs_program,n);std::memcpy(r.ps.data(),&regs.ps_program,n);
+        std::memcpy(r.ps_ud.data(),regs.ps_program.user_data.data(),sizeof(r.ps_ud));
+        r.cb=liverpool->last_cb_extent;r.db=liverpool->last_db_extent;
+        PipeVsFormats(*pipeline,pipeline->GetStage(Shader::SwStage::Vertex),r.formats);
+        return pipeline;
+    };
+    if(!PipeReuseEnabled())return LookupNativeGraphicsPipeline();
+    ++r.checks;
+    if(!r.pipeline||liverpool->ContextRegChanges()!=r.context_changes||
+       std::memcmp(r.vs.data(),&regs.vs_program,n)!=0||std::memcmp(r.ps.data(),&regs.ps_program,n)!=0||
+       std::memcmp(r.ps_ud.data(),regs.ps_program.user_data.data(),sizeof(r.ps_ud))!=0||
+       std::memcmp(r.cb.data(),liverpool->last_cb_extent.data(),sizeof(r.cb))!=0||
+       std::memcmp(&r.db,&liverpool->last_db_extent,sizeof(r.db))!=0)return full();
+    const auto* pipeline=r.pipeline;
+    auto& vs=const_cast<Shader::Info&>(pipeline->GetStage(Shader::SwStage::Vertex));
+    auto& ps=const_cast<Shader::Info&>(pipeline->GetStage(Shader::SwStage::Fragment));
+    vs.pgm_base=regs.vs_program.Address<VAddr>();vs.user_data=regs.vs_program.user_data;vs.RefreshFlatBuf();
+    ps.pgm_base=regs.ps_program.Address<VAddr>();ps.user_data=regs.ps_program.user_data;ps.RefreshFlatBuf();
+    static thread_local std::vector<u32> now;PipeVsFormats(*pipeline,vs,now);
+    if(now!=r.formats)return full();
+    if(PipeReuseVerify()){
+        const auto* expected=LookupNativeGraphicsPipeline();
+        ASSERT_MSG(expected==pipeline,"ISS_DRAW_PIPE_REUSE disagrees with the full lookup");
+    }
+    if((++r.hits&((1u<<18)-1))==0)std::fprintf(stderr,"ISS_DRAW_PIPE_REUSE checks=%llu hits=%llu\n",(unsigned long long)r.checks,(unsigned long long)r.hits);
+    return pipeline;
+}
+// The end of a guest submission. Draining here made the command processor wait for the worker
+// at every one of the ~40 submissions a frame (most of its wait in the city): the worker runs
+// OnSubmit and the scheduler flush when it reaches it, in order behind the draws before it.
+bool Rasterizer::PostDrawPipeSubmit(){
+    if(!UseDrawPipe()||iss::command_trace::enabled)return false;
+    auto& s=*draw_pipe_state;u8* out=s.queue->Begin(sizeof(PipePacket));
+    auto& p=*reinterpret_cast<PipePacket*>(out);p={};p.submit=true;p.async=async_compute_translation;p.queue_id=liverpool->CurrentQueue();
+    s.queue->Commit();return true;
+}
 bool Rasterizer::PostDrawPipeGdsFill(VAddr address,u32 size,u32 value){
     if(!UseDrawPipe()||!draw_pipe_state->pipe_gds)return false;
     auto& s=*draw_pipe_state;auto* out=s.queue->Begin(sizeof(PipePacket)+sizeof(PipeGdsFill));
@@ -319,6 +398,13 @@ static bool FastDrawEnabled(); // fast_draw.inl
 void Rasterizer::RunDrawPipePacket(void* context,const u8* data,u32 size){
     auto& self=*static_cast<Rasterizer*>(context);auto& s=*self.draw_pipe_state;
     const auto& p=*reinterpret_cast<const PipePacket*>(data);const u8* in=data+sizeof(p);
+    if(p.submit){
+        ASSERT(size==sizeof(PipePacket));
+        s.async=p.async;s.queue_id=p.queue_id;active_draw_pipe=&s;
+        self.scheduler.PopPendingOperations();
+        self.OnSubmit();self.Flush(); // their drains return on the worker
+        active_draw_pipe=nullptr;return;
+    }
     if(p.fence_op){
         ASSERT(size==sizeof(PipePacket)+PipeAlign(p.fence_words*4));
         s.async=p.async;s.queue_id=p.queue_id;active_draw_pipe=&s;

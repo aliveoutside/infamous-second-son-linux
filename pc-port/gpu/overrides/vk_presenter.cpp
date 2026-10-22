@@ -189,11 +189,7 @@ static std::vector<std::filesystem::path> BuildScreenshotPaths(const ScreenshotK
         1000;
 
     std::tm local_tm{};
-#ifdef _WIN32
-    localtime_s(&local_tm, &now_time);
-#else
     localtime_r(&now_time, &local_tm);
-#endif
 
     std::ostringstream stamp;
     stamp << std::put_time(&local_tm, "%Y%m%d_%H%M%S") << '_' << std::setw(3) << std::setfill('0')

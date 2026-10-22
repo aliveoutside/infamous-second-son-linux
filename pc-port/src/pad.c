@@ -2,7 +2,8 @@
 // XInput plus a focused-window keyboard controller, including the two-contact gate, and the mouse
 // as touchpad (F6) or spray can (F7), and the touchpad window (F5, src/pad_panel.c).
 #include "runtime.h"
-#include <Xinput.h>
+#include "pad_panel.h"
+#include <SDL3/SDL.h>
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
@@ -21,7 +22,7 @@ typedef struct {
 } PadData;
 typedef struct {float density;uint16_t width,height;uint8_t left_dead,right_dead,type,count,connected,pad[3];int32_t device_class;uint8_t reserved[8];} PadInfo;
 _Static_assert(sizeof(PadData)==120&&sizeof(PadInfo)==28,"Pad ABI");
-static SRWLOCK lock=SRWLOCK_INIT;
+static HostLock lock=HOST_LOCK_INIT;
 static int initialized,opened,was_touch[2];
 static uint8_t next_touch=1,contact_id[2];
 static uint64_t touch_start;
@@ -49,10 +50,10 @@ static void scan_gamepads(void){
         SDL_GetGamepadName(next),SDL_GetJoystickName(SDL_GetGamepadJoystick(next)),(int)SDL_GetGamepadType(next),SDL_GetGamepadVendor(next),SDL_GetGamepadProduct(next),SDL_GetNumGamepadTouchpads(next),gyro,accel);
 }
 static uint16_t touch_coord(float v,unsigned maximum){if(!isfinite(v)||v<0)v=0;if(v>1)v=1;return (uint16_t)(v*(float)maximum);}
-// The controller layout (launcher CONTROLLERS, ISS_PAD_MAP="a=cross,view=touch_left,..."): what
+// The controller layout (`pad_map` in settings.toml, ISS_PAD_MAP="a=cross,view=touch_left,..."): what
 // each button of a controller without a touchpad does. PlayStation controllers keep their own
 // layout (Options, the real touchpad; Share/Create does nothing, as on the console). The names
-// are shared with launcher/launcher.cpp.
+// are source_names and the targets below.
 enum {SRC_A,SRC_B,SRC_X,SRC_Y,SRC_LB,SRC_RB,SRC_LT,SRC_RT,SRC_LS,SRC_RS,SRC_VIEW,SRC_MENU,SRC_GUIDE,SRC_SHARE,
       SRC_UP,SRC_DOWN,SRC_LEFT,SRC_RIGHT,SRC_COUNT};
 static const char *const source_names[SRC_COUNT]={"a","b","x","y","lb","rb","lt","rt","ls","rs","view","menu","guide","share",
@@ -66,18 +67,32 @@ static const struct {const char *name;uint32_t bit;} targets[T_COUNT]={{"none",0
     {"touch_right",0x100000},{"swipe_up",0},{"swipe_down",0},{"swipe_left",0},{"swipe_right",0}};
 // Recommended (the user's layout, 2026-10-19): the PS4 layout one to one, and View / Menu press
 // the left / right side of the touchpad, under the thumbs for the game's quick touchpad prompts.
+// Guide is Options (pause): Menu is taken by the touchpad. The panel (F5) and Esc press it too.
 static uint8_t pad_map[SRC_COUNT]={T_CROSS,T_CIRCLE,T_SQUARE,T_TRIANGLE,T_L1,T_R1,T_L2,T_R2,T_L3,T_R3,T_TOUCH_LEFT,
-    T_TOUCH_RIGHT,T_PS,T_NONE,T_UP,T_DOWN,T_LEFT,T_RIGHT};
+    T_TOUCH_RIGHT,T_OPTIONS,T_NONE,T_UP,T_DOWN,T_LEFT,T_RIGHT};
 static const uint8_t playstation_map[SRC_COUNT]={T_CROSS,T_CIRCLE,T_SQUARE,T_TRIANGLE,T_L1,T_R1,T_L2,T_R2,T_L3,T_R3,T_NONE,
     T_OPTIONS,T_PS,T_NONE,T_UP,T_DOWN,T_LEFT,T_RIGHT};
-// The keyboard's touchpad shortcuts (launcher TOUCHPAD SHORTCUTS, ISS_TOUCH_KEYS="touch_left=32,..."
-// with virtual-key codes). Tab stays a second key for the left side.
+// The keyboard's touchpad shortcuts (ISS_TOUCH_KEYS="touch_left=Space,swipe_up=1,..." with SDL key
+// names). Tab stays a second key for the left side.
 enum {K_TOUCH_LEFT,K_TOUCH_RIGHT,K_TOUCH_BOTH,K_TOUCH_CENTER,K_SWIPE_UP,K_SWIPE_DOWN,K_SWIPE_LEFT,K_SWIPE_RIGHT,K_MOUSE,K_SPRAY,K_PANEL,K_COUNT};
 static const char *const touch_key_names[K_COUNT]={"touch_left","touch_right","touch_both","touch_center","swipe_up",
     "swipe_down","swipe_left","swipe_right","mouse_touchpad","spray","panel"};
-static int touch_keys[K_COUNT]={VK_SPACE,VK_BACK,VK_F8,'T','1','2','3','4',VK_F6,VK_F7,VK_F5};
+static SDL_Scancode touch_keys[K_COUNT]={SDL_SCANCODE_SPACE,SDL_SCANCODE_BACKSPACE,SDL_SCANCODE_F8,SDL_SCANCODE_T,SDL_SCANCODE_1,
+    SDL_SCANCODE_2,SDL_SCANCODE_3,SDL_SCANCODE_4,SDL_SCANCODE_F6,SDL_SCANCODE_F7,SDL_SCANCODE_F5};
 static int pad_swipe=-1,source_was[SRC_COUNT];
+// The sticks' dead zone (`deadzone` in settings.toml, ISS_PAD_DEADZONE: percent of full deflection,
+// default 10): radial, and the rest of the range is stretched so the output still starts at zero.
+static float stick_dead=0.10f;
+static void stick(int ax,int ay,uint8_t *ox,uint8_t *oy){
+    float x=ax/32767.f,y=ay/32767.f;const float m=sqrtf(x*x+y*y);
+    if(m<=stick_dead){*ox=*oy=128;return;}
+    // Each axis is clamped on its own afterwards: a corner still reaches full deflection on both.
+    const float k=(m-stick_dead)/(1-stick_dead)/m;x*=k;y*=k;
+    *ox=(uint8_t)lrintf(fminf(fmaxf(x*127.5f+127.5f,0),255));*oy=(uint8_t)lrintf(fminf(fmaxf(y*127.5f+127.5f,0),255));
+}
 static void load_controls(void){
+    const char *dead=getenv("ISS_PAD_DEADZONE");
+    if(dead&&*dead){const float d=(float)atof(dead)/100;stick_dead=d>=0&&d<=0.5f?d:0.10f;}
     const char *s=getenv("ISS_PAD_MAP");
     while(s&&*s){char item[64];size_t n=strcspn(s,",");if(n>=sizeof(item))n=sizeof(item)-1;memcpy(item,s,n);item[n]=0;s+=n;if(*s==',')++s;
         char *v=strchr(item,'=');if(!v)continue;*v++=0;
@@ -85,9 +100,10 @@ static void load_controls(void){
     s=getenv("ISS_TOUCH_KEYS");
     while(s&&*s){char item[64];size_t n=strcspn(s,",");if(n>=sizeof(item))n=sizeof(item)-1;memcpy(item,s,n);item[n]=0;s+=n;if(*s==',')++s;
         char *v=strchr(item,'=');if(!v)continue;*v++=0;
-        for(int k=0;k<K_COUNT;++k)if(!strcmp(item,touch_key_names[k]))touch_keys[k]=atoi(v)&255;}
+        for(int k=0;k<K_COUNT;++k)if(!strcmp(item,touch_key_names[k])){const SDL_Scancode code=SDL_GetScancodeFromName(v);
+            if(code!=SDL_SCANCODE_UNKNOWN)touch_keys[k]=code;else fprintf(stderr,"PAD_MAP unknown key '%s' for %s\n",v,item);}}
     if(getenv("ISS_PAD_MAP")||getenv("ISS_TOUCH_KEYS")){fprintf(stderr,"PAD_MAP");for(int i=0;i<SRC_COUNT;++i)fprintf(stderr," %s=%s",source_names[i],targets[pad_map[i]].name);
-        fprintf(stderr," keys");for(int k=0;k<K_COUNT;++k)fprintf(stderr," %s=%d",touch_key_names[k],touch_keys[k]);fputc('\n',stderr);}
+        fprintf(stderr," keys");for(int k=0;k<K_COUNT;++k)fprintf(stderr," %s=%s",touch_key_names[k],SDL_GetScancodeName(touch_keys[k]));fputc('\n',stderr);}
 }
 static void apply_map(const uint8_t map[SRC_COUNT],const int pressed[SRC_COUNT],uint8_t lt,uint8_t rt,PadData *out,int contacts[2],uint16_t xy[2][2]){
     for(int i=0;i<SRC_COUNT;++i){const int t=map[i],down=pressed[i];
@@ -103,6 +119,20 @@ static void apply_map(const uint8_t map[SRC_COUNT],const int pressed[SRC_COUNT],
         if(t==T_TOUCH_RIGHT){contacts[1]=1;xy[1][0]=1440;xy[1][1]=471;}
     }
 }
+// A controller without a touchpad: hold L3 + R3 (both stick clicks) and it becomes one. The right stick is the
+// finger (its deflection is the position on the pad, centre in the middle), the D-pad swipes, A
+// clicks. Those inputs are taken from the game while the layer is held.
+static int touch_layer_was[4];
+static void touch_layer(int pressed[SRC_COUNT],PadData *out,int contacts[2],uint16_t xy[2][2]){
+    static const int dirs[4]={SRC_UP,SRC_DOWN,SRC_LEFT,SRC_RIGHT}; // swipe 0 up 1 down 2 left 3 right
+    if(!(pressed[SRC_LS]&&pressed[SRC_RS])){memset(touch_layer_was,0,sizeof(touch_layer_was));return;}
+    for(int i=0;i<4;++i){if(pressed[dirs[i]]&&!touch_layer_was[i])pad_swipe=i;touch_layer_was[i]=pressed[dirs[i]];pressed[dirs[i]]=0;}
+    pressed[SRC_LS]=pressed[SRC_RS]=0;
+    if(pressed[SRC_A]){out->buttons|=0x100000;pressed[SRC_A]=0;}
+    contacts[0]=1;xy[0][0]=touch_coord(out->rx/255.f,1919);xy[0][1]=touch_coord(out->ry/255.f,941);
+    out->rx=out->ry=128;
+}
+static PadLive live;
 static int read_sdl(PadData *out,int contacts[2],uint16_t xy[2][2]){
     if(!sdl_ready)return 0;SDL_UpdateGamepads();scan_gamepads();if(!sdl_pad)return 0;
     static const SDL_GamepadButton buttons[SRC_COUNT]={SDL_GAMEPAD_BUTTON_SOUTH,SDL_GAMEPAD_BUTTON_EAST,SDL_GAMEPAD_BUTTON_WEST,
@@ -110,15 +140,16 @@ static int read_sdl(PadData *out,int contacts[2],uint16_t xy[2][2]){
         SDL_GAMEPAD_BUTTON_INVALID,SDL_GAMEPAD_BUTTON_LEFT_STICK,SDL_GAMEPAD_BUTTON_RIGHT_STICK,SDL_GAMEPAD_BUTTON_BACK,
         SDL_GAMEPAD_BUTTON_START,SDL_GAMEPAD_BUTTON_GUIDE,SDL_GAMEPAD_BUTTON_MISC1,SDL_GAMEPAD_BUTTON_DPAD_UP,
         SDL_GAMEPAD_BUTTON_DPAD_DOWN,SDL_GAMEPAD_BUTTON_DPAD_LEFT,SDL_GAMEPAD_BUTTON_DPAD_RIGHT};
-    out->lx=(uint8_t)(((int)SDL_GetGamepadAxis(sdl_pad,SDL_GAMEPAD_AXIS_LEFTX)+32768)>>8);
-    out->ly=(uint8_t)(((int)SDL_GetGamepadAxis(sdl_pad,SDL_GAMEPAD_AXIS_LEFTY)+32768)>>8);
-    out->rx=(uint8_t)(((int)SDL_GetGamepadAxis(sdl_pad,SDL_GAMEPAD_AXIS_RIGHTX)+32768)>>8);
-    out->ry=(uint8_t)(((int)SDL_GetGamepadAxis(sdl_pad,SDL_GAMEPAD_AXIS_RIGHTY)+32768)>>8);
+    stick(SDL_GetGamepadAxis(sdl_pad,SDL_GAMEPAD_AXIS_LEFTX),SDL_GetGamepadAxis(sdl_pad,SDL_GAMEPAD_AXIS_LEFTY),&out->lx,&out->ly);
+    stick(SDL_GetGamepadAxis(sdl_pad,SDL_GAMEPAD_AXIS_RIGHTX),SDL_GetGamepadAxis(sdl_pad,SDL_GAMEPAD_AXIS_RIGHTY),&out->rx,&out->ry);
     int l=SDL_GetGamepadAxis(sdl_pad,SDL_GAMEPAD_AXIS_LEFT_TRIGGER),r=SDL_GetGamepadAxis(sdl_pad,SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
     const uint8_t lt=(uint8_t)(l>0?l*255/32767:0),rt=(uint8_t)(r>0?r*255/32767:0);
     int pressed[SRC_COUNT];
     for(int i=0;i<SRC_COUNT;++i)pressed[i]=i==SRC_LT?lt>30:i==SRC_RT?rt>30:SDL_GetGamepadButton(sdl_pad,buttons[i]);
+    live.connected=1;live.sources=0;for(int i=0;i<SRC_COUNT;++i)if(pressed[i])live.sources|=UINT32_C(1)<<i;
+    live.lx=out->lx;live.ly=out->ly;live.rx=out->rx;live.ry=out->ry;live.lt=lt;live.rt=rt;
     const SDL_GamepadType type=SDL_GetGamepadType(sdl_pad);
+    if(!(type==SDL_GAMEPAD_TYPE_PS4||type==SDL_GAMEPAD_TYPE_PS5))touch_layer(pressed,out,contacts,xy);
     apply_map(type==SDL_GAMEPAD_TYPE_PS4||type==SDL_GAMEPAD_TYPE_PS5?playstation_map:pad_map,pressed,lt,rt,out,contacts,xy);
     if(SDL_GetGamepadButton(sdl_pad,SDL_GAMEPAD_BUTTON_TOUCHPAD))out->buttons|=0x100000;
     if(SDL_GetNumGamepadTouchpads(sdl_pad)>0){int fingers=SDL_GetNumGamepadTouchpadFingers(sdl_pad,0);
@@ -137,7 +168,9 @@ static int read_sdl(PadData *out,int contacts[2],uint16_t xy[2][2]){
         for(int i=0;i<4;++i)quaternion[i]/=norm;}
     memcpy(out->orientation,quaternion,sizeof(quaternion));return 1;
 }
-static int key(int code){return (GetAsyncKeyState(code)&0x8000)!=0;}
+static int key(SDL_Scancode code){const bool *state=SDL_GetKeyboardState(NULL);return code>SDL_SCANCODE_UNKNOWN&&code<SDL_SCANCODE_COUNT&&state[code];}
+static int shift_held(void){return key(SDL_SCANCODE_LSHIFT)||key(SDL_SCANCODE_RSHIFT);}
+static int mouse_button(SDL_MouseButtonFlags mask){return (SDL_GetMouseState(NULL,NULL)&mask)!=0;}
 // A minimal desktop PhonePad, in the focused game window. F6: the mouse is the touchpad (left
 // button: a finger at the cursor, right button: touchpad click). F7: spray can (the graffiti
 // missions): the controller is held on its side like a can, R2 on top and the light bar to the
@@ -146,11 +179,10 @@ static int key(int code){return (GetAsyncKeyState(code)&0x8000)!=0;}
 // changed with ISS_TOUCH_KEYS (above).
 static int mouse_mode,mode_keys[3],mouse_anchored,mouse_touch,spray_wait_release;
 static int cmd_spray_toggle,cmd_spray_center;static double cmd_shake_until,cmd_aim_until,cmd_paint_until;static float cmd_aim_dx,cmd_aim_dy; // ISS_PAD_CMD_FILE spray (paint: R2 held)
-static HWND game_window;
-static POINT mouse_anchor;
+static SDL_Window *game_window;
+static float mouse_anchor_x,mouse_anchor_y;
 static float spray[4];
 static uint64_t spray_tick;
-static wchar_t base_title[256];
 static const float spray_pose[4]={0,0,.70710678f,.70710678f}; // +90 degrees about Z: body +X (R side) up
 static void quat_mul(const float a[4],const float b[4],float out[4]){
     out[0]=a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1];out[1]=a[3]*b[1]-a[0]*b[2]+a[1]*b[3]+a[2]*b[0];
@@ -173,32 +205,25 @@ void pad_spray_step(float q[4],float dx,float dy,float dt,int shake,double secon
     quat_rotate(conj,rate,angular);quat_rotate(conj,up,accel);
     if(shake){const float phase=(float)(6.283185307*6.0*seconds);accel[0]+=1.6f*sinf(phase);angular[2]+=4.0f*cosf(phase);}
 }
-// The game window's procedure, wrapped once: in spray mode the cursor is hidden over the window.
-static WNDPROC game_proc;
-static LRESULT CALLBACK game_window_proc(HWND window,UINT message,WPARAM wp,LPARAM lp){
-    if(message==WM_SETCURSOR&&mouse_mode==2&&LOWORD(lp)==HTCLIENT){SetCursor(NULL);return TRUE;}
-    return CallWindowProcW(game_proc,window,message,wp,lp);
-}
-static void set_mouse_mode(int mode,HWND window){
+static void set_mouse_mode(int mode,SDL_Window *window){
     mouse_mode=mode;mouse_anchored=mouse_touch=0;spray_tick=0;memcpy(spray,spray_pose,sizeof(spray));
-    spray_wait_release=mode==2; // the click that started it (the window's button) does not spray
+    spray_wait_release=mode==2;
     fprintf(stderr,"PAD_MOUSE mode=%s\n",mode==1?"touchpad":mode==2?"spray":"off");
     pad_panel_set_mode(mode);
-    if(mode==2){float dx,dy;pad_panel_raw(&dx,&dy);} // starts Raw Input, drops what was counted before
+    if(mode==2){float dx,dy;pad_panel_raw(&dx,&dy);}
     if(!window)return;
-    if(!game_proc)game_proc=(WNDPROC)SetWindowLongPtrW(window,GWLP_WNDPROC,(LONG_PTR)game_window_proc);
-    PostMessageW(window,WM_SETCURSOR,(WPARAM)window,MAKELPARAM(HTCLIENT,WM_MOUSEMOVE));
-    if(!base_title[0]&&!InternalGetWindowText(window,base_title,256))return;
-    wchar_t title[320];
-    swprintf(title,320,L"%ls%ls",base_title,mode==1?L"  [touchpad: mouse]":mode==2?L"  [spray: mouse]":L"");
-    SendMessageTimeoutW(window,WM_SETTEXT,0,(LPARAM)title,SMTO_ABORTIFHUNG,50,NULL);
+    static char base[256];
+    if(!base[0])snprintf(base,sizeof(base),"%s",SDL_GetWindowTitle(window));
+    char title[320];
+    snprintf(title,sizeof(title),"%s%s",base,mode==1?"  [touchpad: mouse]":mode==2?"  [spray: mouse]":"");
+    SDL_SetWindowTitle(window,title);
 }
 static uint8_t axis(int16_t v){return (uint8_t)(((int)v+32768)>>8);}
 static int32_t error(unsigned n){return (int32_t)(UINT32_C(0x80920000)|n);}
 static int32_t GUEST_ABI pad_init(void){
     if(!initialized){SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS,"1");SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS4,"1");
         sdl_ready=SDL_InitSubSystem(SDL_INIT_GAMEPAD);if(sdl_ready){SDL_SetGamepadEventsEnabled(false);SDL_SetJoystickEventsEnabled(false);}
-        else fprintf(stderr,"PAD SDL init failed, using XInput: %s\n",SDL_GetError());}
+        else fprintf(stderr,"PAD SDL init failed: %s\n",SDL_GetError());}
     if(!initialized)load_controls();
     initialized=1;return 0;
 }
@@ -211,57 +236,49 @@ static int32_t GUEST_ABI pad_info(int handle,PadInfo *out){
     out->density=44.86f;out->width=1920;out->height=942;out->left_dead=out->right_dead=10;out->connected=out->count=1;return 0;
 }
 static int32_t GUEST_ABI pad_read(int handle,PadData *out){
-    if(handle!=1||!opened)return error(3);if(!out)return error(1);AcquireSRWLockExclusive(&lock);
+    if(handle!=1||!opened)return error(3);if(!out)return error(1);host_lock(&lock);
     memset(out,0,sizeof(*out));out->lx=out->ly=out->rx=out->ry=128;out->orientation[3]=1;out->acceleration[1]=1;
     out->connected=out->connected_count=1;out->timestamp=runtime_process_time_us();
-    XINPUT_STATE state;int contacts[2]={0,0};uint16_t xy[2][2]={{480,471},{1440,471}};
-    if(!read_sdl(out,contacts,xy)&&XInputGetState(0,&state)==ERROR_SUCCESS){XINPUT_GAMEPAD *g=&state.Gamepad;
-        out->lx=axis(g->sThumbLX);out->ly=(uint8_t)(255-axis(g->sThumbLY));out->rx=axis(g->sThumbRX);out->ry=(uint8_t)(255-axis(g->sThumbRY));
-        const uint8_t lt=g->bLeftTrigger,rt=g->bRightTrigger;
-        static const WORD xb[SRC_COUNT]={XINPUT_GAMEPAD_A,XINPUT_GAMEPAD_B,XINPUT_GAMEPAD_X,XINPUT_GAMEPAD_Y,XINPUT_GAMEPAD_LEFT_SHOULDER,
-            XINPUT_GAMEPAD_RIGHT_SHOULDER,0,0,XINPUT_GAMEPAD_LEFT_THUMB,XINPUT_GAMEPAD_RIGHT_THUMB,XINPUT_GAMEPAD_BACK,XINPUT_GAMEPAD_START,0,0,
-            XINPUT_GAMEPAD_DPAD_UP,XINPUT_GAMEPAD_DPAD_DOWN,XINPUT_GAMEPAD_DPAD_LEFT,XINPUT_GAMEPAD_DPAD_RIGHT};
-        int pressed[SRC_COUNT];
-        for(int i=0;i<SRC_COUNT;++i)pressed[i]=i==SRC_LT?lt>30:i==SRC_RT?rt>30:xb[i]&&(g->wButtons&xb[i]);
-        apply_map(pad_map,pressed,lt,rt,out,contacts,xy);
-    }
+    int contacts[2]={0,0};uint16_t xy[2][2]={{480,471},{1440,471}};
+    live.connected=0;
+    read_sdl(out,contacts,xy);
     if(pad_swipe>=0){swipe_direction=pad_swipe;swipe_started=out->timestamp;was_touch[0]=0;pad_swipe=-1;}
-    DWORD foreground=0;GetWindowThreadProcessId(GetForegroundWindow(),&foreground);
-    const int focused=foreground==GetCurrentProcessId();
+    SDL_Window *const focus=SDL_GetKeyboardFocus();
+    const int focused=focus!=NULL;
     int mouse_left=0,mouse_right=0;float mouse_dx=0,mouse_dy=0;
     if(focused){
-        if(key('A'))out->lx=0;if(key('D'))out->lx=255;if(key('W'))out->ly=0;if(key('S'))out->ly=255;
-        if(key('J'))out->rx=0;if(key('L'))out->rx=255;if(key('I'))out->ry=0;if(key('K'))out->ry=255;
-        if(key('N')||key(VK_NUMPAD2))out->buttons|=0x4000;if(key('B')||key(VK_NUMPAD6))out->buttons|=0x2000;
-        if(key('V')||key(VK_NUMPAD4))out->buttons|=0x8000;if(key('C')||key(VK_NUMPAD8))out->buttons|=0x1000;
-        if(key('Q'))out->buttons|=0x400;if(key('U'))out->buttons|=0x800;if(key('E'))out->l2=255;if(key('O'))out->r2=255;
-        if(key('X'))out->buttons|=2;if(key('M'))out->buttons|=4;if(key(VK_ESCAPE))out->buttons|=8;
-        if(key(VK_UP))out->buttons|=0x10;if(key(VK_RIGHT))out->buttons|=0x20;if(key(VK_DOWN))out->buttons|=0x40;if(key(VK_LEFT))out->buttons|=0x80;
-        const int both=key(touch_keys[K_TOUCH_BOTH]),left=key(touch_keys[K_TOUCH_LEFT])||key(VK_TAB)||both,right=key(touch_keys[K_TOUCH_RIGHT])||both;
+        if(key(SDL_SCANCODE_A))out->lx=0;if(key(SDL_SCANCODE_D))out->lx=255;if(key(SDL_SCANCODE_W))out->ly=0;if(key(SDL_SCANCODE_S))out->ly=255;
+        if(key(SDL_SCANCODE_J))out->rx=0;if(key(SDL_SCANCODE_L))out->rx=255;if(key(SDL_SCANCODE_I))out->ry=0;if(key(SDL_SCANCODE_K))out->ry=255;
+        if(key(SDL_SCANCODE_N)||key(SDL_SCANCODE_KP_2))out->buttons|=0x4000;if(key(SDL_SCANCODE_B)||key(SDL_SCANCODE_KP_6))out->buttons|=0x2000;
+        if(key(SDL_SCANCODE_V)||key(SDL_SCANCODE_KP_4))out->buttons|=0x8000;if(key(SDL_SCANCODE_C)||key(SDL_SCANCODE_KP_8))out->buttons|=0x1000;
+        if(key(SDL_SCANCODE_Q))out->buttons|=0x400;if(key(SDL_SCANCODE_U))out->buttons|=0x800;if(key(SDL_SCANCODE_E))out->l2=255;if(key(SDL_SCANCODE_O))out->r2=255;
+        if(key(SDL_SCANCODE_X))out->buttons|=2;if(key(SDL_SCANCODE_M))out->buttons|=4;if(key(SDL_SCANCODE_ESCAPE))out->buttons|=8;
+        if(key(SDL_SCANCODE_UP))out->buttons|=0x10;if(key(SDL_SCANCODE_RIGHT))out->buttons|=0x20;if(key(SDL_SCANCODE_DOWN))out->buttons|=0x40;if(key(SDL_SCANCODE_LEFT))out->buttons|=0x80;
+        const int both=key(touch_keys[K_TOUCH_BOTH]),left=key(touch_keys[K_TOUCH_LEFT])||key(SDL_SCANCODE_TAB)||both,right=key(touch_keys[K_TOUCH_RIGHT])||both;
         const int centre_touch=key(touch_keys[K_TOUCH_CENTER]);
         if(left){contacts[0]=1;xy[0][0]=480;xy[0][1]=471;}if(right){contacts[1]=1;xy[1][0]=1440;xy[1][1]=471;}
         if(centre_touch){contacts[0]=1;xy[0][0]=960;xy[0][1]=471;}
         if(left||right||centre_touch)out->buttons|=0x100000;
         for(int i=0;i<4;++i){int down=key(touch_keys[K_SWIPE_UP+i]);if(down&&!swipe_keys[i]){swipe_direction=i;swipe_started=out->timestamp;was_touch[0]=0;}swipe_keys[i]=down;}
-        HWND window=GetForegroundWindow();
-        if(window!=pad_panel_window())game_window=window;else window=game_window;
+        SDL_Window *window=focus;game_window=window;
         const int f6=key(touch_keys[K_MOUSE]),f7=key(touch_keys[K_SPRAY]),f5=key(touch_keys[K_PANEL]);
         if(f6&&!mode_keys[0])set_mouse_mode(mouse_mode==1?0:1,window);
         if(f7&&!mode_keys[1])set_mouse_mode(mouse_mode==2?0:2,window);
         if(f5&&!mode_keys[2])pad_panel_toggle(window);
         mode_keys[0]=f6;mode_keys[1]=f7;mode_keys[2]=f5;
-        const int swap=GetSystemMetrics(SM_SWAPBUTTON);
-        mouse_left=key(swap?VK_RBUTTON:VK_LBUTTON);mouse_right=key(swap?VK_LBUTTON:VK_RBUTTON);
-        RECT client;POINT cursor;
-        if(mouse_mode&&window&&GetClientRect(window,&client)&&client.right>0&&client.bottom>0&&GetCursorPos(&cursor)){
-            // Clicks on the touchpad window are its own, not a finger on the game's touchpad.
-            const HWND under=WindowFromPoint(cursor);
-            if(mouse_mode==1&&under&&(under==pad_panel_window()||GetAncestor(under,GA_ROOT)==pad_panel_window()))mouse_left=mouse_right=0;
-            if(mouse_mode==1){ScreenToClient(window,&cursor);
-                const int inside=cursor.x>=0&&cursor.y>=0&&cursor.x<client.right&&cursor.y<client.bottom;
+        const int swap=0;
+        mouse_left=mouse_button(swap?SDL_BUTTON_RMASK:SDL_BUTTON_LMASK);mouse_right=mouse_button(swap?SDL_BUTTON_LMASK:SDL_BUTTON_RMASK);
+        int client_w=0,client_h=0;float cursor_x,cursor_y;
+        // Mouse positions are the focused game window's own (no global position on Wayland).
+        if(mouse_mode&&window&&SDL_GetWindowSize(window,&client_w,&client_h)&&client_w>0&&client_h>0){
+            SDL_GetMouseState(&cursor_x,&cursor_y);cursor_x=(float)(long)cursor_x;cursor_y=(float)(long)cursor_y;
+            // Clicks on the touchpad panel are its own, not a finger on the game's touchpad.
+            if(mouse_mode==1&&pad_panel_covers())mouse_left=mouse_right=0;
+            if(mouse_mode==1){
+                const int inside=cursor_x>=0&&cursor_y>=0&&cursor_x<client_w&&cursor_y<client_h;
                 // A finger starts only inside the window; a drag past the edge stays on the pad's edge.
                 if((mouse_left||mouse_right)&&(inside||mouse_touch)){mouse_touch=1;contacts[0]=1;
-                    xy[0][0]=touch_coord((cursor.x+.5f)/(float)client.right,1919);xy[0][1]=touch_coord((cursor.y+.5f)/(float)client.bottom,941);
+                    xy[0][0]=touch_coord((cursor_x+.5f)/(float)client_w,1919);xy[0][1]=touch_coord((cursor_y+.5f)/(float)client_h,941);
                     if(mouse_right)out->buttons|=0x100000;}
                 else mouse_touch=0;
             }else{
@@ -269,11 +286,12 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
                 // mouse moves. The movement is the mouse's raw counts (no pointer acceleration: the
                 // same hand movement always turns the can as much) when Raw Input works, else the
                 // cursor's.
-                POINT centre={client.right/2,client.bottom/2};ClientToScreen(window,&centre);
-                if(mouse_anchored){mouse_dx=(float)(cursor.x-mouse_anchor.x);mouse_dy=(float)(cursor.y-mouse_anchor.y);}
-                mouse_anchor=centre;mouse_anchored=1;if(cursor.x!=centre.x||cursor.y!=centre.y)SetCursorPos(centre.x,centre.y);
+                const float centre_x=(float)(client_w/2),centre_y=(float)(client_h/2);
+                if(mouse_anchored){mouse_dx=cursor_x-mouse_anchor_x;mouse_dy=cursor_y-mouse_anchor_y;}
+                mouse_anchor_x=centre_x;mouse_anchor_y=centre_y;mouse_anchored=1;
+                if(cursor_x!=centre_x||cursor_y!=centre_y)SDL_WarpMouseInWindow(window,centre_x,centre_y);
                 float raw_dx,raw_dy;if(pad_panel_raw(&raw_dx,&raw_dy)){mouse_dx=raw_dx;mouse_dy=raw_dy;}
-                if(key(VK_MBUTTON))memcpy(spray,spray_pose,sizeof(spray));
+                if(mouse_button(SDL_BUTTON_MMASK))memcpy(spray,spray_pose,sizeof(spray));
             }
         }
     }else{memset(swipe_keys,0,sizeof(swipe_keys));swipe_direction=-1;mouse_anchored=mouse_touch=0;}
@@ -287,6 +305,7 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
     if(panel.centre){contacts[0]=1;xy[0][0]=960;xy[0][1]=471;}
     if(panel.click||panel.left||panel.right||panel.both||panel.centre){out->buttons|=0x100000;
         if(!contacts[0]&&!contacts[1]){contacts[0]=1;xy[0][0]=960;xy[0][1]=471;}}
+    if(panel.options)out->buttons|=8;
     if(panel.swipe>=0){swipe_direction=panel.swipe;swipe_started=out->timestamp;was_touch[0]=0;}
     if(panel.mode>=0&&game_window)set_mouse_mode(panel.mode==mouse_mode?0:panel.mode,game_window);
     if(panel.recentre)memcpy(spray,spray_pose,sizeof(spray));
@@ -299,7 +318,7 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
     if(mouse_mode==2){
         const float dt=spray_tick?(float)(out->timestamp-spray_tick)/1e6f:0;spray_tick=out->timestamp;
         // Shift: fine aim (a third of the speed); the window's sensitivity scales both.
-        const float scale=panel.sensitivity*(focused&&key(VK_SHIFT)?.35f:1.f);
+        const float scale=panel.sensitivity*(focused&&shift_held()?.35f:1.f);
         if(!focused&&cmd_now>=cmd_aim_until)mouse_dx=mouse_dy=0;
         if(spray_wait_release){if(!mouse_left&&!mouse_right)spray_wait_release=0;mouse_left=mouse_right=0;}
         pad_spray_step(spray,mouse_dx*scale,mouse_dy*scale,dt>0.1f?0.1f:dt,(focused&&mouse_right)||cmd_now<cmd_shake_until,(double)out->timestamp/1e6,out->angular,out->acceleration);
@@ -361,7 +380,7 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
         const double now=(double)out->timestamp/1e6;
         if(cmd_path&&out->timestamp-cmd_checked>=100000){cmd_checked=out->timestamp;
             FILE *f=fopen(cmd_path,"rb");char text[512]={0};
-            if(f){size_t n=fread(text,1,sizeof(text)-1,f);text[n]=0;fclose(f);DeleteFileA(cmd_path);
+            if(f){size_t n=fread(text,1,sizeof(text)-1,f);text[n]=0;fclose(f);unlink(cmd_path);
                 if(cmd_next<now)cmd_next=now;
                 const char *s=text;
                 while(*s){char item[48];size_t k=strcspn(s,",\r\n");if(k>=sizeof(item))k=sizeof(item)-1;memcpy(item,s,k);item[k]=0;s+=k;while(*s==','||*s=='\r'||*s=='\n')++s;
@@ -385,6 +404,7 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
         if(!seq[i].logged){seq[i].logged=1;fprintf(stderr,"PAD_SEQ %s at %.2f s\n",seq[i].name,t);}}
     if((double)out->timestamp/1e6<cmd_paint_until)out->r2=255;
     if(out->l2>30)out->buttons|=0x100;if(out->r2>30)out->buttons|=0x200;
+    memcpy(live.contacts,contacts,sizeof(contacts));memcpy(live.xy,xy,sizeof(xy));live.click=(out->buttons&0x100000)!=0;pad_panel_report(&live);
     if((contacts[0]||contacts[1])&&!was_touch[0]&&!was_touch[1])touch_start=out->timestamp;
     for(unsigned i=0;i<2;++i){if(contacts[i]){
         if(!was_touch[i]){contact_id[i]=next_touch;next_touch=(uint8_t)(next_touch==127?1:next_touch+1);}
@@ -396,17 +416,16 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
     if(save_dialog_blocking()){const uint64_t ts=out->timestamp;memset(out,0,sizeof(*out));
         out->lx=out->ly=out->rx=out->ry=128;out->orientation[3]=1;out->acceleration[1]=1;
         out->connected=out->connected_count=1;out->timestamp=ts;}
-    ReleaseSRWLockExclusive(&lock);return 0;
+    host_unlock(&lock);return 0;
 }
 static int32_t GUEST_ABI pad_vibration(int handle,const uint8_t *motors){
     if(handle!=1||!opened)return error(3);if(!motors)return error(1);
-    AcquireSRWLockExclusive(&lock);
+    host_lock(&lock);
     if(sdl_pad)SDL_RumbleGamepad(sdl_pad,(Uint16)(motors[0]*257),(Uint16)(motors[1]*257),1000);
-    else{XINPUT_VIBRATION v={(WORD)(motors[0]*257),(WORD)(motors[1]*257)};XInputSetState(0,&v);}
-    ReleaseSRWLockExclusive(&lock);return 0;
+    host_unlock(&lock);return 0;
 }
 static uint8_t lightbar[4];
-static int32_t GUEST_ABI pad_light(int handle,const void *rgb){if(handle!=1||!opened)return error(3);if(!rgb)return error(1);AcquireSRWLockExclusive(&lock);memcpy(lightbar,rgb,4);if(sdl_pad)SDL_SetGamepadLED(sdl_pad,lightbar[0],lightbar[1],lightbar[2]);ReleaseSRWLockExclusive(&lock);return 0;}
+static int32_t GUEST_ABI pad_light(int handle,const void *rgb){if(handle!=1||!opened)return error(3);if(!rgb)return error(1);host_lock(&lock);memcpy(lightbar,rgb,4);if(sdl_pad)SDL_SetGamepadLED(sdl_pad,lightbar[0],lightbar[1],lightbar[2]);host_unlock(&lock);return 0;}
 uintptr_t pad_resolve(const char *identity){
     if(!strstr(identity,"#libScePad#1#libScePad#257"))return 0;const char *api=runtime_api_name(identity);
 #define API(n,f) if(!strcmp(api,n))return (uintptr_t)f

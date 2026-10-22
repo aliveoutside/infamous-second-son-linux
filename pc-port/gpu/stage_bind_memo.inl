@@ -551,10 +551,17 @@ void Rasterizer::RememberStageMemo(u32 slot, const Shader::Info& stage, const Pi
                 memo.num_bound_images == out.num_bound_images &&
                 memo.binding_out == out.binding_out;
     const char* what = same ? "" : "shape";
+    u32 resolved_bound = 0;
     for (u32 i = 0; same && i < out.num_buffers; ++i) {
         const auto& a = memo.buffer_infos[i];
         const auto& b = out.buffer_infos[i];
         const bool streamed = a.buffer == stream_handle && b.buffer == stream_handle;
+        // A buffer whose V# changed is resolved again by a partial replay: nothing to compare.
+        if (memo.valid && memo.partial_ok && memo.flatbuf[i] == 0 && out.flatbuf[i] == 0 &&
+            std::memcmp(&memo.vsharps[i], &out.vsharps[i], sizeof(out.vsharps[i])) != 0) {
+            if (memo.bound_index[i] != 0xFF) resolved_bound |= 1u << memo.bound_index[i];
+            continue;
+        }
         if (memo.flatbuf[i] != out.flatbuf[i] || a.range != b.range ||
             (!streamed && (a.buffer != b.buffer || a.offset != b.offset)) ||
             memo.push_offsets[i] != out.push_offsets[i]) {
@@ -578,6 +585,7 @@ void Rasterizer::RememberStageMemo(u32 slot, const Shader::Info& stage, const Pi
         }
     }
     for (u32 i = 0; same && i < out.num_bound_buffers; ++i) {
+        if (resolved_bound & (1u << i)) continue;
         const auto& a = memo.bound_buffers[i];
         const auto& b = out.bound_buffers[i];
         if (a.buffer != b.buffer || a.offset != b.offset || a.size != b.size ||

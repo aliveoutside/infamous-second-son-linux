@@ -11,8 +11,11 @@ from prepare import ROOT, DEFAULT_GAME
 def create():
     game=DEFAULT_GAME.resolve()
     manifest=game/'Project.gp4'
-    # Dumps made without a GP4 project (an extracted fake PKG) have no manifest: nothing is checked.
-    paths=[n.get('targ_path') for n in ET.parse(manifest).findall('./files/file')] if manifest.is_file() else []
+    if manifest.is_file():
+        paths=[n.get('targ_path') for n in ET.parse(manifest).findall('./files/file')]
+    else:
+        # A dump extracted without Project.gp4: every file present is the manifest.
+        paths=[p.relative_to(game).as_posix() for p in sorted(game.rglob('*')) if p.is_file()]
     missing=[]
     total=0
     for relative in paths:
@@ -55,11 +58,10 @@ def create():
     if not trophy_ids or max(trophy_ids)>=128:raise ValueError('unsupported trophy IDs')
     report['trophy_ids']=trophy_ids
     (out/'content-profile.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
-    (out/'content_profile.h').write_text('/* Generated from local package metadata; no assets. */\n'
-        + f'#define LOCAL_PACKAGE_COMPLETE {int(not missing)}\n#define LOCAL_CHUNKS {chunks}\n'
-        + 'static const uint64_t chunk_sizes[LOCAL_CHUNKS]={'+','.join(str(n)+'ULL' for n in sizes)+'};\n'
-        + f'#define LOCAL_TROPHY_COUNT {len(trophy_ids)}\n'
-        + 'static const unsigned char trophy_ids[LOCAL_TROPHY_COUNT]={'+','.join(map(str,trophy_ids))+'};\n',encoding='utf-8')
+    # Read by the runtime at startup (src/content.c).
+    (out/'content_profile.txt').write_text(f'complete {int(not missing)}\n'
+        + 'chunks '+' '.join(map(str,sizes))+'\n'
+        + 'trophies '+' '.join(map(str,trophy_ids))+'\n',encoding='utf-8')
     print(json.dumps({k:v for k,v in report.items() if k!='chunk_sizes'},indent=2))
 
 if __name__=='__main__': create()

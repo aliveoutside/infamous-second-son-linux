@@ -171,7 +171,7 @@ InstancedRecordStatus TryUploadAndRecordInstanced(
                 batch.commands.size() * sizeof(DrawIndexedIndirectCommand));
     context.stream.Commit();
 
-    packed_ssbo = {context.stream.Handle(), base + offsets.instances, batch.instances.size()};
+    packed_ssbo = vk::DescriptorBufferInfo{vk::Buffer{context.stream.Handle()}, vk::DeviceSize(base + offsets.instances), vk::DeviceSize(batch.instances.size())};
     writes[0].pBufferInfo = &packed_ssbo;
     Shader::PushData push_data = context.push_data;
     push_data.buf_offsets[0] = 0; // Packed SSBO starts exactly at its aligned descriptor offset.

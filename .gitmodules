@@ -1,0 +1,3 @@
+[submodule "pc-port/third_party/shadPS4"]
+	path = pc-port/third_party/shadPS4
+	url = https://github.com/aliveoutside/shadPS4-AYOUB1080p.git

@@ -1,38 +1,13 @@
-# Build outputs, runs, caches, saves (pc-port/out also has its own .gitignore)
+# Build folders
+/pc-port/build/
+/pc-port/build-*/
+# Prepared game image, caches and saves: contains game code, never publish
 /pc-port/out/
-/build/
-/build-opt/
-/build-sdl/
-*.obj
-*.exe
-*.dll
-*.pdb
-*.lib
-*.exp
-**/__pycache__/
+__pycache__/
 *.pyc
+/handoff.md
 
-# Local dependencies (see README: Building)
-/research/
-/tools/
-
-# Local data and leftovers
-/SaveBackup/
-/sandbox/
-/pc-port/evidence/
-/Para deletar/
-*.lnk
-
-# Internal session notes (local only)
-/docs/handoffs/
-/docs/archive/
-/docs/relocation-map.json
-**/HANDOFF-*.md
-*.antes-da-mudanca
-/Jogar-*.cmd
-# Game artwork (Sony): used by the local PowerShell launcher only
-/launcher/assets/game.*
-/docs/media/*.png
-# Interface screenshots (the port's own windows, no game art) are kept.
-!/docs/media/ui-*.png
-!/docs/media/launcher-*.png
+# Profiling/trace output
+/pc-port/frames.csv
+/pc-port/performance-summary.json
+/pc-port/trace.jsonl

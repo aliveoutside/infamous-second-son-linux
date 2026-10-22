@@ -60,7 +60,11 @@ std::size_t Rasterizer::TryNativeCpuRun(const GraphicsPipeline* pipeline,
     };
     // Cache only uniqueness of physical alias metadata, never content/dirty state.
     // A page-sized proof can cover several neighbouring descriptor lists.
-    static thread_local ng::BackingAliasCache<8192> alias_proofs;
+    // On the heap: inline it made every thread's TLS ~576 KB, which forced the slow dynamic TLS
+    // path for all thread_local accesses of the library.
+    static thread_local std::unique_ptr<ng::BackingAliasCache<8192>> alias_proofs_storage;
+    if (!alias_proofs_storage) alias_proofs_storage = std::make_unique<ng::BackingAliasCache<8192>>();
+    auto& alias_proofs = *alias_proofs_storage;
     std::vector<Core::MemoryManager::BackingSpan> read_backings;
     read_backings.reserve(run.draws.size()*5+16);
     std::vector<iss::g4::NegativeImageSnapshot> image_proofs;

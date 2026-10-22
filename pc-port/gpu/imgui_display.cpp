@@ -21,9 +21,13 @@ void LoadFonts(ImGuiIO& io);
 void Draw(float width, float height, float dt);
 bool Active();
 }
+namespace iss::pad_ui {
+void Draw(float width, float height);
+bool Shown();
+}
 namespace ImGui::Core {
 // While the save dialog is up the presenter keeps drawing (the game may stop flipping).
-bool MustKeepDrawing(){return iss::save_ui::Active();}
+bool MustKeepDrawing(){return iss::save_ui::Active()||iss::pad_ui::Shown();}
 static const Frontend::WindowSDL *window;
 static uint64_t last_tick;
 void Initialize(const ::Vulkan::Instance& instance,const Frontend::WindowSDL& w,u32 count,vk::Format format){
@@ -81,6 +85,7 @@ void Render(const vk::CommandBuffer& command,const vk::ImageView& view,const vk:
         draw->AddRectFilled(pos,ImVec2{pos.x+size.x+20,pos.y+size.y+16},IM_COL32(0,0,0,190),5);
         draw->AddText(ImVec2{pos.x+10,pos.y+8},IM_COL32(235,245,255,255),label);}
     iss::save_ui::Draw(ImGui::GetIO().DisplaySize.x,ImGui::GetIO().DisplaySize.y,ImGui::GetIO().DeltaTime);
+    iss::pad_ui::Draw(ImGui::GetIO().DisplaySize.x,ImGui::GetIO().DisplaySize.y);
     ImGui::Render();auto *data=ImGui::GetDrawData();ImGui::Vulkan::UpdateTextures(*data,command);
     if(!data->CmdListsCount)return;
     const vk::RenderingAttachmentInfo color{.imageView=view,.imageLayout=vk::ImageLayout::eColorAttachmentOptimal,

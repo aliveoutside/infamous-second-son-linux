@@ -1,0 +1,79 @@
+# Builds in the container (pc-port/scripts/linux/portable.Dockerfile, Ubuntu 24.04) as `just build`
+# does, with the PGO profile in pc-port/pgo, runs the tests and uploads the AppImage. A v* tag also
+# attaches it to a GitHub release.
+# Caches: the container image (buildx, GitHub cache), SDL3 and ccache (actions/cache).
+name: AppImage
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: appimage-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write  # for releases on tags
+
+jobs:
+  appimage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build environment image
+        uses: docker/build-push-action@v6
+        with:
+          context: pc-port/scripts/linux
+          file: pc-port/scripts/linux/portable.Dockerfile
+          tags: iss-build
+          load: true
+          cache-from: type=gha,scope=iss-build
+          cache-to: type=gha,scope=iss-build,mode=max
+
+      - name: Submodule revision
+        id: rev
+        run: echo "shadps4=$(git -C pc-port/third_party/shadPS4 rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: SDL3 cache
+        uses: actions/cache@v4
+        with:
+          path: pc-port/build/sdl3
+          key: sdl3-${{ hashFiles('pc-port/scripts/linux/portable.Dockerfile') }}-${{ steps.rev.outputs.shadps4 }}
+
+      # A new entry every run (caches are immutable); the newest one is restored next time.
+      - name: Compiler cache
+        uses: actions/cache@v4
+        with:
+          path: pc-port/build/ccache
+          key: ccache-${{ hashFiles('pc-port/scripts/linux/portable.Dockerfile') }}-${{ github.run_id }}
+          restore-keys: ccache-${{ hashFiles('pc-port/scripts/linux/portable.Dockerfile') }}-
+
+      - name: Build
+        run: docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e CCACHE_MAXSIZE=1500M
+               -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" -w "$GITHUB_WORKSPACE/pc-port"
+               iss-build scripts/linux/container-build.sh
+
+      - name: Test
+        run: docker run --rm --user "$(id -u):$(id -g)" -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE"
+               -w "$GITHUB_WORKSPACE/pc-port/build" iss-build ctest --output-on-failure
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: inFAMOUS_Second_Son-x86_64.AppImage
+          path: pc-port/build/inFAMOUS_Second_Son-x86_64.AppImage
+          if-no-files-found: error
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: pc-port/build/inFAMOUS_Second_Son-x86_64.AppImage

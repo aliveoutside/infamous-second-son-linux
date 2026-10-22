@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Include the production implementation so append-only overlap fixtures can be
 // installed without allocating/mapping guest memory or loading the game.
-#include "../src/memory.c"
+#include "../src/posix/memory.c"
 #include <inttypes.h>
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr,"FAIL line %d: %s\n",__LINE__,#x); return 1; } } while(0)

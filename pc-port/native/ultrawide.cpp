@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Custom resolution, ultrawide field of view and HUD edges for the 1.07 eboot (sha256 2d1ca796...).
-// Installed before the guest starts, like hooks.cpp; every patched function is identity-checked.
+// Installed before the guest starts (src/posix/native_hooks.cpp); every patched function is identity-checked.
 //
 // ISS_RESOLUTION=WxH: the renderer's output and render size. eboot+0x1eff00 (renderer start) and
 //   eboot+0x1f0be0 (video mode change) write 1920x1080 outside PS4 Pro mode into the renderer
@@ -27,6 +27,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
+#include <sys/mman.h>
+#include <unistd.h>
 #ifndef ISS_SYSV
 #define ISS_SYSV __attribute__((sysv_abi))
 #endif
@@ -52,11 +54,33 @@ bool Matches(const unsigned char *image,std::uint64_t size,const Region *regions
         if(size<=regions[i].at+regions[i].size||Hash(image+regions[i].at,regions[i].size)!=regions[i].hash)return false;
     return true;
 }
+// The protection of the mapping that holds address, from /proc/self/maps (-1: not mapped).
+int Protection(std::uintptr_t address){
+    std::FILE *maps=std::fopen("/proc/self/maps","r");
+    if(!maps)return -1;
+    char line[512];int protection=-1;
+    while(protection<0&&std::fgets(line,sizeof(line),maps)){
+        unsigned long long first,end;char mode[5];
+        if(std::sscanf(line,"%llx-%llx %4s",&first,&end,mode)!=3||address<first||address>=end)continue;
+        protection=(mode[0]=='r'?PROT_READ:0)|(mode[1]=='w'?PROT_WRITE:0)|(mode[2]=='x'?PROT_EXEC:0);
+    }
+    std::fclose(maps);
+    return protection;
+}
+// Page by page: made writable for the copy, then given back its protection.
 bool Write(unsigned char *image,std::uint64_t at,const void *bytes,std::size_t size){
-    DWORD old,ignored;
-    if(!VirtualProtect(image+at,size,PAGE_EXECUTE_READWRITE,&old))return false;
-    std::memcpy(image+at,bytes,size);
-    return VirtualProtect(image+at,size,old,&ignored)&&FlushInstructionCache(GetCurrentProcess(),image+at,size);
+    const std::uintptr_t page=std::uintptr_t(sysconf(_SC_PAGESIZE));
+    const std::uintptr_t first=reinterpret_cast<std::uintptr_t>(image+at),end=first+size;
+    for(std::uintptr_t p=first&~(page-1);p<end;p+=page){
+        const int protection=Protection(p);
+        if(protection<0)return false;
+        const std::uintptr_t from=std::max(p,first),to=std::min(p+page,end);
+        if(!(protection&PROT_WRITE)&&mprotect(reinterpret_cast<void*>(p),page,protection|PROT_WRITE))return false;
+        std::memcpy(reinterpret_cast<void*>(from),static_cast<const unsigned char*>(bytes)+(from-first),to-from);
+        if(!(protection&PROT_WRITE)&&mprotect(reinterpret_cast<void*>(p),page,protection))return false;
+    }
+    __builtin___clear_cache(reinterpret_cast<char*>(first),reinterpret_cast<char*>(end));
+    return true;
 }
 bool Write32(unsigned char *image,std::uint64_t at,std::uint32_t value){return Write(image,at,&value,4);}
 std::uint32_t Bits(float value){std::uint32_t bits;std::memcpy(&bits,&value,4);return bits;}

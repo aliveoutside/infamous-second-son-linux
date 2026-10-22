@@ -175,7 +175,11 @@ void PeriodicSubmit(Scheduler& scheduler) {
         periodic_draws = 0;
         periodic_start_ns = interval_ns ? Common::Perf::NowNs() : 0;
     }
-    const bool due = interval_ns && Common::Perf::NowNs() - periodic_start_ns >= interval_ns;
+    // The clock is read every 8th draw: two reads a draw were ~2% of the command processor in
+    // a view of 13k draws, and 8 draws are microseconds against the 0.5 ms interval.
+    thread_local u32 periodic_clock{};
+    const bool due = interval_ns && (++periodic_clock & 7) == 0 &&
+                     Common::Perf::NowNs() - periodic_start_ns >= interval_ns;
     if (!due && (every == 0 || ++periodic_draws < every)) return;
     scheduler.Flush();
     periodic_tick = scheduler.CurrentTick();
@@ -1424,7 +1428,7 @@ std::size_t Rasterizer::Draw(bool is_indexed, u32 index_offset,
     }
     if (g_draw_cycles.enabled) g_draw_cycles.Mark(0);
     const GraphicsPipeline* pipeline =
-        fast_lookup_set ? fast_lookup : LookupNativeGraphicsPipeline();
+        fast_lookup_set ? fast_lookup : pipelined ? PipeLookupGraphics() : LookupNativeGraphicsPipeline();
     fast_lookup_set = false;
     if (g_draw_cycles.enabled) g_draw_cycles.Mark(1);
     if (!pipeline) {

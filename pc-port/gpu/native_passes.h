@@ -178,10 +178,10 @@ void WaitRecorded(const u32* dcb);
 /// ISS_NATIVE_PASSES_JOB_WAIT (default on, =0: WaitRecorded waits for the whole command buffer):
 /// WaitRecorded waits for the first job only; the command processor calls WaitRecordedAt with each
 /// packet it reaches, which waits for the job recording that packet once it crosses into it.
-extern thread_local const u32* next_job_boundary;
+extern thread_local std::uintptr_t next_job_boundary; // constant-initialized: no TLS init wrapper
 void WaitRecordedSlow(const u32* packet);
 inline void WaitRecordedAt(const u32* packet) {
-    if (packet >= next_job_boundary) WaitRecordedSlow(packet);
+    if (reinterpret_cast<std::uintptr_t>(packet) >= next_job_boundary) WaitRecordedSlow(packet);
 }
 /// ISS_NATIVE_ASC=1 (with ISS_NATIVE_PASSES_SUBMIT and ISS_NATIVE_COMPUTE): the dispatches of
 /// the asynchronous compute queues recorded as the graphics queue's are.

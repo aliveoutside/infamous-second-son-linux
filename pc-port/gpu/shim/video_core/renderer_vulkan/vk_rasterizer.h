@@ -446,6 +446,8 @@ public:
     void DrainDrawPipe(u32 reason=5);
     bool PrepareDrawPipeFault(bool is_write);
     void DrainDrawPipeForIdle();
+    bool PostDrawPipeSubmit();
+    const GraphicsPipeline* PipeLookupGraphics();
     void DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u32 size, u32 max_count,
                       VAddr count_address, u16 vertex_sgpr_offset, u16 instance_sgpr_offset);
 

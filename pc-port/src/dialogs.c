@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Native Windows message dialog backend; status follows actual UI completion.
+// Message dialogs as SDL message boxes; the status follows the box being closed.
 #include "runtime.h"
+#include <SDL3/SDL.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -10,31 +11,30 @@ typedef struct {
     uint64_t size; uint32_t mode,pad; UserMessage *user;
     void *progress,*system; int32_t user_id; char reserved[40]; uint32_t final_pad;
 } Params;
-static volatile LONG initialized,status;
+static volatile int32_t initialized,status;
 int runtime_common_dialog_initialized(void){return initialized!=0;}
 extern uintptr_t save_dialog_resolve(const char *identity);
 static int32_t err(unsigned n){return (int32_t)(UINT32_C(0x80b80000)|n);}
-static int32_t GUEST_ABI common_initialize(void){return InterlockedExchange(&initialized,1)?err(2):0;}
+static int32_t GUEST_ABI common_initialize(void){return __atomic_exchange_n(&initialized,1,__ATOMIC_SEQ_CST)?err(2):0;}
 static int32_t GUEST_ABI message_initialize(void){
-    if(!initialized)return err(1);return InterlockedCompareExchange(&status,1,0)==0?0:err(4);
+    if(!initialized)return err(1);return __sync_val_compare_and_swap(&status,0,1)==0?0:err(4);
 }
-typedef struct { char message[8192]; UINT flags; } UiMessage;
-static DWORD WINAPI show(void *arg){UiMessage *m=arg;MessageBoxA(NULL,m->message,"inFAMOUS Second Son",m->flags);free(m);InterlockedExchange(&status,3);return 0;}
+typedef struct { char message[8192]; unsigned flags; } UiMessage;
+static void *show(void *arg){UiMessage *m=arg;SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION,"inFAMOUS Second Son",m->message,NULL);free(m);__atomic_exchange_n(&status,3,__ATOMIC_SEQ_CST);return NULL;}
 static int32_t GUEST_ABI message_open(const Params *p){
     if(status!=1&&status!=3)return err(6);if(!p)return err(13);
     if(p->size!=sizeof(*p)||p->base_size!=48)return err(10);
     if(p->mode!=1||!p->user||!p->user->message)return err(15);
     UiMessage *m=calloc(1,sizeof(*m));if(!m)return err(9);
     strncpy(m->message,p->user->message,sizeof(m->message)-1);
-    m->flags=p->user->type==1||p->user->type==7?MB_YESNO:p->user->type==3||p->user->type==8?MB_OKCANCEL:MB_OK;
     printf("Opening game message dialog: %.500s\n",m->message);
-    fprintf(stderr,"DIALOG tick_ms=%llu thread=%lu caller=%p message=%.500s\n",(unsigned long long)GetTickCount64(),GetCurrentThreadId(),__builtin_return_address(0),m->message);
+    fprintf(stderr,"DIALOG tick_ms=%llu thread=%lu caller=%p message=%.500s\n",(unsigned long long)host_monotonic_ms(),host_thread_id(),__builtin_return_address(0),m->message);
     fflush(stdout);fflush(stderr);
-    InterlockedExchange(&status,2);HANDLE t=CreateThread(NULL,0,show,m,0,NULL);
-    if(!t){free(m);InterlockedExchange(&status,1);return err(9);}CloseHandle(t);
+    __atomic_exchange_n(&status,2,__ATOMIC_SEQ_CST);
+    pthread_t t;if(pthread_create(&t,NULL,show,m)){free(m);__atomic_exchange_n(&status,1,__ATOMIC_SEQ_CST);return err(9);}pthread_detach(t);
     return 0;
 }
-static int32_t GUEST_ABI message_status(void){return InterlockedCompareExchange(&status,0,0);}
+static int32_t GUEST_ABI message_status(void){return __atomic_load_n(&status,__ATOMIC_SEQ_CST);}
 uintptr_t dialog_resolve(const char *identity){
     uintptr_t save=save_dialog_resolve(identity);if(save)return save;
     const char *api=runtime_api_name(identity);

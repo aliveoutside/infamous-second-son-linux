@@ -1425,11 +1425,15 @@ void Liverpool::Process(std::stop_token stoken) {
         if (iss::unified::enabled && rasterizer) rasterizer->FlushUnifiedFences(true);
 
         if (submit_done) {
-            if(rasterizer)rasterizer->DrainDrawPipe(2);
-            VideoCore::EndCapture();
-            if (rasterizer) {
-                rasterizer->OnSubmit();
-                rasterizer->Flush();
+            if (rasterizer && rasterizer->PostDrawPipeSubmit()) {
+                VideoCore::EndCapture();
+            } else {
+                if(rasterizer)rasterizer->DrainDrawPipe(2);
+                VideoCore::EndCapture();
+                if (rasterizer) {
+                    rasterizer->OnSubmit();
+                    rasterizer->Flush();
+                }
             }
             submit_done = false;
             ++processed_packets;

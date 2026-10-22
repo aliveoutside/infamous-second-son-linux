@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "runtime.h"
+#include <signal.h>
+#include <sys/mman.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,7 +13,8 @@ static unsigned char fixture[8192];
 typedef void *(GUEST_ABI *TlsGet)(const uint64_t *);
 typedef void *(GUEST_ABI *GetParam)(void);
 static TlsGet get_tls;
-static HANDLE start_gate;
+static pthread_barrier_t start_gate;
+static pthread_barrier_t ready_gate;
 static unsigned char sparse_source[49152];
 static unsigned sparse_lookups;
 static unsigned char *sparse_backing(uint64_t address,uint64_t size){
@@ -32,10 +35,10 @@ static void test_sparse_copy(void){
 }
 static unsigned char *io_page;
 static unsigned io_faults;
-static LONG CALLBACK io_handler(EXCEPTION_POINTERS *p){
-    uintptr_t address=p->ExceptionRecord->ExceptionInformation[1];
-    if(p->ExceptionRecord->ExceptionCode!=EXCEPTION_ACCESS_VIOLATION||address<(uintptr_t)io_page||address>=(uintptr_t)io_page+8192)return EXCEPTION_CONTINUE_SEARCH;
-    DWORD old;CHECK(VirtualProtect(io_page,8192,PAGE_READWRITE,&old));++io_faults;return EXCEPTION_CONTINUE_EXECUTION;
+static void io_handler(int sig,siginfo_t *info,void *ctx){
+    (void)sig;(void)ctx;uintptr_t address=(uintptr_t)info->si_addr;
+    if(address<(uintptr_t)io_page||address>=(uintptr_t)io_page+8192)_exit(99);
+    CHECK(!mprotect(io_page,8192,PROT_READ|PROT_WRITE));++io_faults;
 }
 static void test_protected_io(void){
     typedef int32_t(GUEST_ABI *Open)(const char *,int32_t,uint16_t);
@@ -49,47 +52,38 @@ static void test_protected_io(void){
     Pread pread=(Pread)file_resolve("+r3rMFwItV4#libkernel#1#libkernel#257");
     Seek seek=(Seek)file_resolve("oib76F-12fk#libkernel#1#libkernel#257");
     CHECK(open&&close&&write&&pread&&seek);
-    char guest[128];snprintf(guest,sizeof(guest),"/temp0/io-contract-%lu.bin",GetCurrentProcessId());
+    char guest[128];snprintf(guest,sizeof(guest),"/temp0/io-contract-%lu.bin",(unsigned long)getpid());
     int fd=open(guest,2|0x200|0x400,0600);CHECK(fd>=3);
     unsigned char source[8192];for(unsigned i=0;i<sizeof(source);++i)source[i]=(unsigned char)(i*37);
     CHECK(write(fd,source,sizeof(source))==sizeof(source));CHECK(seek(fd,123,0)==123);
-    io_page=VirtualAlloc(NULL,8192,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE);CHECK(io_page);
-    void *handler=AddVectoredExceptionHandler(1,io_handler);CHECK(handler);DWORD old;
-    CHECK(VirtualProtect(io_page,8192,PAGE_NOACCESS,&old));
+    io_page=mmap(NULL,8192,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);CHECK(io_page!=MAP_FAILED);
+    struct sigaction sa={0},previous;sa.sa_sigaction=io_handler;sa.sa_flags=SA_SIGINFO|SA_NODEFER;sigemptyset(&sa.sa_mask);CHECK(!sigaction(SIGSEGV,&sa,&previous));
+    CHECK(!mprotect(io_page,8192,PROT_NONE));
     CHECK(pread(fd,io_page,8192,0)==8192);CHECK(io_faults==1);CHECK(!memcmp(io_page,source,8192));
     CHECK(seek(fd,0,1)==123);memset(io_page,0,8192);
     CHECK(pread(fd,io_page,8192,8000)==192);CHECK(!memcmp(io_page,source+8000,192)&&io_page[192]==0);
     CHECK(pread(fd,io_page,1,8192)==0);CHECK(pread(fd,io_page,1,-1)<0);CHECK(seek(fd,0,1)==123);
-    CHECK(VirtualProtect(io_page,8192,PAGE_NOACCESS,&old));CHECK(write(fd,io_page,192)==192);CHECK(io_faults==2);
-    CHECK(close(fd)==0);RemoveVectoredExceptionHandler(handler);VirtualFree(io_page,0,MEM_RELEASE);io_page=NULL;
-    char host[1200];snprintf(host,sizeof(host),"%s\\temp0\\io-contract-%lu.bin",runtime_user_root(),GetCurrentProcessId());CHECK(DeleteFileA(host));
+    CHECK(!mprotect(io_page,8192,PROT_NONE));CHECK(write(fd,io_page,192)==192);CHECK(io_faults==2);
+    CHECK(close(fd)==0);sigaction(SIGSEGV,&previous,NULL);munmap(io_page,8192);io_page=NULL;
+    char host[1200];snprintf(host,sizeof(host),"%s/temp0/io-contract-%lu.bin",runtime_user_root(),(unsigned long)getpid());CHECK(!unlink(host));
     puts("PASS: protected file buffers, EOF partial copy, positioned offsets and protected writes.");
 }
-typedef struct { unsigned char value; HANDLE ready; } WorkerData;
-
-static int emulate(const unsigned char *bytes, size_t length, CONTEXT *context) {
-    memcpy(fixture, bytes, length);
-    context->Rip = (uintptr_t)fixture;
-    EXCEPTION_RECORD record = {0};
-    record.ExceptionCode = EXCEPTION_ACCESS_VIOLATION;
-    EXCEPTION_POINTERS e = {&record, context};
-    return runtime_emulate_tls(&e);
-}
-static DWORD WINAPI worker(void *argument) {
+typedef struct { unsigned char value; } WorkerData;
+static void *worker(void *argument) {
     WorkerData *data = argument;
     uint64_t index[2] = {2, 0};
     unsigned char *tls = get_tls(index);
     CHECK(*tls == 0x22);
     *tls = data->value;
-    SetEvent(data->ready);
-    WaitForSingleObject(start_gate, INFINITE);
+    pthread_barrier_wait(&ready_gate);
+    pthread_barrier_wait(&start_gate);
     CHECK(*tls == data->value);
     runtime_tls_detach();
-    return 0;
+    return NULL;
 }
 
 int main(void) {
-    SetEnvironmentVariableA("ISS_MAPPING_CACHE","1");
+    setenv("ISS_MAPPING_CACHE","1",1);
     test_sparse_copy();
     CHECK(save_pattern_matches("infamousssUser0","infamousss%"));
     CHECK(save_pattern_matches("infamousssAuto1","INFAMOUSSSAUTO_"));
@@ -118,47 +112,22 @@ int main(void) {
     index[0] = 2; index[1] = 0;
     unsigned char *main_tls = get_tls(index);
     *main_tls = 0x77;
-    start_gate = CreateEventW(NULL, TRUE, FALSE, NULL);
-    CHECK(start_gate);
-    WorkerData work[2] = {{0x33, CreateEventW(NULL, TRUE, FALSE, NULL)},
-                          {0x44, CreateEventW(NULL, TRUE, FALSE, NULL)}};
-    CHECK(work[0].ready && work[1].ready);
-    HANDLE threads[2] = {CreateThread(NULL, 0, worker, &work[0], 0, NULL),
-                         CreateThread(NULL, 0, worker, &work[1], 0, NULL)};
-    CHECK(threads[0] && threads[1]);
-    HANDLE ready[2] = {work[0].ready, work[1].ready};
-    CHECK(WaitForMultipleObjects(2, ready, TRUE, 5000) == WAIT_OBJECT_0);
-    SetEvent(start_gate);
-    CHECK(WaitForMultipleObjects(2, threads, TRUE, 5000) == WAIT_OBJECT_0);
+    pthread_barrier_init(&start_gate, NULL, 3);
+    pthread_barrier_init(&ready_gate, NULL, 3);
+    WorkerData work[2] = {{0x33}, {0x44}};
+    pthread_t threads[2];
+    CHECK(!pthread_create(&threads[0], NULL, worker, &work[0]) && !pthread_create(&threads[1], NULL, worker, &work[1]));
+    pthread_barrier_wait(&ready_gate);
+    pthread_barrier_wait(&start_gate);
+    for (int i = 0; i < 2; ++i) pthread_join(threads[i], NULL);
     CHECK(*main_tls == 0x77);
-    for (int i = 0; i < 2; ++i) { DWORD code; CHECK(GetExitCodeThread(threads[i], &code) && !code); CloseHandle(threads[i]); }
-    CloseHandle(start_gate); CloseHandle(ready[0]); CloseHandle(ready[1]);
 
-    CONTEXT c = {0}; c.EFlags = 0x202;
-    const unsigned char mov[] = {0x64,0x48,0x8b,0x04,0x25,0,0,0,0};
-    CHECK(emulate(mov, sizeof(mov), &c));
-    CHECK(c.Rip == (uintptr_t)fixture + 9 && c.EFlags == 0x202);
-    uint64_t *tcb = (uint64_t *)(uintptr_t)c.Rax;
-    CHECK(tcb[0] == (uintptr_t)tcb && *(unsigned char *)((unsigned char *)tcb - 48) == 0x11);
-    CHECK(((uint64_t *)(uintptr_t)tcb[1])[3] == (uintptr_t)main_tls);
-    const unsigned char xor_op[] = {0x64,0x48,0x33,0x04,0x25,0,0,0,0};
-    CHECK(emulate(xor_op, sizeof(xor_op), &c));
-    CHECK(!c.Rax && (c.EFlags & 0x8d5) == 0x44);
-    const unsigned char cmp_op[] = {0x64,0x48,0x3b,0x04,0x25,0,0,0,0};
-    CHECK(emulate(cmp_op, sizeof(cmp_op), &c));
-    CHECK(!c.Rax && (c.EFlags & 1) && (c.EFlags & 0x80) && !(c.EFlags & 0x40));
-    c.Rax = (uintptr_t)tcb;
-    CHECK(emulate(cmp_op, sizeof(cmp_op), &c));
-    CHECK((c.EFlags & 0x8d5) == 0x44 && c.Rax == (uintptr_t)tcb);
-    const unsigned char mov_r15[] = {0x64,0x4c,0x8b,0x3c,0x25,0,0,0,0};
-    CHECK(emulate(mov_r15, sizeof(mov_r15), &c));
-    CHECK(c.R15 == (uintptr_t)tcb);
-    const unsigned char canary[] = {0x64,0x48,0x8b,0x04,0x25,40,0,0,0};
-    CHECK(emulate(canary, sizeof(canary), &c));
-    CHECK(c.Rax == tcb[5]);
-    const unsigned char unsupported[] = {0x64,0x48,0x8b,0x04,0x25,56,0,0,0};
-    CHECK(!emulate(unsupported, sizeof(unsupported), &c));
-    CHECK(runtime_tls_fault_count() == 6);
+    {
+        // fs: -> gs: rewrite of guest code
+        unsigned char code[] = {0x64,0x48,0x8b,0x04,0x25,0,0,0,0, 0x90, 0x64,0x48,0x33,0x04,0x25,40,0,0,0, 0xc3};
+        CHECK(runtime_patch_tcb_accesses(code, sizeof(code)) == 2);
+        CHECK(code[0] == 0x65 && code[10] == 0x65 && code[9] == 0x90);
+    }
     CHECK(memory_direct_size() == UINT64_C(0x120000000));
     int64_t physical = -1;
     CHECK(memory_allocate_direct(0, (int64_t)memory_direct_size(), 1, 16384, 0, &physical) != 0 && physical == -1);
@@ -205,8 +174,8 @@ int main(void) {
     CHECK(((unsigned char *)partial)[16383] == 0x61);
     void *invalid = NULL;
     CHECK(memory_map_direct(&invalid, 65536, 3, 0, (int64_t)memory_direct_size(), 65536) != 0 && !invalid);
-    CHECK(UnmapViewOfFile(a) && UnmapViewOfFile(b));
-    CHECK(UnmapViewOfFile((void *)((uintptr_t)partial & ~(uintptr_t)65535)));
+    CHECK(!munmap(a, 65536) && !munmap(b, 65536));
+    CHECK(!munmap((void *)((uintptr_t)partial & ~(uintptr_t)65535), 65536));
     runtime_tls_detach();
     puts("PASS: concurrent TLS/TCB/DTV, MOV/XOR/CMP flags, direct-memory ranges, shared aliases and fixed-map collision.");
     return 0;

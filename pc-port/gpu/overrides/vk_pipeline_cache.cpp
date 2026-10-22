@@ -1114,19 +1114,15 @@ void PipelineCache::ScoutDraw(const AmdGpu::Regs& regs, AmdGpu::ScoutDraw& draw,
                     std::min<size_t>(params.user_data.size_bytes(), flat_size * sizeof(u32)));
         if (pinfo.srt_info.walker_func) {
             // Tables the command processor itself writes before this draw are not readable
-            // yet: no entry for the stage.
+            // yet: no entry for the stage. The walker also follows pointers inside the tables
+            // and reads beyond 4 KB of the user data pointers, which no address check here
+            // sees: while any write of the command processor is pending, no entry at all.
             const auto* scout = liverpool->GetScout();
-            for (u32 i = 0; i + 1 < params.user_data.size(); ++i) {
-                VAddr pointer;
-                std::memcpy(&pointer, &params.user_data[i], sizeof(pointer));
-                pointer &= 0xFFFFFFFFFFFFULL;
-                if (pointer != 0 && scout != nullptr && scout->MayBeWrittenLater(pointer, 4_KB)) {
-                    binding.buffer += static_cast<u32>(pinfo.buffers.size());
-                    binding.unified += static_cast<u32>(pinfo.buffers.size() +
-                                                        pinfo.images.size() +
-                                                        pinfo.samplers.size());
-                    return true;
-                }
+            if (scout != nullptr && scout->MayBeWrittenLater(0, ~VAddr{0})) {
+                binding.buffer += static_cast<u32>(pinfo.buffers.size());
+                binding.unified += static_cast<u32>(pinfo.buffers.size() + pinfo.images.size() +
+                                                    pinfo.samplers.size());
+                return true;
             }
             pinfo.srt_info.walker_func(params.user_data.data(), flat);
         }
@@ -1379,60 +1375,9 @@ PipelineCache::~PipelineCache() {
 // ---------------------------------------------------------------------------------------------
 } // namespace Vulkan
 #include <windows.h>
-#include <psapi.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 namespace Vulkan {
-/// ISS_AOT_TRACE=1: names the module and offset of an access violation before the probe's
-/// handler ends the process.
-static LONG CALLBACK AotTraceFault(EXCEPTION_POINTERS* e) {
-    if (e->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION) {
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
-    const auto rip = reinterpret_cast<uintptr_t>(e->ExceptionRecord->ExceptionAddress);
-    if (rip >= 0x10000000 && rip < 0x20000000) {
-        return EXCEPTION_CONTINUE_SEARCH; // Guest code: TLS reads the probe emulates.
-    }
-    HMODULE module{};
-    char name[MAX_PATH] = "?";
-    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           reinterpret_cast<LPCSTR>(rip), &module)) {
-        GetModuleFileNameA(module, name, MAX_PATH);
-    }
-    PWSTR description{};
-    char thread_name[128] = "?";
-    if (SUCCEEDED(GetThreadDescription(GetCurrentThread(), &description)) && description) {
-        WideCharToMultiByte(CP_UTF8, 0, description, -1, thread_name, sizeof(thread_name), nullptr,
-                            nullptr);
-        LocalFree(description);
-    }
-    std::fprintf(stderr, "AOT_TRACE_FAULT thread=%s\n", thread_name);
-    std::fprintf(stderr, "AOT_TRACE_FAULT rip=%p module=%s offset=%#llx tid=%lu accessed=%#llx\n",
-                 (void*)rip, name, (unsigned long long)(rip - reinterpret_cast<uintptr_t>(module)),
-                 GetCurrentThreadId(),
-                 (unsigned long long)(e->ExceptionRecord->NumberParameters >= 2
-                                          ? e->ExceptionRecord->ExceptionInformation[1]
-                                          : 0));
-    // The return addresses on the stack that belong to modules: a rough backtrace.
-    const auto* sp = reinterpret_cast<const uintptr_t*>(e->ContextRecord->Rsp);
-    ULONG_PTR stack_low{}, stack_high{};
-    GetCurrentThreadStackLimits(&stack_low, &stack_high);
-    const int words = int(std::min<uintptr_t>(512, (stack_high - e->ContextRecord->Rsp) / 8));
-    for (int i = 0, n = 0; i < words && n < 16; ++i) {
-        HMODULE m{};
-        if (sp[i] > 0x10000 && GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                                                      GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                                  reinterpret_cast<LPCSTR>(sp[i]), &m)) {
-            char mn[MAX_PATH] = "?";
-            GetModuleFileNameA(m, mn, MAX_PATH);
-            const char* base = std::strrchr(mn, '\\');
-            std::fprintf(stderr, "  frame %s+%#llx\n", base ? base + 1 : mn,
-                         (unsigned long long)(sp[i] - reinterpret_cast<uintptr_t>(m)));
-            ++n;
-        }
-    }
-    std::fflush(stderr);
-    return EXCEPTION_CONTINUE_SEARCH;
-}
 
 /// The shader index of the player's own game files (scripts/aot_index.py does the same):
 /// every .xpps pack ('KCAP', data base at 0x28) holds PS4 shader binaries, each one's code
@@ -1457,15 +1402,19 @@ static bool BuildShaderIndex(const std::filesystem::path& game_dir, const std::f
     std::atomic<size_t> next{0};
     constexpr u32 Mark = 0xBEEB03FF;
     const auto scan = [&](const std::filesystem::path& path) {
-        HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-                                  FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
-        if (file == INVALID_HANDLE_VALUE) return;
+        const int fd = open(path.c_str(), O_RDONLY);
+        if (fd < 0) return;
+        struct stat st{};
+        fstat(fd, &st);
         LARGE_INTEGER size{};
-        GetFileSizeEx(file, &size);
-        HANDLE mapping = size.QuadPart >= 0x100
-                             ? CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0, nullptr) : nullptr;
-        const u8* data = mapping ? static_cast<const u8*>(MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0))
-                                 : nullptr;
+        size.QuadPart = st.st_size;
+        void* map = size.QuadPart >= 0x100 ? mmap(nullptr, size.QuadPart, PROT_READ, MAP_PRIVATE, fd, 0)
+                                           : MAP_FAILED;
+        const u8* data = map == MAP_FAILED ? nullptr : static_cast<const u8*>(map);
+        const auto release = [&] {
+            if (data) munmap(const_cast<u8*>(data), size.QuadPart);
+            close(fd);
+        };
         if (data && std::memcmp(data, "KCAP", 4) == 0) {
             const size_t n = size_t(size.QuadPart);
             const auto u32_at = [&](size_t at) {
@@ -1517,9 +1466,7 @@ static bool BuildShaderIndex(const std::filesystem::path& game_dir, const std::f
             std::scoped_lock lock{mutex};
             for (auto& [hash, row] : found) rows.try_emplace(hash, std::move(row));
         }
-        if (data) UnmapViewOfFile(data);
-        if (mapping) CloseHandle(mapping);
-        CloseHandle(file);
+        release();
     };
     {
         std::vector<std::jthread> workers;
@@ -1580,7 +1527,6 @@ void PipelineCache::StartAotCompute(const char* index_value) {
     const std::string index_string = ResolveShaderIndex(index_value);
     const char* index_path = index_string.c_str();
     if (const char* value = std::getenv("ISS_AOT_TRACE"); value && value[0] == '1') {
-        AddVectoredExceptionHandler(1, AotTraceFault);
     }
     if (const char* value = std::getenv("ISS_AOT_FORMAT_STATS"); value && value[0] == '1') {
         // The formats of the formatted buffers of the compute permutations preloaded: what the

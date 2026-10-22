@@ -707,7 +707,8 @@ struct FastDynReg {
 };
 static constexpr std::array<FastDynReg, 4> kFastDynRegs{{
     {static_cast<u32>(offsetof(AmdGpu::Regs, polygon_control) / 4), 0x3807u},
-    {static_cast<u32>(offsetof(AmdGpu::Regs, depth_control) / 4), 0x7007FCu},
+    // Not Z_WRITE_ENABLE (bit 2): it selects the depth view and layout (ImageViewInfo::is_storage).
+    {static_cast<u32>(offsetof(AmdGpu::Regs, depth_control) / 4), 0x7007F8u},
     {static_cast<u32>(offsetof(AmdGpu::Regs, stencil_ref_front) / 4), 0xFFFFFFFFu},
     {static_cast<u32>(offsetof(AmdGpu::Regs, stencil_ref_back) / 4), 0xFFFFFFFFu},
 }};

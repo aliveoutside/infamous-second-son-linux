@@ -9,6 +9,7 @@
 #include <cstring>
 #include <exception>
 #include <windows.h>
+#include <execinfo.h>
 #include <stdexcept>
 // Ahead-of-time shader threads (vk_pipeline_cache.cpp, ISS_AOT_COMPUTE) translate shaders with no
 // game state bound: a failed assertion there drops that shader instead of ending the game.
@@ -21,24 +22,13 @@ static void NoteRecipe(const char* what){if(recipe_hash)std::fprintf(stderr,"GPU
 // print the stage and the return addresses (module+offset, for the linker map) first.
 static void FatalTrace(const char* what){
     NoteRecipe(what);
-    void* frames[48];const USHORT n=RtlCaptureStackBackTrace(1,48,frames,nullptr);
-    for(USHORT i=0;i<n;++i){
-        HMODULE module=nullptr;char name[MAX_PATH]="?";
-        if(GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                              static_cast<LPCSTR>(frames[i]),&module)){
-            GetModuleFileNameA(module,name,MAX_PATH);
-            const char* base=std::strrchr(name,'\\');
-            std::fprintf(stderr,"GPU_FATAL %s frame %u %s+0x%llx\n",what,unsigned(i),base?base+1:name,
-                         (unsigned long long)(static_cast<char*>(frames[i])-reinterpret_cast<char*>(module)));
-        }
-    }
+    void* frames[48];const int count=backtrace(frames,48);
+    backtrace_symbols_fd(frames,count,2);
     std::fflush(stderr);
 }
 static const bool terminate_hook=[]{
     std::set_terminate([]{FatalTrace("terminate");std::abort();});
     std::signal(SIGABRT,[](int){FatalTrace("abort");});
-    _set_invalid_parameter_handler([](const wchar_t*,const wchar_t*,const wchar_t*,unsigned,uintptr_t){
-        FatalTrace("invalid_parameter");std::abort();});
     return true;}();}
 void assert_fail_impl(){if(iss::assert_throws)throw std::runtime_error("assertion");iss::NoteRecipe("assertion");std::fflush(stderr);std::abort();}
 [[noreturn]] void unreachable_impl(){if(iss::assert_throws)throw std::runtime_error("unreachable");iss::NoteRecipe("unreachable");std::fputs("GPU reached unreachable code\n",stderr);std::abort();}

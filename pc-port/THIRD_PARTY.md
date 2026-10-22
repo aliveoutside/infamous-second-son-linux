@@ -1,47 +1,43 @@
-# Proveniência
+# Provenance
 
-`scripts/build_gpu.py` compila fontes do renderer Vulkan, shader recompiler,
-GnmDriver, VideoOut, AJM e Videodec de `../research/shadPS4-perf`, com shims em
-`gpu/` e sem o main/loader do emulador. Essa integração permanece sob GPL-2.0-or-later.
-Alguns shims foram adaptados da referência Bloodborne citada abaixo. As bibliotecas
-de terceiros (incluindo SDL, Vulkan, ImGui, FFmpeg e fmt) permanecem nas árvores
-locais existentes, com seus respectivos avisos e licenças; não foram relicenciadas.
+`libiss-gpu.so` (`gpu/CMakeLists.txt`) compiles the Vulkan renderer, shader recompiler,
+GnmDriver, VideoOut, AJM and Videodec sources of `third_party/shadPS4`, with the shims in
+`gpu/` and without the emulator's main program and loader. That integration stays under
+GPL-2.0-or-later. Some shims were adapted from the Bloodborne reference cited below. Third-party
+libraries (including SDL, Vulkan, ImGui, FFmpeg and fmt) stay in their existing trees with their
+own notices and licences; they are not relicensed.
 
-Este protótipo adota GPL-2.0-or-later; o texto completo está em `LICENSE`.
+This project is GPL-2.0-or-later; the full text is in `LICENSE`.
 
-`src/pad.c` usa a API SDL3 e a convenção de integração quaternion de
-`shadPS4/src/input/controller.cpp`. `src/save_dialog.c` adapta layouts e estados
-de `shadPS4/src/core/libraries/save_data/dialog/`, com UI Windows própria.
-As fontes do PhonePad do usuário foram consultadas para identificar o DS4 virtual;
-nenhum código nem credenciais do Companion foi copiado ou modificado.
+`src/pad.c` uses the SDL3 API and the quaternion integration convention of
+`shadPS4/src/input/controller.cpp`. `src/save_dialog.c` and `gpu/save_dialog_ui.cpp` adapt the
+layouts and states of `shadPS4/src/core/libraries/save_data/dialog/`.
 
-`scripts/ps4_format.py` adapta as funções de leitura SELF/SFO/NID de
+The launcher (`launcher/launcher.cpp`) uses the Oswald font (`launcher/assets/fonts/Oswald.ttf`,
+SIL Open Font License 1.1, `launcher/assets/fonts/OFL.txt`), Dear ImGui and stb_image (MIT /
+public domain, from the shadPS4 checkout's `externals`).
+
+`scripts/ps4_format.py` adapts the SELF/SFO/NID reading functions of
 [`deadinside28/bloodborne_pc/scripts/prepare.py`](https://github.com/deadinside28/bloodborne_pc/blob/4d4d20812c0af23a11c8b8d40f5e06a9054925ef/scripts/prepare.py),
-snapshot `4d4d20812c0af23a11c8b8d40f5e06a9054925ef`, GPL-2.0-or-later.
-Mantivemos os limites e verificações de segmentos; removemos o import de `game_check`
-e o restante do preparador específico de Bloodborne. A cópia de referência local
-está em `../research/bloodborne_pc`; não é o checkout de desenvolvimento do nosso port.
+snapshot `4d4d20812c0af23a11c8b8d40f5e06a9054925ef`, GPL-2.0-or-later. The segment limits and
+checks were kept; the `game_check` import and the rest of the Bloodborne-specific preparer were
+removed.
 
-O formato de identidade NID/biblioteca/módulo foi conferido com
+The NID/library/module identity format was checked against
 [`scripts/link_libc.py`](https://github.com/deadinside28/bloodborne_pc/blob/4d4d20812c0af23a11c8b8d40f5e06a9054925ef/scripts/link_libc.py)
-e com `../research/shadPS4-perf/src/core/module.cpp` e `loader/elf.h`.
-O formato binário `ISSPRB01` e o loader Windows deste projeto são próprios.
-`ISSPRB02` adiciona a tabela de módulos/TLS e bindings. `scripts/link_modules.py`
-usa o projeto citado como referência de organização, mas resolve identidades e
-versões exatas e não copia o patch FS→GS usado no Linux.
+and `third_party/shadPS4/src/core/module.cpp` and `loader/elf.h`. The `ISSPRB01`/`ISSPRB02`
+image formats and this project's loader are its own. `scripts/link_modules.py` follows the cited
+project's organisation but resolves exact identities and versions.
 
-`src/runtime.c` utiliza Zydis/Zycore (MIT) já presentes/compilados no checkout
-local de shadPS4 para decodificar instruções TLS realmente executadas. O layout
-TCB/DTV foi conferido em `src/core/tls.h`/`linker.cpp` de shadPS4 e em
-`bloodborne_pc/src/runtime_thread.c`. O contrato/layout de `sceLibcHeapGetTraceInfo`
-foi adaptado de `src/core/libraries/libc_internal/libc_internal_memory.cpp`,
-Copyright 2024 shadPS4 Emulator Project, GPL-2.0-or-later.
-O checkout local tem base `584374867d6a655d911a26fe06145f3a7cb2e89d` e alterações anteriores.
+The runtime links Zydis/Zycore (MIT) from the shadPS4 checkout (`externals/zydis`). The TCB/DTV layout was checked against
+`src/core/tls.h`/`linker.cpp` of shadPS4 and `bloodborne_pc/src/runtime_thread.c`. The contract
+and layout of `sceLibcHeapGetTraceInfo` were adapted from
+`src/core/libraries/libc_internal/libc_internal_memory.cpp`, Copyright 2024 shadPS4 Emulator
+Project, GPL-2.0-or-later. The shadPS4 base is the `third_party/shadPS4` submodule (upstream
+`584374867d6a655d911a26fe06145f3a7cb2e89d` plus this port's changes on branch `iss-port`).
 
-O inventário lê a tabela AeroLib local de shadPS4 apenas para fornecer nomes
-indicativos aos NIDs. O relatório registra seu caminho/hash. A tabela não está
-copiada neste projeto e nomes isolados não implementam nem validam uma API.
+The import inventory reads shadPS4's local AeroLib table only to give indicative names to NIDs.
+The table is not copied into this project, and names alone neither implement nor validate an API.
 
-Não há executáveis nem assets do jogo no código do projeto. `out/boot.bin` é gerado
-localmente a partir do dump do usuário, contém código/dados do jogo e está ignorado
-pelo Git. Não publicar `out/` nem os dumps existentes no workspace.
+There are no game executables or assets in this project. `out/` is generated locally from the
+user's own game files, contains game code and data, and is ignored by Git. Never publish `out/`.

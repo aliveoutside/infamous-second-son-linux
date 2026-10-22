@@ -12,12 +12,12 @@ typedef int32_t(GUEST_ABI *Search)(const Query*,Result*);
 int main(void){
     Init init=(Init)save_resolve("TywrFKCoLGY#libSceSaveData#1#libSceSaveData#257");
     Search search=(Search)save_resolve("dyIhnXq-0SM#libSceSaveData#1#libSceSaveData#257");CHECK(init&&search);CHECK(init(NULL)==0);
-    int user=1000000000+(int)GetCurrentProcessId();char userdir[1300],base[1400],path[1500],file[1600];
-    snprintf(userdir,sizeof(userdir),"%s\\%d",runtime_save_root(),user);CHECK(CreateDirectoryA(userdir,NULL));
-    snprintf(base,sizeof(base),"%s\\CUSA00004",userdir);CHECK(CreateDirectoryA(base,NULL));
+    int user=1000000000+(int)getpid();char userdir[1300],base[1400],path[1500],file[1600];
+    snprintf(userdir,sizeof(userdir),"%s/%d",runtime_save_root(),user);CHECK(!mkdir(userdir,0777));
+    snprintf(base,sizeof(base),"%s/CUSA00004",userdir);CHECK(!mkdir(base,0777));
     const char *names[]={"infamousssAuto0","infamousssUser0"};
-    for(int i=0;i<2;++i){snprintf(path,sizeof(path),"%s\\%s",base,names[i]);CHECK(CreateDirectoryA(path,NULL));
-        snprintf(path,sizeof(path),"%s\\%s.sce_sys",base,names[i]);CHECK(CreateDirectoryA(path,NULL));snprintf(file,sizeof(file),"%s\\param.bin",path);
+    for(int i=0;i<2;++i){snprintf(path,sizeof(path),"%s/%s",base,names[i]);CHECK(!mkdir(path,0777));
+        snprintf(path,sizeof(path),"%s/%s.sce_sys",base,names[i]);CHECK(!mkdir(path,0777));snprintf(file,sizeof(file),"%s/param.bin",path);
         unsigned char param[1328]={0};uint32_t value=(uint32_t)(10+i*10);memcpy(param+1280,&value,4);FILE *f=fopen(file,"wb");CHECK(f);CHECK(fwrite(param,1,sizeof(param),f)==sizeof(param));CHECK(fclose(f)==0);}
     Name pattern={"infamousss%"},found[2];memset(found,0x5a,sizeof(found));unsigned char metadata[1328];
     Query q={0};q.user=user;q.pattern=&pattern;q.key=1;q.order=1;Result r={0};r.names=found;r.capacity=1;r.params=metadata;
@@ -27,7 +27,7 @@ int main(void){
     pattern.name[0]=0;CHECK(search(&q,&r)==0&&r.hits==2);
     strcpy(pattern.name,"INFAMOUSSSUSER_");CHECK(search(&q,&r)==0&&r.hits==1);
     strcpy(pattern.name,"infamousss*");CHECK(search(&q,&r)==0&&r.hits==0);
-    for(int i=0;i<2;++i){snprintf(path,sizeof(path),"%s\\%s.sce_sys",base,names[i]);snprintf(file,sizeof(file),"%s\\param.bin",path);CHECK(DeleteFileA(file));CHECK(RemoveDirectoryA(path));snprintf(path,sizeof(path),"%s\\%s",base,names[i]);CHECK(RemoveDirectoryA(path));}
-    CHECK(RemoveDirectoryA(base));CHECK(RemoveDirectoryA(userdir));
+    for(int i=0;i<2;++i){snprintf(path,sizeof(path),"%s/%s.sce_sys",base,names[i]);snprintf(file,sizeof(file),"%s/param.bin",path);CHECK(!unlink(file));CHECK(!rmdir(path));snprintf(path,sizeof(path),"%s/%s",base,names[i]);CHECK(!rmdir(path));}
+    CHECK(!rmdir(base));CHECK(!rmdir(userdir));
     puts("PASS: save wildcard semantics, empty/count-only queries, case folding, sort before truncation, metadata and bounds.");return 0;
 }

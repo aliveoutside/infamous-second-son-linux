@@ -31,12 +31,8 @@
 #include "feedback_join.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 
-#ifndef _WIN64
 #include <sys/mman.h>
 #include "common/adaptive_mutex.h"
-#else
-#include <windows.h>
-#endif
 
 #ifdef __linux__
 #include <thread>
@@ -178,15 +174,7 @@ struct PageManager::Impl {
             // watch only a whole, non-executable data page with known backing.
             const auto backing = Core::Memory::Instance()->DescribeBacking(aligned, PM_PAGE_SIZE);
             if (!backing || backing->size != PM_PAGE_SIZE) return false;
-#ifdef _WIN64
-            MEMORY_BASIC_INFORMATION mbi{};
-            if (!VirtualQuery(reinterpret_cast<void*>(aligned), &mbi, sizeof(mbi)) ||
-                mbi.State != MEM_COMMIT ||
-                (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
-                                PAGE_EXECUTE_WRITECOPY | PAGE_GUARD | PAGE_NOACCESS))) return false;
-#else
             return false;
-#endif
         }
         {
             std::scoped_lock reserve_lock{reserve_mutex};
@@ -722,7 +710,7 @@ public:
             // Notify rasterizer about the fault.
             const VAddr addr = msg.arg.pagefault.address;
             const auto ptid = msg.arg.pagefault.feat.ptid;
-            InvalidateSrtPage(addr >> PM_PAGE_BITS);
+            InvalidateSrtPage(addr >> PageManager::PM_PAGE_BITS);
             rasterizer->InvalidateMemory(addr, 1,
                                          rasterizer->IsGpuCommandProcessorThreadId(ptid));
 
@@ -884,54 +872,6 @@ struct SignalImpl : public PageManager::Impl {
             if (handled || handled_srt) {
                 Common::Perf::Add(Common::Perf::FaultWrites);
                 u64 caller = 0;
-#ifdef _WIN64
-                if (const auto* ctx = static_cast<EXCEPTION_POINTERS*>(context)->ContextRecord) {
-                    // The first return address into the eboot's code on the stack (the game's
-                    // call goes through the HLE libc to the host memcpy).
-                    const u64 eboot = MemoryPatcher::g_eboot_address;
-                    const auto* sp = reinterpret_cast<const u64*>(ctx->Rsp);
-                    for (u32 i = 0; i < 96 && eboot; ++i) {
-                        const u64 v = sp[i];
-                        if (v > eboot + 0x1000 && v < eboot + 0x1000000) {
-                            caller = v;
-                            break;
-                        }
-                    }
-                    // Once: the code addresses on the faulting stack, by module (who writes).
-                    static std::atomic<u32> dumped{};
-                    if (!caller && g_fault_burst.faults.size() > 1500 &&
-                        dumped.fetch_add(1, std::memory_order_relaxed) < 3) {
-                        std::string text;
-                        for (u32 i = 0; i < 160 && text.size() < 900; ++i) {
-                            const u64 v = sp[i];
-                            HMODULE module{};
-                            if (v < 0x10000 ||
-                                !GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                                                        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                                    reinterpret_cast<LPCSTR>(v), &module))
-                                continue;
-                            char name[MAX_PATH]{};
-                            GetModuleFileNameA(module, name, MAX_PATH);
-                            const char* base = std::strrchr(name, '\\');
-                            char item[96];
-                            std::snprintf(item, sizeof(item), " %s+%llx", base ? base + 1 : name,
-                                          (unsigned long long)(v - reinterpret_cast<u64>(module)));
-                            text += item;
-                        }
-                        HMODULE rip_module{};
-                        char rip_name[MAX_PATH]{};
-                        const u64 rip = reinterpret_cast<u64>(Common::GetRip(context));
-                        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                               reinterpret_cast<LPCSTR>(rip), &rip_module))
-                            GetModuleFileNameA(rip_module, rip_name, MAX_PATH);
-                        std::fprintf(stderr, "FAULT_BURST_STACK rip=%s+%llx thread=%lu stack%s\n",
-                                     std::strrchr(rip_name, '\\') ? std::strrchr(rip_name, '\\') + 1 : rip_name,
-                                     (unsigned long long)(rip - reinterpret_cast<u64>(rip_module)),
-                                     GetCurrentThreadId(), text.c_str());
-                    }
-                }
-#endif
                 NoteWriteFault(addr, reinterpret_cast<u64>(Common::GetRip(context)), rasterizer,
                                handled_srt, caller);
             }
@@ -939,14 +879,6 @@ struct SignalImpl : public PageManager::Impl {
         } else {
             const u64 rip = reinterpret_cast<u64>(Common::GetRip(context));
             iss::feedback_join::ReadTicket feedback_ticket{};
-#ifdef _WIN64
-            if (iss::feedback_join::enabled) {
-                const auto* registers = static_cast<EXCEPTION_POINTERS*>(context)->ContextRecord;
-                feedback_ticket = iss::feedback_join::BeginRead(
-                    rip, addr, registers->R15, registers->Rax,
-                    rasterizer->GetBufferCache().MappingGeneration());
-            }
-#endif
             const bool handled = rasterizer->ReadMemory(addr, size, is_gpu_thread, rip);
             if (feedback_ticket.id) {
                 iss::feedback_join::EndRead(feedback_ticket, handled,

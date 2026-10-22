@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// settings.toml as the launcher edits it: defaults without a file, a save keeps the player's
+// [developer] lines and quotes, the values are checked like settings_apply checks them.
+#include "settings.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+static int failures;
+#define CHECK(c) do { if (!(c)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #c); ++failures; } } while (0)
+
+static int index_of(const char *key) {
+    for (int i = 0; i < settings_entry_count; ++i)
+        if (!strcmp(settings_entries[i].key, key)) return i;
+    return -1;
+}
+
+int main(void) {
+    char dir[] = "/tmp/iss-settings-XXXXXX", path[256];
+    if (!mkdtemp(dir)) return 1;
+    snprintf(path, sizeof(path), "%s/sub/settings.toml", dir);
+    setenv("ISS_SETTINGS", path, 1);
+
+    static char values[64][SETTINGS_VALUE_SIZE];
+    const int fov = index_of("fov"), resolution = index_of("resolution"), pad = index_of("pad_map"), hud = index_of("hud_width");
+    CHECK(fov >= 0 && resolution >= 0 && pad >= 0 && hud >= 0);
+    CHECK(settings_load(values) == -1);
+    CHECK(!strcmp(values[fov], "100") && !strcmp(values[resolution], "1920x1080"));
+
+    CHECK(settings_valid(fov, "110") && !settings_valid(fov, "20") && !settings_valid(fov, "abc"));
+    CHECK(settings_valid(resolution, "2560x1080") && !settings_valid(resolution, "100x100"));
+    CHECK(settings_valid(hud, "21:9") && !settings_valid(hud, "4:3"));
+    const int dead = index_of("deadzone");
+    CHECK(dead >= 0 && !strcmp(values[dead], "10"));
+    CHECK(settings_valid(dead, "0") && settings_valid(dead, "50") && !settings_valid(dead, "51") && !settings_valid(dead, "-1"));
+
+    strcpy(values[fov], "115");
+    strcpy(values[pad], "a=\"q\\uote");
+    CHECK(settings_save((const char (*)[SETTINGS_VALUE_SIZE])values) == 0);
+    FILE *f = fopen(path, "a");
+    CHECK(f != NULL);
+    if (f) { fputs("ISS_GPU_PROFILE = \"1\"\n", f); fclose(f); }
+
+    strcpy(values[resolution], "2560x1080");
+    CHECK(settings_save((const char (*)[SETTINGS_VALUE_SIZE])values) == 0);
+    static char again[64][SETTINGS_VALUE_SIZE];
+    CHECK(settings_load(again) == 0);
+    CHECK(!strcmp(again[fov], "115") && !strcmp(again[resolution], "2560x1080"));
+    CHECK(!strcmp(again[pad], "a=\"q\\uote"));
+
+    // The developer line is kept once, the header once.
+    f = fopen(path, "r");
+    char line[4096];
+    int developer = 0, headers = 0;
+    while (f && fgets(line, sizeof(line), f)) {
+        developer += !strcmp(line, "ISS_GPU_PROFILE = \"1\"\n");
+        headers += !strncmp(line, "[developer]", 11);
+    }
+    if (f) fclose(f);
+    CHECK(developer == 1 && headers == 1);
+
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/sub", dir);
+    rmdir(path);
+    rmdir(dir);
+    if (!failures) puts("settings_test passed");
+    return failures != 0;
+}

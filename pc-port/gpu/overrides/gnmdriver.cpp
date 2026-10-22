@@ -477,7 +477,6 @@ u32 PS4_SYSV_ABI sceGnmDispatchInitDefaultHardwareState(u32* cmdbuf, u32 size) {
 
 // ISS_GNM_CENSUS=1: which guest threads record the draws, and how the frame's draws are
 // spread over the submitted command buffers (for parallel recording on the game threads).
-extern "C" __declspec(dllimport) unsigned long __stdcall GetCurrentThreadId();
 static bool GnmCensusEnabled() {
     static const bool enabled = [] {
         const char* value = std::getenv("ISS_GNM_CENSUS");

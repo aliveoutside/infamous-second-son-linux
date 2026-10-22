@@ -744,11 +744,7 @@ bool Instance::CreateDevice() {
         const auto [time_domains_result, time_domains] =
             physical_device.getCalibrateableTimeDomainsEXT();
         if (time_domains_result == vk::Result::eSuccess) {
-#if _WIN64
-            const bool has_host_time_domain =
-                std::find(time_domains.cbegin(), time_domains.cend(),
-                          vk::TimeDomainEXT::eQueryPerformanceCounter) != time_domains.cend();
-#elif __linux__
+#if __linux__
             const bool has_host_time_domain =
                 std::find(time_domains.cbegin(), time_domains.cend(),
                           vk::TimeDomainEXT::eClockMonotonicRaw) != time_domains.cend();

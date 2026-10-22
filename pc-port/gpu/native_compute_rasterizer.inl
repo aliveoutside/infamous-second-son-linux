@@ -227,15 +227,9 @@ constexpr const char* reject_names[RejectCount] = {"env", "regs", "pipeline", "s
 // of process time, windows of 6 s: 0 every segment native, 1..8 the segments with template k-1
 // (learn order) left to the command processor, 9 all of them; from 100 s native again.
 static double ProcessSeconds() {
-    const auto ticks = [](const FILETIME& f) { return (u64(f.dwHighDateTime) << 32) | f.dwLowDateTime; };
-    static const u64 created = [&] {
-        FILETIME creation{}, exit_time{}, kernel{}, user{};
-        GetProcessTimes(GetCurrentProcess(), &creation, &exit_time, &kernel, &user);
-        return ticks(creation);
-    }();
-    FILETIME now{};
-    GetSystemTimeAsFileTime(&now);
-    return double(ticks(now) - created) / 1e7;
+    static const double created = [] { timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec / 1e9; }();
+    timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec + t.tv_nsec / 1e9 - created;
 }
 static int RotateWindow(double& seconds) {
     static const bool on = [] {

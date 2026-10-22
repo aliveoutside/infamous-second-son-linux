@@ -4,6 +4,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdlib>
 #include <filesystem>
 #include <mutex>
 #include <memory>

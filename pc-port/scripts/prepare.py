@@ -118,7 +118,7 @@ def identity_key(symbol):
 
 
 def names_database():
-    path = WORKSPACE / 'research/shadPS4-perf/src/core/aerolib/aerolib.inl'
+    path = ROOT / 'third_party/shadPS4/src/core/aerolib/aerolib.inl'
     if not path.exists():
         return {}, None
     text = path.read_text(encoding='utf-8')

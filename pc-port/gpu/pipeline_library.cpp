@@ -2,8 +2,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include "runtime_timeline.h"
-#include <bcrypt.h>
-#pragma comment(lib, "bcrypt.lib")
+#include "sha256.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -118,14 +117,8 @@ std::vector<u8> ReadFile(const std::filesystem::path& path, size_t limit = MaxFi
     return bytes;
 }
 std::string Sha256(std::span<const u8> bytes) {
-    BCRYPT_ALG_HANDLE alg{};
-    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0)
-        throw std::runtime_error("SHA256 unavailable");
     u8 digest[32];
-    const auto result = BCryptHash(alg, nullptr, 0, const_cast<u8*>(bytes.data()),
-                                  static_cast<ULONG>(bytes.size()), digest, sizeof(digest));
-    BCryptCloseAlgorithmProvider(alg, 0);
-    if (result < 0) throw std::runtime_error("SHA256 failed");
+    iss_sha256(bytes.data(), bytes.size(), digest);
     static constexpr char hex[] = "0123456789abcdef";
     std::string hash; hash.reserve(64);
     for (const auto b : digest) { hash += hex[b >> 4]; hash += hex[b & 15]; }

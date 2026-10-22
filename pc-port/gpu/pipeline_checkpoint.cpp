@@ -26,11 +26,12 @@ bool PipelineCache::CheckpointDriverCache(){
     if(hash==previous_hash)return true;
     const auto bytes=PackDriverCache(snapshot.value);
     auto temporary=driver_cache_path;temporary+=L".pending-"+std::to_wstring(GetCurrentProcessId());
-    HANDLE file=CreateFileW(temporary.c_str(),GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
-    if(file==INVALID_HANDLE_VALUE){std::fprintf(stderr,"PIPELINE_CHECKPOINT open error=%lu\n",GetLastError());return false;}
-    DWORD written=0;bool ok=WriteFile(file,bytes.data(),DWORD(bytes.size()),&written,nullptr)&&written==bytes.size();
-    if(ok)ok=FlushFileBuffers(file)!=0;const DWORD write_error=ok?0:GetLastError();CloseHandle(file);
-    if(ok)ok=MoveFileExW(temporary.c_str(),driver_cache_path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)!=0;
+    bool ok=false;DWORD write_error=0;
+    if(FILE *file=std::fopen(temporary.c_str(),"wb")){
+        ok=std::fwrite(bytes.data(),1,bytes.size(),file)==bytes.size()&&std::fflush(file)==0&&fsync(fileno(file))==0;
+        write_error=ok?0:DWORD(errno);std::fclose(file);
+    }else{std::fprintf(stderr,"PIPELINE_CHECKPOINT open error=%d\n",errno);return false;}
+    if(ok)ok=std::rename(temporary.c_str(),driver_cache_path.c_str())==0;
     if(ok)previous_hash=hash;
     std::fprintf(stderr,"PIPELINE_CHECKPOINT ok=%d bytes=%zu elapsed_ms=%.3f error=%lu\n",ok,snapshot.value.size(),double(Common::Perf::NowNs()-started)/1e6,ok?0:write_error?write_error:GetLastError());
     return ok;

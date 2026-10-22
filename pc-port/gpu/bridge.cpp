@@ -31,11 +31,13 @@ namespace iss { extern std::atomic<unsigned> g_preload_entries, g_preload_total;
 #include <mutex>
 #include <thread>
 #include <vector>
+#include <sched.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
-#include <tlhelp32.h>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/executor_work_guard.hpp>
 #include <xxhash.h>
@@ -43,7 +45,6 @@ namespace iss { extern std::atomic<unsigned> g_preload_entries, g_preload_total;
 #include "common/path_util.h"
 #include "common/perf_stats.h"
 #include "common/rdtsc.h"
-#include "common/ntapi.h"
 #include "common/signal_context.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/kernel/equeue.h"
@@ -88,25 +89,8 @@ int ready=0;
 /// threads that translate and present the graphics run one level above the game threads, so that
 /// other programs and the game's own threads delay them less. Pipeline compilers stay low.
 bool thread_priority_enabled(){static const bool on=[]{const char *p=std::getenv("ISS_THREAD_PRIORITY");return p&&p[0]=='1';}();return on;}
-void raise_gpu_threads(){
-    static const wchar_t *names[]={L"shadPS4:GpuCommandProcessor",L"shadPS4:GpuCommandRecorder",L"shadPS4:PresentThread",L"shadPS4:GpuUploadWorker",L"iss:DrawStageB"};
-    const DWORD pid=GetCurrentProcessId();
-    HANDLE snap=CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD,0);if(snap==INVALID_HANDLE_VALUE)return;
-    THREADENTRY32 te{};te.dwSize=sizeof(te);
-    for(BOOL ok=Thread32First(snap,&te);ok;ok=Thread32Next(snap,&te)){
-        if(te.th32OwnerProcessID!=pid)continue;
-        HANDLE t=OpenThread(THREAD_SET_LIMITED_INFORMATION|THREAD_QUERY_LIMITED_INFORMATION,FALSE,te.th32ThreadID);if(!t)continue;
-        PWSTR desc=nullptr;
-        if(SUCCEEDED(GetThreadDescription(t,&desc))&&desc){
-            for(const wchar_t *n:names)if(!wcscmp(desc,n)&&GetThreadPriority(t)<THREAD_PRIORITY_ABOVE_NORMAL){
-                if(SetThreadPriority(t,THREAD_PRIORITY_ABOVE_NORMAL))std::fprintf(stderr,"PORT_TUNING thread_priority %ls=above_normal\n",desc);
-            }
-            LocalFree(desc);
-        }
-        CloseHandle(t);
-    }
-    CloseHandle(snap);
-}
+// The threads keep their default nice value; raising priority needs privileges on Linux.
+void raise_gpu_threads(){}
 }
 namespace Core::Loader {
 void SymbolsResolver::AddSymbol(const char *nid,const char *library,const char *module,SymbolType,u64 address){symbols.push_back({nid,library,module,address});}
@@ -345,16 +329,16 @@ extern "C" uintptr_t iss_gpu_resolve(const char *identity){
 // A short sleep that lasts what it asks (a high resolution waitable timer: ~0.5 ms, whatever
 // the process timer resolution), for the renderer's polling waits.
 extern "C" void IssPreciseSleepUs(unsigned us){
-    thread_local HANDLE timer=CreateWaitableTimerExW(nullptr,nullptr,CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,TIMER_ALL_ACCESS);
-    if(!timer){SwitchToThread();return;}
-    LARGE_INTEGER due;due.QuadPart=-static_cast<LONGLONG>(us)*10;
-    if(SetWaitableTimer(timer,&due,0,nullptr,nullptr,FALSE))WaitForSingleObject(timer,INFINITE);
-    else SwitchToThread();
+    timespec ts{time_t(us/1000000),long(us%1000000)*1000};
+    clock_nanosleep(CLOCK_MONOTONIC,0,&ts,nullptr);
 }
+namespace MemoryPatcher {extern u64 g_eboot_address;}
 extern "C" int iss_gpu_initialize(const IssGpuCallbacks *callbacks){
     if(!callbacks||callbacks->struct_size!=sizeof(host)||!callbacks->backing||!callbacks->clamp||!callbacks->visit_mappings||!callbacks->protect||!callbacks->mapping_epoch||!callbacks->mapping_lock_shared||!callbacks->mapping_unlock_shared)return -1;
     host=*callbacks;
     iss::timeline::Emit("gpu_initialize",0,0,host.image_base);
+    // The renderer reports guest code addresses as eboot offsets (readback_relaxed_sites).
+    MemoryPatcher::g_eboot_address=host.image_base;
     // The executing image (as native/engine_draw.cpp patches it), not a backing view.
     if(iss::native_shadow::Enabled())
         iss::native_shadow::Install(host.image_base,reinterpret_cast<const unsigned char*>(host.image_base+0x43D590));
@@ -375,7 +359,6 @@ extern "C" int iss_gpu_initialize(const IssGpuCallbacks *callbacks){
         precise_reduction_site=code&&!std::memcmp(code,signature,sizeof(signature));
         std::fprintf(stderr,"REDUCTION_READBACK verified=%d window=4096 image_base=0x%llx\n",precise_reduction_site,(unsigned long long)host.image_base);
     }
-    Common::NtApi::Initialize();
     for(int i=0;i<=static_cast<int>(Common::FS::PathType::LicensesDir);++i){
         auto type=static_cast<Common::FS::PathType>(i);Common::FS::SetUserPath(type,std::filesystem::path(host.user_dir)/("gpu-"+std::to_string(i)));}
     Common::FS::SetUserPath(Common::FS::PathType::UserDir,host.user_dir);
@@ -427,19 +410,6 @@ extern "C" int iss_gpu_initialize(const IssGpuCallbacks *callbacks){
     // process. Without it a timed wait of 1-2 ms (the game's condition variables, event flags and
     // semaphores with a timeout, every Sleep(1)) lasts ~15.6 ms on Windows 11 (measured Sleep(1) =
     // 15.1 ms). Scripted city A/B (ab2, 2026-10-18 night, 2 runs each): no measurable difference.
-    if(const char *p=std::getenv("ISS_TIMER_1MS");p&&p[0]=='1'){
-        if(HMODULE winmm=LoadLibraryW(L"winmm.dll")){
-            using TimeBeginPeriod=UINT(WINAPI*)(UINT);
-            if(auto begin=reinterpret_cast<TimeBeginPeriod>(GetProcAddress(winmm,"timeBeginPeriod"))){
-                const UINT result=begin(1);
-                std::fprintf(stderr,"PORT_TUNING timer_1ms=%d\n",result==0?1:0);
-            }
-        }
-    }
-    if(thread_priority_enabled()){
-        const BOOL ok=SetPriorityClass(GetCurrentProcess(),ABOVE_NORMAL_PRIORITY_CLASS);
-        std::fprintf(stderr,"PORT_TUNING process_priority=above_normal ok=%d\n",ok?1:0);
-    }
     // ISS_TUNING="name=value,...": existing renderer toggles for A/B tests, applied last.
     if(const char *p=std::getenv("ISS_TUNING")){
         const auto set=[](auto& field,const std::string& value){field=static_cast<std::remove_reference_t<decltype(field.load())>>(std::strtoull(value.c_str(),nullptr,0));};
@@ -559,45 +529,88 @@ extern "C" int iss_gpu_initialize(const IssGpuCallbacks *callbacks){
 // idle) and the command processor is given logical processor L alone.
 uint64_t IssImageBase() { return host.image_base; }
 
+#ifdef ISS_PGO_GENERATE
+extern "C" void __gcov_dump(void);
+extern "C" void __gcov_reset(void);
+#endif
 void IssPinCommandProcessor() {
+#ifdef ISS_PGO_GENERATE
+    // ISS_PGO=generate builds: write the profile every 20 s (merged into the existing files).
+    static std::once_flag pgo_once;
+    std::call_once(pgo_once, [] {
+        std::thread([] {
+            for (;;) {
+                std::this_thread::sleep_for(std::chrono::seconds(20));
+                __gcov_dump();
+                __gcov_reset();
+            }
+        }).detach();
+    });
+#endif
     const char* value = std::getenv("ISS_CP_CPU");
     if (!value || !*value) return;
-    const long wanted = std::strtol(value, nullptr, 10);
-    ULONG length = 0;
-    GetSystemCpuSetInformation(nullptr, 0, &length, GetCurrentProcess(), 0);
-    std::vector<char> buffer(length);
-    if (!length || !GetSystemCpuSetInformation(
-            reinterpret_cast<PSYSTEM_CPU_SET_INFORMATION>(buffer.data()), length, &length,
-            GetCurrentProcess(), 0)) {
-        std::fprintf(stderr, "PORT_TUNING cp_cpu failed: no CPU set information\n");
-        return;
-    }
-    struct Set { ULONG id; unsigned core; unsigned logical; unsigned group; };
-    std::vector<Set> sets;
-    for (size_t offset = 0; offset < length;) {
-        const auto* info = reinterpret_cast<const SYSTEM_CPU_SET_INFORMATION*>(buffer.data() + offset);
-        if (info->Type == CpuSetInformation) {
-            sets.push_back({info->CpuSet.Id, info->CpuSet.CoreIndex,
-                            info->CpuSet.LogicalProcessorIndex, info->CpuSet.Group});
+    // ISS_CP_CPU=auto: the core the firmware ranks fastest (ACPI CPPC highest_perf, the
+    // "preferred core" that boosts highest), first logical processor of it.
+    const auto read_long = [](const std::string& path, long fallback) {
+        long v = fallback;
+        if (FILE* f = std::fopen(path.c_str(), "r")) {
+            if (std::fscanf(f, "%ld", &v) != 1) v = fallback;
+            std::fclose(f);
         }
-        offset += info->Size;
+        return v;
+    };
+    const long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+    long wanted = -1;
+    if (std::strcmp(value, "auto") == 0) {
+        long best = -1;
+        for (long c = 0; c < ncpu; ++c) {
+            const std::string base = "/sys/devices/system/cpu/cpu" + std::to_string(c);
+            const long perf = read_long(base + "/acpi_cppc/highest_perf", -1);
+            const long first = read_long(base + "/topology/core_cpus_list", c);
+            if (perf > best && first == c) { best = perf; wanted = c; }
+        }
+        if (wanted < 0) wanted = ncpu > 2 ? 1 : 0;
+    } else {
+        wanted = std::strtol(value, nullptr, 10);
     }
-    const Set* mine = nullptr;
-    for (const auto& set : sets) {
-        if (set.group == 0 && set.logical == wanted) mine = &set;
+    if (wanted < 0 || wanted >= ncpu || ncpu < 4) return;
+    // The core's logical processors (SMT siblings), e.g. "1,7" or "2-3".
+    cpu_set_t core;
+    CPU_ZERO(&core);
+    if (FILE* f = std::fopen(("/sys/devices/system/cpu/cpu" + std::to_string(wanted) +
+                              "/topology/thread_siblings_list").c_str(), "r")) {
+        char list[64] = {};
+        if (std::fgets(list, sizeof(list), f)) {
+            for (char* p = list; *p;) {
+                char* end;
+                const long a = std::strtol(p, &end, 10);
+                if (end == p) break;
+                long b = a;
+                if (*end == '-') b = std::strtol(end + 1, &end, 10);
+                for (long c = a; c <= b; ++c) CPU_SET(int(c), &core);
+                p = (*end == ',') ? end + 1 : end;
+                if (*p == '\n') break;
+            }
+        }
+        std::fclose(f);
     }
-    if (!mine) {
-        std::fprintf(stderr, "PORT_TUNING cp_cpu failed: logical processor %ld not found\n", wanted);
-        return;
+    CPU_SET(int(wanted), &core);
+    // Every other thread of the process (and the threads they create later) off that core.
+    cpu_set_t others;
+    CPU_ZERO(&others);
+    for (long c = 0; c < ncpu && c < CPU_SETSIZE; ++c)
+        if (!CPU_ISSET(int(c), &core)) CPU_SET(int(c), &others);
+    const pid_t self = static_cast<pid_t>(syscall(SYS_gettid));
+    int moved = 0;
+    for (const auto& entry : std::filesystem::directory_iterator("/proc/self/task")) {
+        const pid_t tid = static_cast<pid_t>(std::strtol(entry.path().filename().c_str(), nullptr, 10));
+        if (tid > 0 && tid != self && sched_setaffinity(tid, sizeof(others), &others) == 0) ++moved;
     }
-    std::vector<ULONG> others;
-    for (const auto& set : sets) {
-        if (set.group != mine->group || set.core != mine->core) others.push_back(set.id);
-    }
-    const BOOL process_ok = !others.empty() &&
-        SetProcessDefaultCpuSets(GetCurrentProcess(), others.data(), static_cast<ULONG>(others.size()));
-    const ULONG id = mine->id;
-    const BOOL thread_ok = SetThreadSelectedCpuSets(GetCurrentThread(), &id, 1);
-    std::fprintf(stderr, "PORT_TUNING cp_cpu=%ld core=%u process_default=%d(%zu sets) thread=%d\n",
-                 wanted, unsigned(mine->core), int(process_ok), others.size(), int(thread_ok));
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(int(wanted), &set);
+    const int rc = pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+    std::fprintf(stderr, "PORT_TUNING cp_cpu=%ld thread=%d others_moved=%d\n", wanted,
+                 int(rc == 0), moved);
+    return;
 }

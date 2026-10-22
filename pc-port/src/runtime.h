@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "host.h"
 #include <stdint.h>
 #define GUEST_ABI __attribute__((sysv_abi))
 #ifdef __cplusplus
@@ -15,7 +14,8 @@ void runtime_configure(unsigned char *image, uint64_t image_size, const GuestMod
 void runtime_tls_attach(void);
 void runtime_tls_detach(void);
 uintptr_t runtime_resolve(const char *identity, int data);
-int runtime_emulate_tls(EXCEPTION_POINTERS *exception);
+// Linux: guest fs: accesses are rewritten to gs: once, before the guest runs.
+int runtime_patch_tcb_accesses(unsigned char *code, uint64_t size);
 uint64_t runtime_tls_fault_count(void);
 uintptr_t sync_resolve(const char *identity);
 uintptr_t thread_resolve(const char *identity);
@@ -33,7 +33,7 @@ uintptr_t kernel_sync_resolve(const char *identity);
 uintptr_t http_resolve(const char *identity);
 const char *runtime_user_root(void);
 const char *runtime_save_root(void);
-// The save data dialog of iss-gpu.dll (gpu/iss_dialog.h), when the DLL has it.
+// The save data dialog of libiss-gpu.so (gpu/iss_dialog.h), when the library has it.
 int gpu_dialog_available(void);
 int gpu_dialog_open(const void *dialog);
 int gpu_dialog_poll(void *result);
@@ -55,7 +55,7 @@ uint64_t runtime_tsc_frequency(void);
 uint64_t runtime_process_time_us(void);
 int gpu_start(uint32_t sdk_version,uint64_t image_base);
 uintptr_t gpu_resolve(const char *identity);
-int gpu_handle_fault(EXCEPTION_POINTERS *exception);
+int gpu_handle_fault(void *ucontext, void *address);
 int gpu_readback(uint64_t address,uint64_t size);
 int gpu_invalidate(uint64_t address,uint64_t size);
 int gpu_feedback_identity_available(void);
@@ -63,6 +63,13 @@ void gpu_file_opened(const char *guest_path);
 void gpu_feedback_identity(uint64_t owner_object,uint64_t shader_object,uint64_t record_address);
 int native_install_hooks(unsigned char *image,uint64_t size);
 const char *runtime_api_name(const char *identity);
+// content.c: the player's game data, loaded by content_load() before the guest starts.
+enum { CONTENT_MAX_CHUNKS = 1000, CONTENT_MAX_TROPHIES = 128 };
+extern int content_package_complete;
+extern unsigned content_chunk_count, content_trophy_count;
+extern uint64_t content_chunk_sizes[CONTENT_MAX_CHUNKS];
+extern unsigned char content_trophy_ids[CONTENT_MAX_TROPHIES];
+int content_load(const char *dir);
 void runtime_set_thread_handle(void *handle);
 int32_t *runtime_errno(void);
 uint64_t GUEST_ABI memory_direct_size(void);

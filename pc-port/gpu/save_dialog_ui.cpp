@@ -10,7 +10,6 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
-#include <xinput.h>
 #include <imgui.h>
 #include <algorithm>
 #include <atomic>
@@ -318,27 +317,7 @@ void DrawMessage(ImDrawList* dl, State& s, ImVec2 a, ImVec2 b, float k, float al
 enum PadBit : unsigned { PadUp = 1, PadDown = 2, PadLeft = 4, PadRight = 8, PadA = 16, PadB = 32, PadLb = 64, PadRb = 128 };
 unsigned ReadPads() {
     unsigned bits = 0;
-    using GetState = DWORD(WINAPI*)(DWORD, XINPUT_STATE*);
-    static GetState xinput = [] {
-        for (const wchar_t* dll : {L"xinput1_4.dll", L"xinput1_3.dll", L"xinput9_1_0.dll"})
-            if (HMODULE m = LoadLibraryW(dll))
-                if (auto f = reinterpret_cast<GetState>(GetProcAddress(m, "XInputGetState"))) return f;
-        return GetState(nullptr);
-    }();
-    constexpr SHORT dead = 16000;
-    for (DWORD i = 0; xinput && i < 4; ++i) {
-        XINPUT_STATE st{};
-        if (xinput(i, &st) != ERROR_SUCCESS) continue;
-        const auto& g = st.Gamepad;
-        if ((g.wButtons & XINPUT_GAMEPAD_DPAD_UP) || g.sThumbLY > dead) bits |= PadUp;
-        if ((g.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) || g.sThumbLY < -dead) bits |= PadDown;
-        if ((g.wButtons & XINPUT_GAMEPAD_DPAD_LEFT) || g.sThumbLX < -dead) bits |= PadLeft;
-        if ((g.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) || g.sThumbLX > dead) bits |= PadRight;
-        if (g.wButtons & XINPUT_GAMEPAD_A) bits |= PadA;
-        if (g.wButtons & XINPUT_GAMEPAD_B) bits |= PadB;
-        if (g.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) bits |= PadLb;
-        if (g.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) bits |= PadRb;
-    }
+    constexpr short dead = 16000;
     int n = 0;
     if (SDL_JoystickID* ids = SDL_GetGamepads(&n)) {
         for (int i = 0; i < n; ++i) {
@@ -410,11 +389,22 @@ void LoadFonts(ImGuiIO& io) {
     g_regular = load(segoe.c_str());
     g_bold = load(segoe_bold.c_str());
     if (!g_regular) g_regular = load(std::getenv("ISS_UI_FONT"));
+    for (const char* path : {"/usr/share/fonts/TTF/DejaVuSans.ttf", "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+                             "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+                             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"})
+        if (!g_regular) g_regular = load(path);
+    for (const char* path : {"/usr/share/fonts/TTF/DejaVuSans-Bold.ttf", "/usr/share/fonts/noto/NotoSans-Bold.ttf",
+                             "/usr/share/fonts/liberation/LiberationSans-Bold.ttf",
+                             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"})
+        if (!g_bold) g_bold = load(path);
     if (!g_bold) g_bold = g_regular;
     if (!g_regular) g_regular = g_bold = io.Fonts->Fonts.empty() ? io.Fonts->AddFontDefault() : io.Fonts->Fonts[0];
 }
 
 bool Active() { return g_active.load(); }
+
+// The UI font (a TTF loaded large and scaled down: crisp at any size), for the touchpad panel.
+ImFont* UiFont(bool bold) { return bold ? g_bold : g_regular; }
 
 // SDL events of the game window (window thread): taken while the dialog is on screen.
 bool OnEvent(const SDL_Event& e) {

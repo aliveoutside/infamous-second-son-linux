@@ -7,7 +7,7 @@ static unsigned requests{};
 #define CHECK(x) do {if(!(x)){std::fprintf(stderr,"VISUAL CAPTURE FAIL %d: %s\n",__LINE__,#x);std::exit(1);}}while(0)
 namespace VideoCore {void RequestScreenshot(ScreenshotRequest r){CHECK(r==ScreenshotRequest::GameOnly);++requests;}}
 int main(){
-    _putenv_s("ISS_VISUAL_SEQUENCE","1");
+    setenv("ISS_VISUAL_SEQUENCE","1",1);
     CHECK(iss::visual_capture::Enabled());CHECK(iss::visual_capture::Start(1000));
     CHECK(!iss::visual_capture::Start(1001));
     iss::visual_capture::OnFrame(999,1,false);CHECK(requests==0);

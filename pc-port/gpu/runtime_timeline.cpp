@@ -9,24 +9,11 @@
 #include <cstring>
 #include <deque>
 #include <thread>
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
 namespace iss::timeline {
 const bool enabled=[] {const char* p=std::getenv("ISS_TIMELINE");return p&&p[0]=='1';}();
 namespace {
 u64 ThreadId(){
-#ifdef _WIN32
-    return GetCurrentThreadId();
-#else
     return std::hash<std::thread::id>{}(std::this_thread::get_id());
-#endif
 }
 struct Event {
     const char* event{};
@@ -81,9 +68,6 @@ struct Capture {
         while(!kept.empty()&&kept.front().ns+keep_ns<e.ns)kept.pop_front();
     }
     void WriteLoop(){
-#ifdef _WIN32
-        SetThreadDescription(GetCurrentThread(),L"ISS:TimelineWriter");
-#endif
         std::array<Event,2048> batch;
         u64 health=0;
         // ISS_TIMELINE_START_FRAME=N: events of earlier guest frames are dropped (a full trace of

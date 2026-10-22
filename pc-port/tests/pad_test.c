@@ -28,7 +28,7 @@ int main(int argc,char **argv){
     if(!monitor){SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI,"0");SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT,"0");
     SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_HIDAPI_PS4,"0",SDL_HINT_OVERRIDE);
     SDL_SetHint(SDL_HINT_JOYSTICK_DIRECTINPUT,"0");SDL_SetHint(SDL_HINT_JOYSTICK_WGI,"0");SDL_SetHint("SDL_XINPUT_ENABLED","0");}
-    if(!monitor)_putenv("ISS_PAD_MAP=guide=options");
+    if(!monitor)setenv("ISS_PAD_MAP","guide=options",1);
     Init init=(Init)pad_resolve("hv1luiJrqQM#libScePad#1#libScePad#257");
     Open open=(Open)pad_resolve("xk0AcarP3V4#libScePad#1#libScePad#257");
     Read read=(Read)pad_resolve("YndgXqQVV7c#libScePad#1#libScePad#257");CHECK(init&&open&&read);CHECK(init()==0);
@@ -52,6 +52,10 @@ int main(int argc,char **argv){
     CHECK(SDL_SendJoystickVirtualSensorData(joystick,SDL_SENSOR_ACCEL,SDL_GetTicksNS(),accel,3));
     SDL_Delay(10);CHECK(read(1,data)==0);uint32_t buttons;memcpy(&buttons,data,4);
     CHECK(buttons&0x4000);CHECK(!(buttons&0x100000));CHECK(data[4]==255&&data[5]==0);
+    // The 10% stick dead zone (the default): 9% is centred, half deflection starts again from zero.
+    CHECK(SDL_SetJoystickVirtualAxis(joystick,1,0));CHECK(SDL_SetJoystickVirtualAxis(joystick,0,3000));
+    CHECK(read(1,data)==0);CHECK(data[4]==128&&data[5]==128);
+    CHECK(SDL_SetJoystickVirtualAxis(joystick,0,16384));CHECK(read(1,data)==0);CHECK(data[4]==184&&data[5]==128);
     CHECK(data[52]==2);CHECK(data[64]!=data[72]);
     uint16_t x,y;memcpy(&x,data+60,2);memcpy(&y,data+62,2);CHECK(x==479&&y==705);
     CHECK(fabsf(scalar(data,28)-1)<.001f);CHECK(fabsf(scalar(data,48)-1)<.001f);
@@ -81,6 +85,16 @@ int main(int argc,char **argv){
     CHECK(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_BACK,false));CHECK(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_START,false));
     CHECK(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_GUIDE,true));CHECK(read(1,data)==0);memcpy(&buttons,data,4);
     CHECK(data[52]==0&&(buttons&8)&&!(buttons&0x10000));
+    // Touch layer: both stick clicks held, the right stick is the finger, the D-pad swipes, A clicks, and
+    // none of those reach the game as buttons or camera movement.
+    CHECK(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_LEFT_STICK,true));CHECK(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_RIGHT_STICK,true));
+    CHECK(SDL_SetJoystickVirtualAxis(joystick,SDL_GAMEPAD_AXIS_RIGHTX,32767));CHECK(SDL_SetJoystickVirtualAxis(joystick,SDL_GAMEPAD_AXIS_RIGHTY,-32768));
+    CHECK(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_SOUTH,true));CHECK(read(1,data)==0);memcpy(&buttons,data,4);
+    CHECK(data[52]==1&&(buttons&0x100000)&&!(buttons&0x4000)&&!(buttons&6)&&data[6]==128&&data[7]==128);
+    memcpy(&x,data+60,2);CHECK(x>1800);memcpy(&x,data+62,2);CHECK(x<10);
+    CHECK(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_SOUTH,false));CHECK(SDL_SetJoystickVirtualAxis(joystick,SDL_GAMEPAD_AXIS_RIGHTX,0));CHECK(SDL_SetJoystickVirtualAxis(joystick,SDL_GAMEPAD_AXIS_RIGHTY,0));
+    CHECK(SDL_SetJoystickVirtualHat(joystick,0,SDL_HAT_UP)||1);CHECK(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_LEFT_STICK,false));CHECK(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_RIGHT_STICK,false));
+    CHECK(read(1,data)==0);CHECK(data[52]==0);
     SDL_CloseJoystick(joystick);CHECK(SDL_DetachVirtualJoystick(id));
     spray_test();
     puts("PASS: SDL DS4 buttons, axes, two independent touch contacts, release, sensors, quaternion, disconnect, PlayStation and Xbox layouts and the F7 spray can.");

@@ -3,18 +3,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "content_profile.h"
 typedef struct { const void *buffer; uint32_t size,reserved; } PlayGoInit;
 typedef struct { uint16_t chunk; int8_t locus,reserved; } ToDo;
 typedef struct { uint64_t completed,total; } Progress;
-static SRWLOCK lock=SRWLOCK_INIT;
+static HostLock lock=HOST_LOCK_INIT;
 static int loaded_playgo,playgo_initialized,playgo_opened,install_speed=1;
-static volatile LONG loaded_modules[256];
+static volatile int32_t loaded_modules[256];
 static uint64_t speed_timestamp;
 static uint64_t playgo_language_mask;
 static int32_t GUEST_ABI pg_language(uint32_t h,uint64_t mask){
     if(h!=1||!playgo_opened)return (int32_t)UINT32_C(0x80b20009);
-    AcquireSRWLockExclusive(&lock);playgo_language_mask=mask;ReleaseSRWLockExclusive(&lock);return 0;
+    host_lock(&lock);playgo_language_mask=mask;host_unlock(&lock);return 0;
 }
 static int local_user_initialized,login_pending;
 static int content_initialized;
@@ -25,8 +24,8 @@ static int32_t GUEST_ABI content_init(const unsigned char *init,unsigned char *b
 }
 // Add-on content: the game's DLC are entitlement-only packages (its costumes and the Cole's Legacy
 // mission ship in the base game; a license unlocks them). ISS_ADDCONT_LABELS="LABEL,LABEL,..." (the
-// launcher reads them from the user's .pkg files, content id EP9000-CUSA00004_00-<label>) are
-// reported owned; any other label has no entitlement. The base game folder is never touched.
+// labels of the user's .pkg files, content id EP9000-CUSA00004_00-<label>; set it in the environment or
+// under [developer] in settings.toml) are reported owned; any other label has no entitlement. The base game folder is never touched.
 static int32_t GUEST_ABI content_addon(uint32_t service,const void *label,void *info){
     if(!content_initialized||service||!label||!info)return (int32_t)UINT32_C(0x80d90002);
     char want[17];memcpy(want,label,16);want[16]=0;
@@ -53,18 +52,18 @@ static void GUEST_ABI netctl_term(void){net_control_initialized=0;memset(net_cal
 static int32_t GUEST_ABI netctl_state(int *out){if(!out)return (int32_t)UINT32_C(0x80412107);*out=0;return 0;}
 static int32_t GUEST_ABI netctl_info(int code,void *out){if(code<1||code>22||!out)return (int32_t)UINT32_C(0x80412107);return (int32_t)UINT32_C(0x80412108);}
 static int32_t GUEST_ABI netctl_register(NetCallback fn,void *data,int *id){
-    if(!fn||!id)return (int32_t)UINT32_C(0x80412107);AcquireSRWLockExclusive(&lock);
-    for(int i=0;i<8;++i)if(!net_callbacks[i].fn){net_callbacks[i].fn=fn;net_callbacks[i].data=data;*id=i+1;ReleaseSRWLockExclusive(&lock);return 0;}
-    ReleaseSRWLockExclusive(&lock);return (int32_t)UINT32_C(0x80412105);
+    if(!fn||!id)return (int32_t)UINT32_C(0x80412107);host_lock(&lock);
+    for(int i=0;i<8;++i)if(!net_callbacks[i].fn){net_callbacks[i].fn=fn;net_callbacks[i].data=data;*id=i+1;host_unlock(&lock);return 0;}
+    host_unlock(&lock);return (int32_t)UINT32_C(0x80412105);
 }
-static int32_t GUEST_ABI netctl_unregister(int id){if(id<1||id>8)return (int32_t)UINT32_C(0x80412107);AcquireSRWLockExclusive(&lock);net_callbacks[id-1].fn=NULL;ReleaseSRWLockExclusive(&lock);return 0;}
+static int32_t GUEST_ABI netctl_unregister(int id){if(id<1||id>8)return (int32_t)UINT32_C(0x80412107);host_lock(&lock);net_callbacks[id-1].fn=NULL;host_unlock(&lock);return 0;}
 static int32_t GUEST_ABI user_initialize(const void *p){(void)p;local_user_initialized=1;login_pending=1;return 0;}
 static int32_t GUEST_ABI user_terminate(void){local_user_initialized=login_pending=0;return 0;}
 static int32_t GUEST_ABI user_initial(int32_t *id){if(!id)return (int32_t)UINT32_C(0x80960005);if(!local_user_initialized)return (int32_t)UINT32_C(0x80960002);*id=1;return 0;}
 static int32_t GUEST_ABI user_list(int32_t *ids){if(!ids)return (int32_t)UINT32_C(0x80960005);ids[0]=1;ids[1]=ids[2]=ids[3]=-1;return 0;}
-static int32_t GUEST_ABI user_event(int32_t *e){if(!e)return (int32_t)UINT32_C(0x80960005);if(!InterlockedExchange((volatile LONG *)&login_pending,0))return (int32_t)UINT32_C(0x80960007);e[0]=0;e[1]=1;return 0;}
+static int32_t GUEST_ABI user_event(int32_t *e){if(!e)return (int32_t)UINT32_C(0x80960005);if(!__atomic_exchange_n((volatile int32_t *)&login_pending,0,__ATOMIC_SEQ_CST))return (int32_t)UINT32_C(0x80960007);e[0]=0;e[1]=1;return 0;}
 // The system language (SCE_SYSTEM_SERVICE_PARAM_ID_LANG): ISS_LANGUAGE=<PS4 language id, 0-30>,
-// set by the launcher from the languages of the CUSA00004 package; 17 when unset.
+// set by src/settings.c from `language` in settings.toml; 17 when unset.
 static int32_t system_language(void){
     const char *s=getenv("ISS_LANGUAGE");char *end;long id=s?strtol(s,&end,10):-1;
     return s&&*s&&!*end&&id>=0&&id<=30?(int32_t)id:17;
@@ -72,14 +71,14 @@ static int32_t system_language(void){
 static int32_t GUEST_ABI system_param(int id,int32_t *out){
     if(!out)return (int32_t)UINT32_C(0x80a10003);
     switch(id){case 1:*out=system_language();break;case 2:*out=1;break;case 3:*out=1;break;
-    case 4:{TIME_ZONE_INFORMATION tz;DWORD result=GetTimeZoneInformation(&tz);*out=-tz.Bias-(result==TIME_ZONE_ID_DAYLIGHT?tz.DaylightBias:tz.StandardBias);break;}
-    case 5:{TIME_ZONE_INFORMATION tz;*out=GetTimeZoneInformation(&tz)==TIME_ZONE_ID_DAYLIGHT;break;}
+    case 4:{time_t now=time(NULL);struct tm local;localtime_r(&now,&local);*out=(int32_t)(local.tm_gmtoff/60);break;}
+    case 5:{time_t now=time(NULL);struct tm local;localtime_r(&now,&local);*out=local.tm_isdst>0;break;}
     case 7:*out=0;break;case 1000:*out=1;break;default:return (int32_t)UINT32_C(0x80a10003);}return 0;
 }
 static int32_t GUEST_ABI system_status(void *p){if(!p)return (int32_t)UINT32_C(0x80a10003);memset(p,0,12);return 0;}
 static int32_t GUEST_ABI system_string(int id,char *out,uint64_t size){
     if(id!=6||!out||!size||size>UINT32_MAX)return (int32_t)UINT32_C(0x80a10003);
-    DWORD length=(DWORD)size;if(!GetComputerNameA(out,&length))return (int32_t)UINT32_C(0x80a10003);return 0;
+    if(gethostname(out,(size_t)size))return (int32_t)UINT32_C(0x80a10003);out[size-1]=0;return 0;
 }
 static int32_t GUEST_ABI system_event(void *p){if(!p)return (int32_t)UINT32_C(0x80a10003);return (int32_t)UINT32_C(0x80a10004);}
 static int32_t GUEST_ABI system_safe_area(float *ratio){if(!ratio)return (int32_t)UINT32_C(0x80a10003);*ratio=1.0f;return 0;}
@@ -97,21 +96,21 @@ static int32_t GUEST_ABI disc_hdd(const char *path,int64_t offset,int64_t bytes,
 static int32_t pg_error(unsigned n){return (int32_t)(UINT32_C(0x80b20000)|n);}
 static int32_t GUEST_ABI module_load(uint16_t id){
     if(!id)return (int32_t)UINT32_C(0x805a1000);
-    if(id==0x83&&LOCAL_PACKAGE_COMPLETE){loaded_playgo=1;InterlockedExchange(&loaded_modules[id],1);puts("Loaded PlayGo backend: local package manifest complete");return 0;}
-    if(id==0xa4){InterlockedExchange(&loaded_modules[id],1);puts("Loaded native Windows MsgDialog backend");return 0;}
-    if(id==0xd7){InterlockedExchange(&loaded_modules[id],1);puts("Loaded DiscMap backend for unpacked local files");return 0;}
-    if(id==0xa0){InterlockedExchange(&loaded_modules[id],1);puts("Loaded isolated SaveData backend");return 0;}
-    if(id==0xad){InterlockedExchange(&loaded_modules[id],1);puts("Loaded local trophy-state backend");return 0;}
-    if(id==0x8e&&gpu_resolve("qkgRiwHyheU#libSceVideodec#1#libSceVideodec#257")){InterlockedExchange(&loaded_modules[id],1);return 0;}
-    if(id==0xb4){InterlockedExchange(&loaded_modules[id],1);puts("Loaded base-game AppContent backend");return 0;}
+    if(id==0x83&&content_package_complete){loaded_playgo=1;__atomic_exchange_n(&loaded_modules[id],1,__ATOMIC_SEQ_CST);puts("Loaded PlayGo backend: local package manifest complete");return 0;}
+    if(id==0xa4){__atomic_exchange_n(&loaded_modules[id],1,__ATOMIC_SEQ_CST);puts("Loaded MsgDialog backend (SDL message box)");return 0;}
+    if(id==0xd7){__atomic_exchange_n(&loaded_modules[id],1,__ATOMIC_SEQ_CST);puts("Loaded DiscMap backend for unpacked local files");return 0;}
+    if(id==0xa0){__atomic_exchange_n(&loaded_modules[id],1,__ATOMIC_SEQ_CST);puts("Loaded isolated SaveData backend");return 0;}
+    if(id==0xad){__atomic_exchange_n(&loaded_modules[id],1,__ATOMIC_SEQ_CST);puts("Loaded local trophy-state backend");return 0;}
+    if(id==0x8e&&gpu_resolve("qkgRiwHyheU#libSceVideodec#1#libSceVideodec#257")){__atomic_exchange_n(&loaded_modules[id],1,__ATOMIC_SEQ_CST);return 0;}
+    if(id==0xb4){__atomic_exchange_n(&loaded_modules[id],1,__ATOMIC_SEQ_CST);puts("Loaded base-game AppContent backend");return 0;}
     printf("Module backend unavailable: id=0x%x\n",id);return (int32_t)UINT32_C(0x805a1001);
 }
-static int32_t GUEST_ABI module_loaded(uint16_t id){return id<256&&InterlockedCompareExchange(&loaded_modules[id],0,0)?0:(int32_t)UINT32_C(0x805a1001);}
+static int32_t GUEST_ABI module_loaded(uint16_t id){return id<256&&__atomic_load_n(&loaded_modules[id],__ATOMIC_SEQ_CST)?0:(int32_t)UINT32_C(0x805a1001);}
 static int32_t GUEST_ABI pg_initialize(const PlayGoInit *p){
     if(!p||!p->buffer)return pg_error(10);if(p->size<0x200000)return pg_error(11);
-    AcquireSRWLockExclusive(&lock);
-    int32_t r=playgo_initialized?pg_error(6):!LOCAL_PACKAGE_COMPLETE?pg_error(14):0;
-    if(!r)playgo_initialized=1;ReleaseSRWLockExclusive(&lock);return r;
+    host_lock(&lock);
+    int32_t r=playgo_initialized?pg_error(6):!content_package_complete?pg_error(14):0;
+    if(!r)playgo_initialized=1;host_unlock(&lock);return r;
 }
 static int32_t GUEST_ABI pg_open(uint32_t *out,const void *p){
     if(!out)return pg_error(10);if(p)return pg_error(4);if(!playgo_initialized)return pg_error(5);
@@ -122,7 +121,7 @@ static int32_t GUEST_ABI pg_terminate(void){playgo_opened=playgo_initialized=0;r
 static int32_t valid(uint32_t handle,const uint16_t *ids,uint32_t count){
     if(!playgo_initialized)return pg_error(5);if(handle!=1||!playgo_opened)return pg_error(9);
     if(!ids)return pg_error(10);if(!count)return pg_error(11);
-    for(uint32_t i=0;i<count;++i)if(ids[i]>=LOCAL_CHUNKS)return pg_error(12);return 0;
+    for(uint32_t i=0;i<count;++i)if(ids[i]>=content_chunk_count)return pg_error(12);return 0;
 }
 static int32_t GUEST_ABI pg_locus(uint32_t h,const uint16_t *ids,uint32_t count,int8_t *out){
     int32_t r=valid(h,ids,count);if(r)return r;if(!out)return pg_error(10);
@@ -130,7 +129,7 @@ static int32_t GUEST_ABI pg_locus(uint32_t h,const uint16_t *ids,uint32_t count,
 }
 static int32_t GUEST_ABI pg_progress(uint32_t h,const uint16_t *ids,uint32_t count,Progress *out){
     int32_t r=valid(h,ids,count);if(r)return r;if(!out)return pg_error(10);
-    out->completed=out->total=0;for(uint32_t i=0;i<count;++i)out->total+=chunk_sizes[ids[i]];
+    out->completed=out->total=0;for(uint32_t i=0;i<count;++i)out->total+=content_chunk_sizes[ids[i]];
     out->completed=out->total;return 0;
 }
 static int32_t GUEST_ABI pg_eta(uint32_t h,const uint16_t *ids,uint32_t count,int64_t *out){
@@ -142,17 +141,17 @@ static int32_t GUEST_ABI pg_todo(uint32_t h,ToDo *out,uint32_t count,uint32_t *e
 }
 static int32_t GUEST_ABI pg_set_todo(uint32_t h,const ToDo *list,uint32_t count){
     if(h!=1||!playgo_opened)return pg_error(9);if(!list&&count)return pg_error(10);
-    for(uint32_t i=0;i<count;++i){if(list[i].chunk>=LOCAL_CHUNKS)return pg_error(12);
+    for(uint32_t i=0;i<count;++i){if(list[i].chunk>=content_chunk_count)return pg_error(12);
         if(list[i].locus!=0&&list[i].locus!=2&&list[i].locus!=3)return pg_error(16);}return 0;
 }
 static int32_t GUEST_ABI pg_set_speed(uint32_t h,int speed){
     if(h!=1||!playgo_opened)return pg_error(9);if(speed<0||speed>2)return pg_error(13);
-    AcquireSRWLockExclusive(&lock);install_speed=speed;speed_timestamp=GetTickCount64();ReleaseSRWLockExclusive(&lock);return 0;
+    host_lock(&lock);install_speed=speed;speed_timestamp=host_monotonic_ms();host_unlock(&lock);return 0;
 }
 static int32_t GUEST_ABI pg_speed(uint32_t h,int *speed){
     if(h!=1||!playgo_opened)return pg_error(9);if(!speed)return pg_error(10);
-    AcquireSRWLockExclusive(&lock);if(!install_speed&&GetTickCount64()-speed_timestamp>30000)install_speed=1;
-    *speed=install_speed;ReleaseSRWLockExclusive(&lock);return 0;
+    host_lock(&lock);if(!install_speed&&host_monotonic_ms()-speed_timestamp>30000)install_speed=1;
+    *speed=install_speed;host_unlock(&lock);return 0;
 }
 uintptr_t service_resolve(const char *identity){
     if(!strcmp(identity,"fJgP+wqifno#libSceDiscMap#1#libSceDiscMap#257"))return (uintptr_t)disc_local_hint;

@@ -1258,7 +1258,7 @@ void NoteDivergence(const Segment& s, const u32* reg_array) {
 
 
 // The command processor's command buffer whose jobs it waits for one by one (JOB_WAIT).
-thread_local const u32* next_job_boundary = reinterpret_cast<const u32*>(~std::uintptr_t{0});
+thread_local std::uintptr_t next_job_boundary = ~std::uintptr_t{0};
 namespace {
 thread_local std::shared_ptr<DcbWork> cp_work;
 thread_local u32 cp_next_job = 0;
@@ -1280,8 +1280,8 @@ void WaitJob(std::unique_lock<std::mutex>& lock, DcbWork& work, u32 k) {
 }
 void SetBoundary() {
     next_job_boundary = cp_work && cp_next_job < cp_work->job_begins.size()
-                            ? cp_work->job_begins[cp_next_job]
-                            : reinterpret_cast<const u32*>(~std::uintptr_t{0});
+                            ? reinterpret_cast<std::uintptr_t>(cp_work->job_begins[cp_next_job])
+                            : ~std::uintptr_t{0};
 }
 } // namespace
 
