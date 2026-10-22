@@ -9,6 +9,7 @@ from collections import Counter
 import csv
 import hashlib
 import json
+import os
 from pathlib import Path
 import struct
 
@@ -146,6 +147,12 @@ def build_linked(modules):
                                          tls_memsz=row[5], tls_align=row[6], tls_id=row[7])
                                     for m, row in zip(modules, metadata)]), rows
 
+def has_sse4a():
+    try:
+        return any(l.startswith('flags') and ' sse4a' in l for l in open('/proc/cpuinfo'))
+    except OSError:
+        return True
+
 def link(game, out):
     out = out.resolve()
     out.relative_to(ROOT.resolve())
@@ -156,6 +163,9 @@ def link(game, out):
     if modules[0]['sha256'] != EXPECTED_EBOOT:
         raise ValueError('unsupported eboot identity')
     raw, report, rows = build_linked(modules)
+    if os.environ.get('ISS_SSE4A_FIX') == '1' or (os.environ.get('ISS_SSE4A_FIX') != '0' and not has_sse4a()):
+        from sse4a_fix import patch_linked_image
+        raw, report['sse4a_extrq_rewritten'] = patch_linked_image(raw)
     out.mkdir(parents=True, exist_ok=True)
     (out / 'boot-linked.bin').write_bytes(raw)
     report.update(sha256=hashlib.sha256(raw).hexdigest(),
