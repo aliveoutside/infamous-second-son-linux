@@ -21,4 +21,4 @@ launcher: build
 pgo:
     rm -f pgo/*.gcda
     scripts/linux/container.sh scripts/linux/container-build.sh build-pgo -DISS_PGO=generate
-    ISS_BUILD=build-pgo scripts/linux/play.sh
+    ISS_BUILD=build-pgo ISS_USER_DIR="$PWD/build/user" scripts/linux/play.sh  # the saves of build/
