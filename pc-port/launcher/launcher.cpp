@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <sstream>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -123,6 +124,18 @@ bool Save() {
 // ---------------------------------------------------------------------------------------------
 pid_t g_game = -1;
 
+// MangoHud is optional: the option only shows (and applies) when the binary is on PATH.
+bool HaveMangoHud() {
+    static const bool found = [] {
+        const char *path = getenv("PATH");
+        std::stringstream dirs(path ? path : "");
+        for (std::string dir; std::getline(dirs, dir, ':');)
+            if (!dir.empty() && !access((dir + "/mangohud").c_str(), X_OK)) return true;
+        return false;
+    }();
+    return found;
+}
+
 void Play(SDL_Window *window) {
     if (!Save()) return;
     const fs::path script = g_root / "scripts" / "linux" / "play.sh";
@@ -136,7 +149,9 @@ void Play(SDL_Window *window) {
     fs::rename(LogFile(), LogFile().parent_path() / "game.prev.log", ignored);
     const fs::path log = LogFile();
     setenv("ISS_GAME_DIR", GameDir().c_str(), 1);  // play.sh prepares this folder when needed
-    g_game = Spawn({script.string()}, &log);
+    std::vector<std::string> command = {script.string()};
+    if (!std::strcmp(Value("mangohud"), "on") && HaveMangoHud()) command.insert(command.begin(), "mangohud");
+    g_game = Spawn(command, &log);
     if (g_game < 0) { Status("Could not start " + script.string(), true); return; }
     SDL_HideWindow(window);
 }
@@ -313,6 +328,7 @@ void DisplayTab() {
           {{"Unlimited", "0"}, {"30", "30"}, {"40", "40"}, {"50", "50"}, {"60", "60"}, {"75", "75"}, {"90", "90"},
            {"100", "100"}, {"120", "120"}, {"144", "144"}, {"165", "165"}, {"240", "240"}});
     Combo("Upscaling (FSR 1)", "fsr", kOnOff);
+    if (HaveMangoHud()) Combo("MangoHud", "mangohud", kOnOff);
     ImGui::EndTable();
 }
 

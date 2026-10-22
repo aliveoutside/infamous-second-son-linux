@@ -82,6 +82,7 @@ const Setting settings_entries[] = {
     {"vsync", "BB_PRESENT_MODE", "mailbox", "on, off (lowest latency, tears) or mailbox.", vsync_choices},
     {"fps_limit", "BB_FPS_LIMIT", "60", "Frame rate limit, 0 = unlimited.", NULL},
     {"fsr", "BB_FSR1", "off", "FSR 1 upscaling to windows larger than the render size: on or off.", on_off},
+    {"mangohud", "ISS_MANGOHUD", "off", "on: the launcher starts the game under MangoHud (if installed).", on_off},
     {"fov", "ISS_FOV", "100", "Field of view in percent of the game's (50 to 200).", NULL},
     {"hud_width", "ISS_HUD_ASPECT", "16:9", "HUD edges on screens wider than 16:9: 16:9, 21:9 or full.", hud_choices},
     {"language", "ISS_LANGUAGE", "english",

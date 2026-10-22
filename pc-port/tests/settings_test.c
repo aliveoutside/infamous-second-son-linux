@@ -31,6 +31,9 @@ int main(void) {
     CHECK(settings_valid(fov, "110") && !settings_valid(fov, "20") && !settings_valid(fov, "abc"));
     CHECK(settings_valid(resolution, "2560x1080") && !settings_valid(resolution, "100x100"));
     CHECK(settings_valid(hud, "21:9") && !settings_valid(hud, "4:3"));
+    const int mango = index_of("mangohud");
+    CHECK(mango >= 0 && !strcmp(values[mango], "off"));
+    CHECK(settings_valid(mango, "on") && !settings_valid(mango, "yes"));
     const int dead = index_of("deadzone_left"), dead_right = index_of("deadzone_right");
     CHECK(dead >= 0 && !strcmp(values[dead], "10") && dead_right >= 0 && !strcmp(values[dead_right], "10"));
     CHECK(settings_valid(dead, "0") && settings_valid(dead, "50") && !settings_valid(dead, "51") && !settings_valid(dead, "-1"));

@@ -13,6 +13,7 @@ defaults back.
 | `vsync` | `mailbox` | `on`, `off`, `mailbox` |
 | `fps_limit` | `60` | `0` = unlimited |
 | `fsr` | `off` | FSR 1 upscaling: `on`, `off` |
+| `mangohud` | `off` | Launcher only: run the game under MangoHud, if installed |
 | `fov` | `100` | 50 to 200, percent of the game's |
 | `hud_width` | `16:9` | `16:9`, `21:9`, `full` |
 | `language` | `english` | english, french, italian, german, spanish, dutch, portuguese, russian, polish, turkish; danish, finnish, norwegian, swedish (subtitles only) |
