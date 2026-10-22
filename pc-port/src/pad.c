@@ -80,10 +80,11 @@ static const char *const touch_key_names[K_COUNT]={"touch_left","touch_right","t
 static SDL_Scancode touch_keys[K_COUNT]={SDL_SCANCODE_SPACE,SDL_SCANCODE_BACKSPACE,SDL_SCANCODE_F8,SDL_SCANCODE_T,SDL_SCANCODE_1,
     SDL_SCANCODE_2,SDL_SCANCODE_3,SDL_SCANCODE_4,SDL_SCANCODE_F6,SDL_SCANCODE_F7,SDL_SCANCODE_F5};
 static int pad_swipe=-1,source_was[SRC_COUNT];
-// The sticks' dead zone (`deadzone` in settings.toml, ISS_PAD_DEADZONE: percent of full deflection,
-// default 10): radial, and the rest of the range is stretched so the output still starts at zero.
-static float stick_dead=0.10f;
-static void stick(int ax,int ay,uint8_t *ox,uint8_t *oy){
+// Each stick's dead zone (`deadzone_left`, `deadzone_right` in settings.toml, ISS_PAD_DEADZONE_LEFT/
+// _RIGHT: percent of full deflection, default 10): radial, and the rest of the range is stretched so
+// the output still starts at zero.
+static float stick_dead_left=0.10f,stick_dead_right=0.10f;
+static void stick(int ax,int ay,float stick_dead,uint8_t *ox,uint8_t *oy){
     float x=ax/32767.f,y=ay/32767.f;const float m=sqrtf(x*x+y*y);
     if(m<=stick_dead){*ox=*oy=128;return;}
     // Each axis is clamped on its own afterwards: a corner still reaches full deflection on both.
@@ -91,8 +92,10 @@ static void stick(int ax,int ay,uint8_t *ox,uint8_t *oy){
     *ox=(uint8_t)lrintf(fminf(fmaxf(x*127.5f+127.5f,0),255));*oy=(uint8_t)lrintf(fminf(fmaxf(y*127.5f+127.5f,0),255));
 }
 static void load_controls(void){
-    const char *dead=getenv("ISS_PAD_DEADZONE");
-    if(dead&&*dead){const float d=(float)atof(dead)/100;stick_dead=d>=0&&d<=0.5f?d:0.10f;}
+    static const char *const dead_names[2]={"ISS_PAD_DEADZONE_LEFT","ISS_PAD_DEADZONE_RIGHT"};
+    float *const dead_values[2]={&stick_dead_left,&stick_dead_right};
+    for(int i=0;i<2;++i){const char *dead=getenv(dead_names[i]);
+        if(dead&&*dead){const float d=(float)atof(dead)/100;*dead_values[i]=d>=0&&d<=0.5f?d:0.10f;}}
     const char *s=getenv("ISS_PAD_MAP");
     while(s&&*s){char item[64];size_t n=strcspn(s,",");if(n>=sizeof(item))n=sizeof(item)-1;memcpy(item,s,n);item[n]=0;s+=n;if(*s==',')++s;
         char *v=strchr(item,'=');if(!v)continue;*v++=0;
@@ -140,8 +143,8 @@ static int read_sdl(PadData *out,int contacts[2],uint16_t xy[2][2]){
         SDL_GAMEPAD_BUTTON_INVALID,SDL_GAMEPAD_BUTTON_LEFT_STICK,SDL_GAMEPAD_BUTTON_RIGHT_STICK,SDL_GAMEPAD_BUTTON_BACK,
         SDL_GAMEPAD_BUTTON_START,SDL_GAMEPAD_BUTTON_GUIDE,SDL_GAMEPAD_BUTTON_MISC1,SDL_GAMEPAD_BUTTON_DPAD_UP,
         SDL_GAMEPAD_BUTTON_DPAD_DOWN,SDL_GAMEPAD_BUTTON_DPAD_LEFT,SDL_GAMEPAD_BUTTON_DPAD_RIGHT};
-    stick(SDL_GetGamepadAxis(sdl_pad,SDL_GAMEPAD_AXIS_LEFTX),SDL_GetGamepadAxis(sdl_pad,SDL_GAMEPAD_AXIS_LEFTY),&out->lx,&out->ly);
-    stick(SDL_GetGamepadAxis(sdl_pad,SDL_GAMEPAD_AXIS_RIGHTX),SDL_GetGamepadAxis(sdl_pad,SDL_GAMEPAD_AXIS_RIGHTY),&out->rx,&out->ry);
+    stick(SDL_GetGamepadAxis(sdl_pad,SDL_GAMEPAD_AXIS_LEFTX),SDL_GetGamepadAxis(sdl_pad,SDL_GAMEPAD_AXIS_LEFTY),stick_dead_left,&out->lx,&out->ly);
+    stick(SDL_GetGamepadAxis(sdl_pad,SDL_GAMEPAD_AXIS_RIGHTX),SDL_GetGamepadAxis(sdl_pad,SDL_GAMEPAD_AXIS_RIGHTY),stick_dead_right,&out->rx,&out->ry);
     int l=SDL_GetGamepadAxis(sdl_pad,SDL_GAMEPAD_AXIS_LEFT_TRIGGER),r=SDL_GetGamepadAxis(sdl_pad,SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
     const uint8_t lt=(uint8_t)(l>0?l*255/32767:0),rt=(uint8_t)(r>0?r*255/32767:0);
     int pressed[SRC_COUNT];

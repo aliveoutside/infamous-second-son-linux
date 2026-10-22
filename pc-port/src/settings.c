@@ -98,8 +98,10 @@ const Setting settings_entries[] = {
      "on: every compute shader of the game is compiled ahead of time, in the background while "
      "playing (the first start indexes the game files). off: compiled when first used.",
      precompile_choices},
-    {"deadzone", "ISS_PAD_DEADZONE", "10",
-     "Controller stick dead zone in percent of full deflection (0 to 50).", NULL},
+    {"deadzone_left", "ISS_PAD_DEADZONE_LEFT", "10",
+     "Left stick dead zone in percent of full deflection (0 to 50).", NULL},
+    {"deadzone_right", "ISS_PAD_DEADZONE_RIGHT", "10",
+     "Right stick dead zone in percent of full deflection (0 to 50).", NULL},
     {"pad_map", "ISS_PAD_MAP", "",
      "Controller layout for pads without a touchpad, e.g. \"view=touch_left,menu=touch_right\". "
      "Empty: the default.", NULL},
@@ -150,11 +152,11 @@ static int check_value(const Setting *s, const char *value) {
         char extra;
         return sscanf(value, "%ux%u%c", &w, &h, &extra) == 2 && w >= 640 && h >= 360 && w <= 7680 && h <= 4320;
     }
-    if (!strcmp(s->key, "fps_limit") || !strcmp(s->key, "fov") || !strcmp(s->key, "deadzone")) {
+    if (!strcmp(s->key, "fps_limit") || !strcmp(s->key, "fov") || !strncmp(s->key, "deadzone", 8)) {
         char *end;
         const long n = strtol(value, &end, 10);
         if (*end || !*value) return 0;
-        if (!strcmp(s->key, "deadzone")) return n >= 0 && n <= 50;
+        if (!strncmp(s->key, "deadzone", 8)) return n >= 0 && n <= 50;
         return !strcmp(s->key, "fov") ? n >= 50 && n <= 200 : n >= 0 && n <= 1000;
     }
     return 1;

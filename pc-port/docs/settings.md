@@ -19,7 +19,8 @@ defaults back.
 | `gpu_memory` | `video` | `video`, `in_place` (much slower on NVIDIA) |
 | `shaders` | `wait` | `wait`, `parallel` (more compiler threads), `skip` (draws of compiling pipelines skipped) |
 | `shader_precompile` | `off` | `on`: compute shaders compiled ahead of time in the background, `off` |
-| `deadzone` | `10` | Stick dead zone, 0 to 50 percent |
+| `deadzone_left` | `10` | Left stick dead zone, 0 to 50 percent |
+| `deadzone_right` | `10` | Right stick dead zone, 0 to 50 percent |
 | `pad_map` | | Controller layout for pads without a touchpad |
 
 ## Launcher

@@ -22,6 +22,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -264,7 +265,7 @@ void Style(float scale) {
 struct Choice { const char *label, *value; };
 
 // A setting with fixed choices. A file value that is none of them is shown (and kept) as is.
-void Combo(const char *label, const char *key, const std::vector<Choice> &choices, const char *hint) {
+void Combo(const char *label, const char *key, const std::vector<Choice> &choices) {
     char *value = Value(key);
     const Choice *current = nullptr;
     for (const auto &c : choices)
@@ -286,7 +287,6 @@ void Combo(const char *label, const char *key, const std::vector<Choice> &choice
         ImGui::EndCombo();
     }
     ImGui::PopID();
-    if (hint) { ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled)); ImGui::TextWrapped("%s", hint); ImGui::PopStyleColor(); }
 }
 
 bool BeginForm(const char *id) {
@@ -302,24 +302,17 @@ void Label(const char *label) {
     ImGui::TextUnformatted(label);
     ImGui::TableNextColumn();
 }
-void Hint(const char *text) {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-    ImGui::TextWrapped("%s", text);
-    ImGui::PopStyleColor();
-}
 
 const std::vector<Choice> kOnOff = {{"Off", "off"}, {"On", "on"}};
 
 void DisplayTab() {
     if (!BeginForm("display")) return;
-    Combo("Window", "fullscreen", {{"Windowed", "off"}, {"Fullscreen", "on"}}, "Alt+Enter also switches in game.");
-    Combo("VSync", "vsync", {{"Mailbox", "mailbox"}, {"On", "on"}, {"Off", "off"}},
-          "Mailbox: no tearing, low latency. Off: lowest latency, tears.");
+    Combo("Window", "fullscreen", {{"Windowed", "off"}, {"Fullscreen", "on"}});
+    Combo("VSync", "vsync", {{"Mailbox", "mailbox"}, {"On", "on"}, {"Off", "off"}});
     Combo("Frame rate limit", "fps_limit",
           {{"Unlimited", "0"}, {"30", "30"}, {"40", "40"}, {"50", "50"}, {"60", "60"}, {"75", "75"}, {"90", "90"},
-           {"100", "100"}, {"120", "120"}, {"144", "144"}, {"165", "165"}, {"240", "240"}},
-          "Above your monitor's refresh rate it needs VSync Off.");
-    Combo("Upscaling (FSR 1)", "fsr", kOnOff, "Upscales the picture to windows larger than the resolution.");
+           {"100", "100"}, {"120", "120"}, {"144", "144"}, {"165", "165"}, {"240", "240"}});
+    Combo("Upscaling (FSR 1)", "fsr", kOnOff);
     ImGui::EndTable();
 }
 
@@ -370,24 +363,17 @@ void GraphicsTab() {
             ImGui::TextColored({1, 0.4f, 0.4f, 1}, "640x360 to 7680x4320");
         }
     }
-    Hint("Wider than 16:9 shows more to the sides. Sizes are rounded down to multiples of 8.");
 
     Label("Field of view");
     int fov = std::atoi(Value("fov"));
     if (fov < 50 || fov > 200) fov = 100;
     ImGui::SetNextItemWidth(-FLT_MIN);
     if (ImGui::SliderInt("##fov", &fov, 50, 200, "%d%%")) Set("fov", std::to_string(fov / 5 * 5));
-    Hint("100%: the game's own. Higher shows more around the camera. Ctrl+click to type.");
 
-    Combo("HUD width", "hud_width", {{"16:9", "16:9"}, {"21:9", "21:9"}, {"Full width", "full"}},
-          "Where the HUD edges sit on screens wider than 16:9.");
-    Combo("GPU memory", "gpu_memory", {{"Video memory", "video"}, {"In place", "in_place"}},
-          "In place reads the game's memory directly: much slower on NVIDIA.");
-    Combo("New shaders", "shaders", {{"Wait", "wait"}, {"Parallel", "parallel"}, {"Skip draws", "skip"}},
-          "Wait: a new shader stops the frame. Parallel: compiled on more threads. "
-          "Skip draws: no stutter, objects may pop in for a moment.");
-    Combo("Precompile shaders", "shader_precompile", {{"Off", "off"}, {"On", "on"}},
-          "Compiles every compute shader ahead of time in the background (the first start indexes the game files).");
+    Combo("HUD width", "hud_width", {{"16:9", "16:9"}, {"21:9", "21:9"}, {"Full width", "full"}});
+    Combo("GPU memory", "gpu_memory", {{"Video memory", "video"}, {"In place", "in_place"}});
+    Combo("New shaders", "shaders", {{"Wait", "wait"}, {"Parallel", "parallel"}, {"Skip draws", "skip"}});
+    Combo("Precompile shaders", "shader_precompile", {{"Off", "off"}, {"On", "on"}});
     ImGui::EndTable();
 }
 
@@ -398,8 +384,7 @@ void GameTab() {
            {"Spanish", "spanish"}, {"Dutch", "dutch"}, {"Portuguese", "portuguese"}, {"Russian", "russian"},
            {"Polish", "polish"}, {"Turkish", "turkish"}, {"Danish (subtitles)", "danish"},
            {"Finnish (subtitles)", "finnish"}, {"Norwegian (subtitles)", "norwegian"},
-           {"Swedish (subtitles)", "swedish"}},
-          "Text and voices. Danish, Finnish, Norwegian and Swedish: subtitles only, English voices.");
+           {"Swedish (subtitles)", "swedish"}});
     ImGui::EndTable();
 }
 
@@ -446,18 +431,58 @@ std::string FormatMap(const int *map) {
     return out;
 }
 
+// The first connected gamepad, opened on demand and dropped when it goes away.
+SDL_Gamepad *Gamepad() {
+    static SDL_Gamepad *pad = nullptr;
+    if (pad && !SDL_GamepadConnected(pad)) { SDL_CloseGamepad(pad); pad = nullptr; }
+    if (!pad) {
+        int count = 0;
+        if (SDL_JoystickID *ids = SDL_GetGamepads(&count)) {
+            if (count > 0) pad = SDL_OpenGamepad(ids[0]);
+            SDL_free(ids);
+        }
+    }
+    return pad;
+}
+
+// A dead zone slider with the stick's travel beside it: the ring is the full deflection, the red
+// disc what the game ignores, the dot where the connected controller's stick is now.
+void StickDeadZone(const char *label, const char *key, SDL_GamepadAxis axis_x, SDL_GamepadAxis axis_y) {
+    Label(label);
+    int dead = std::atoi(Value(key));
+    if (dead < 0 || dead > 50) dead = 10;
+    const float size = ImGui::GetFontSize() * 5;
+    ImGui::SetNextItemWidth(-(size + ImGui::GetStyle().ItemSpacing.x));
+    ImGui::PushID(key);
+    if (ImGui::SliderInt("##dead", &dead, 0, 50, "%d%%")) Set(key, std::to_string(dead));
+    ImGui::PopID();
+    ImGui::SameLine();
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const ImVec2 centre = {origin.x + size / 2, origin.y + size / 2};
+    const float radius = size / 2 - 2;
+    ImDrawList *draw = ImGui::GetWindowDrawList();
+    draw->AddCircleFilled(centre, radius, IM_COL32(255, 255, 255, 14), 64);
+    draw->AddCircleFilled(centre, radius * dead / 100.0f, IM_COL32(204, 41, 51, 150), 48);
+    draw->AddCircle(centre, radius, IM_COL32(255, 255, 255, 110), 64, 1.5f);
+    draw->AddLine({centre.x - radius, centre.y}, {centre.x + radius, centre.y}, IM_COL32(255, 255, 255, 30));
+    draw->AddLine({centre.x, centre.y - radius}, {centre.x, centre.y + radius}, IM_COL32(255, 255, 255, 30));
+    if (SDL_Gamepad *pad = Gamepad()) {
+        float x = SDL_GetGamepadAxis(pad, axis_x) / 32767.0f, y = SDL_GetGamepadAxis(pad, axis_y) / 32767.0f;
+        const float m = std::sqrt(x * x + y * y);
+        if (m > 1) { x /= m; y /= m; }
+        const bool outside = m > dead / 100.0f;
+        draw->AddCircleFilled({centre.x + x * radius, centre.y + y * radius}, 4,
+                              outside ? IM_COL32(90, 220, 120, 255) : IM_COL32(255, 255, 255, 220), 16);
+    }
+    ImGui::Dummy({size, size});
+}
+
 void ControlsTab() {
-    Hint("Controllers without a touchpad (Xbox and others). PlayStation controllers keep their own layout. "
-         "Keyboard: Space / Backspace press the touchpad sides, 1 to 4 swipe.");
     int map[kSourceCount];
     ParseMap(Value("pad_map"), map);
     if (!BeginForm("controls")) return;
-    Label("Stick dead zone");
-    int dead = std::atoi(Value("deadzone"));
-    if (dead < 0 || dead > 50) dead = 10;
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    if (ImGui::SliderInt("##deadzone", &dead, 0, 50, "%d%%")) Set("deadzone", std::to_string(dead));
-    Hint("Stick movement below this is ignored; raise it if the camera or Delsin drifts. All controllers.");
+    StickDeadZone("Left stick dead zone", "deadzone_left", SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY);
+    StickDeadZone("Right stick dead zone", "deadzone_right", SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY);
     bool changed = false;
     for (int i = 0; i < kSourceCount; ++i) {
         Label(kSources[i].label);
@@ -539,7 +564,6 @@ void FoldersTab(SDL_Window *window) {
         FolderField(window, "Save folder", "save_dir", saves.c_str());
         ImGui::EndTable();
     }
-    Hint("Empty fields use the folder shown in grey. A new game folder may need scripts/linux/setup.sh once.");
     ImGui::Spacing();
     if (ImGui::Button("Open saves")) Open(SaveDir());
     ImGui::SameLine();
@@ -564,9 +588,6 @@ void Frame(SDL_Window *window, SDL_Renderer *renderer) {
     ImGui::PushFont(g_title, kHeading * 2.2f);
     ImGui::TextUnformatted("inFAMOUS SECOND SON");
     ImGui::PopFont();
-    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-    ImGui::TextUnformatted("PC port for Linux");
-    ImGui::PopStyleColor();
     ImGui::Spacing();
 
     const float footer = ImGui::GetFrameHeightWithSpacing() * 2.2f + ImGui::GetTextLineHeightWithSpacing();
@@ -595,7 +616,6 @@ void Frame(SDL_Window *window, SDL_Renderer *renderer) {
     ImGui::Separator();
     ImGui::PushFont(g_body, kBody);
     if (!g_status.empty()) ImGui::TextColored(g_status_error ? ImVec4(1, 0.45f, 0.45f, 1) : ImVec4(0.7f, 0.9f, 0.7f, 1), "%s", g_status.c_str());
-    else ImGui::TextDisabled("%s", SettingsFile().c_str());
     ImGui::PopFont();
     const float play_w = ImGui::GetFontSize() * 9, play_h = ImGui::GetFrameHeight() * 1.6f;
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.80f, 0.16f, 0.20f, 1));
