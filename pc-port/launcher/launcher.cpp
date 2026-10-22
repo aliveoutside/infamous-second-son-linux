@@ -759,7 +759,7 @@ int main(int, char **) {
     SDL_SetHint(SDL_HINT_APP_ID, "iss-launcher");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) { std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError()); return 1; }
     const float scale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay()) > 0 ? SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay()) : 1;
-    SDL_Window *window = SDL_CreateWindow("inFAMOUS Second Son", int(1100 * scale), int(680 * scale),
+    SDL_Window *window = SDL_CreateWindow("inFAMOUS Second Son", int(860 * scale), int(680 * scale),
                                           SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN);
     SDL_Renderer *renderer = window ? SDL_CreateRenderer(window, nullptr) : nullptr;
     if (!renderer) { std::fprintf(stderr, "SDL window: %s\n", SDL_GetError()); return 1; }
