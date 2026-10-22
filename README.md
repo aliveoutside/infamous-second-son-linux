@@ -38,12 +38,19 @@ input and the spray can.
 
 | Key | Action |
 |---|---|
-| W A S D / I J K L | Left / right stick |
-| N B V C | Cross / Circle / Square / Triangle |
-| Q U / E O / X M | L1 R1 / L2 R2 / L3 R3 |
+| W A S D, mouse | Move, camera and aim |
+| Left / right / middle button | Fire (R2) / aim (L2) / R3 |
+| Space / Shift / F / E | Jump / power dash / melee / subdue and heal |
+| Q / R | L1 / R1: the current power's moves |
+| Ctrl / M | L3 / R3 |
+| Arrows | D-pad |
 | Esc | Options |
-| Space, Backspace | Touchpad left, right |
+| F4 | Mouse aim on / off (`mouse_aim` setting) |
+| Z, X | Touchpad left, right |
 | F5 / F9 / Alt+Enter | Touchpad panel / FPS overlay / fullscreen |
+
+The mouse turns the camera directly, like in a PC shooter: no stick emulation, no acceleration.
+Details in [pc-port/docs/mouse-and-keyboard.md](pc-port/docs/mouse-and-keyboard.md).
 
 ## Credits
 

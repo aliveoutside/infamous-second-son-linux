@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // XInput plus a focused-window keyboard controller, including the two-contact gate, and the mouse
-// as touchpad (F6) or spray can (F7), and the touchpad window (F5, src/pad_panel.c).
+// as touchpad (F6), spray can (F7) or aim and fire (F4), and the touchpad window (F5, src/pad_panel.c).
 #include "runtime.h"
 #include "pad_panel.h"
 #include <SDL3/SDL.h>
@@ -74,11 +74,11 @@ static const uint8_t playstation_map[SRC_COUNT]={T_CROSS,T_CIRCLE,T_SQUARE,T_TRI
     T_OPTIONS,T_PS,T_NONE,T_UP,T_DOWN,T_LEFT,T_RIGHT};
 // The keyboard's touchpad shortcuts (ISS_TOUCH_KEYS="touch_left=Space,swipe_up=1,..." with SDL key
 // names). Tab stays a second key for the left side.
-enum {K_TOUCH_LEFT,K_TOUCH_RIGHT,K_TOUCH_BOTH,K_TOUCH_CENTER,K_SWIPE_UP,K_SWIPE_DOWN,K_SWIPE_LEFT,K_SWIPE_RIGHT,K_MOUSE,K_SPRAY,K_PANEL,K_COUNT};
+enum {K_TOUCH_LEFT,K_TOUCH_RIGHT,K_TOUCH_BOTH,K_TOUCH_CENTER,K_SWIPE_UP,K_SWIPE_DOWN,K_SWIPE_LEFT,K_SWIPE_RIGHT,K_MOUSE,K_SPRAY,K_PANEL,K_AIM,K_COUNT};
 static const char *const touch_key_names[K_COUNT]={"touch_left","touch_right","touch_both","touch_center","swipe_up",
-    "swipe_down","swipe_left","swipe_right","mouse_touchpad","spray","panel"};
-static SDL_Scancode touch_keys[K_COUNT]={SDL_SCANCODE_SPACE,SDL_SCANCODE_BACKSPACE,SDL_SCANCODE_F8,SDL_SCANCODE_T,SDL_SCANCODE_1,
-    SDL_SCANCODE_2,SDL_SCANCODE_3,SDL_SCANCODE_4,SDL_SCANCODE_F6,SDL_SCANCODE_F7,SDL_SCANCODE_F5};
+    "swipe_down","swipe_left","swipe_right","mouse_touchpad","spray","panel","aim"};
+static SDL_Scancode touch_keys[K_COUNT]={SDL_SCANCODE_Z,SDL_SCANCODE_X,SDL_SCANCODE_F8,SDL_SCANCODE_T,SDL_SCANCODE_1,
+    SDL_SCANCODE_2,SDL_SCANCODE_3,SDL_SCANCODE_4,SDL_SCANCODE_F6,SDL_SCANCODE_F7,SDL_SCANCODE_F5,SDL_SCANCODE_F4};
 static int pad_swipe=-1,source_was[SRC_COUNT];
 // Each stick's dead zone (`deadzone_left`, `deadzone_right` in settings.toml, ISS_PAD_DEADZONE_LEFT/
 // _RIGHT: percent of full deflection, default 10): radial, and the rest of the range is stretched so
@@ -178,9 +178,10 @@ static int mouse_button(SDL_MouseButtonFlags mask){return (SDL_GetMouseState(NUL
 // button: a finger at the cursor, right button: touchpad click). F7: spray can (the graffiti
 // missions): the controller is held on its side like a can, R2 on top and the light bar to the
 // screen; the mouse turns it, the left button sprays (R2), the right button shakes it and the
-// middle button recenters it, Shift aims finely. The window title names the mode. The keys can be
+// middle button recenters it, Shift aims finely. F4: the mouse is the right stick (look and aim),
+// the left button fires (R2), the right button aims (L2), the middle button is R3 (mouse_sensitivity). The window title names the mode. The keys can be
 // changed with ISS_TOUCH_KEYS (above).
-static int mouse_mode,mode_keys[3],mouse_anchored,mouse_touch,spray_wait_release;
+static int mouse_mode,mode_keys[4],mouse_anchored,mouse_touch,spray_wait_release;
 static int cmd_spray_toggle,cmd_spray_center;static double cmd_shake_until,cmd_aim_until,cmd_paint_until;static float cmd_aim_dx,cmd_aim_dy; // ISS_PAD_CMD_FILE spray (paint: R2 held)
 static SDL_Window *game_window;
 static float mouse_anchor_x,mouse_anchor_y;
@@ -208,17 +209,46 @@ void pad_spray_step(float q[4],float dx,float dy,float dt,int shake,double secon
     quat_rotate(conj,rate,angular);quat_rotate(conj,up,accel);
     if(shake){const float phase=(float)(6.283185307*6.0*seconds);accel[0]+=1.6f*sinf(phase);angular[2]+=4.0f*cosf(phase);}
 }
+// F4's aim. With native/mouse_look.cpp the camera takes the mouse's counts as an angle (pad_look_take,
+// gathered here between the camera's updates; dropped when it has not asked for two reads, as in menus).
+// Without it (another eboot) the mouse drives the right stick, and the stick sets the camera's turning
+// speed: the distance is kept as a debt in pixels and paid out as the stick that turns the camera by
+// that much in the time since the last payment (K pixels per second is full deflection). A flick faster
+// than the stick can follow is paid out over the next frames (at most 0.25 s of debt is kept). K is
+// 2400 px/s at 100% (ISS_MOUSE_SENS, percent; more percent, more turn per pixel). The game is told the
+// right stick has no dead zone (pad_info), so a paid-out stick starts at 3%. The game may read the pad
+// more than once a frame: a payment is made once 4 ms of mouse counts have gathered, and the stick is
+// held between payments.
+int pad_look_direct;
+static float look[2];static int look_unread;
+int pad_look_take(float *dx,float *dy){
+    host_lock(&lock);*dx=look[0];*dy=look[1];look[0]=look[1]=0;look_unread=0;host_unlock(&lock);
+    return mouse_mode==3;
+}
+static float aim_debt[2],aim_time;static uint8_t aim_out[2]={128,128};
+static void aim_step(float dx,float dy,float dt){
+    static float k=-1;if(k<0){const char *s=getenv("ISS_MOUSE_SENS");const float p=s?(float)atof(s)/100:1;k=2400.f/(p>0?p:1);}
+    aim_debt[0]+=dx;aim_debt[1]+=dy;aim_time+=dt;
+    if(aim_time<.004f)return;
+    for(int i=0;i<2;++i){
+        float s=aim_debt[i]/(k*aim_time);s=fminf(fmaxf(s,-1.f),1.f);
+        aim_debt[i]=fminf(fmaxf(aim_debt[i]-s*k*aim_time,-.25f*k),.25f*k);
+        const float d=fabsf(s)<.002f?0:.03f+.97f*fabsf(s);
+        aim_out[i]=(uint8_t)lrintf(127.5f+(s<0?-d:d)*127.5f);
+    }
+    aim_time=0;
+}
 static void set_mouse_mode(int mode,SDL_Window *window){
-    mouse_mode=mode;mouse_anchored=mouse_touch=0;spray_tick=0;memcpy(spray,spray_pose,sizeof(spray));
+    mouse_mode=mode;mouse_anchored=mouse_touch=0;spray_tick=0;memset(aim_debt,0,sizeof(aim_debt));look[0]=look[1]=0;aim_out[0]=aim_out[1]=128;aim_time=0;memcpy(spray,spray_pose,sizeof(spray));
     spray_wait_release=mode==2;
-    fprintf(stderr,"PAD_MOUSE mode=%s\n",mode==1?"touchpad":mode==2?"spray":"off");
+    fprintf(stderr,"PAD_MOUSE mode=%s\n",mode==1?"touchpad":mode==2?"spray":mode==3?"aim":"off");
     pad_panel_set_mode(mode);
     if(mode==2){float dx,dy;pad_panel_raw(&dx,&dy);}
     if(!window)return;
     static char base[256];
     if(!base[0])snprintf(base,sizeof(base),"%s",SDL_GetWindowTitle(window));
     char title[320];
-    snprintf(title,sizeof(title),"%s%s",base,mode==1?"  [touchpad: mouse]":mode==2?"  [spray: mouse]":"");
+    snprintf(title,sizeof(title),"%s%s",base,mode==1?"  [touchpad: mouse]":mode==2?"  [spray: mouse]":mode==3?"  [aim: mouse]":"");
     SDL_SetWindowTitle(window,title);
 }
 static uint8_t axis(int16_t v){return (uint8_t)(((int)v+32768)>>8);}
@@ -236,7 +266,9 @@ static int32_t GUEST_ABI pad_open(int user,int type,int index,const void *param)
 static int32_t GUEST_ABI pad_close(int handle){if(handle!=1||!opened)return error(3);opened=0;return 0;}
 static int32_t GUEST_ABI pad_info(int handle,PadInfo *out){
     if(handle!=1||!opened)return error(3);if(!out)return error(1);memset(out,0,sizeof(*out));
-    out->density=44.86f;out->width=1920;out->height=942;out->left_dead=out->right_dead=10;out->connected=out->count=1;return 0;
+    out->density=44.86f;out->width=1920;out->height=942;out->left_dead=10;
+    {const char *aim=getenv("ISS_MOUSE_AIM");out->right_dead=(!aim||aim[0]!='0')&&!pad_look_direct?0:10;} // the mouse as stick needs none
+    out->connected=out->count=1;return 0;
 }
 static int32_t GUEST_ABI pad_read(int handle,PadData *out){
     if(handle!=1||!opened)return error(3);if(!out)return error(1);host_lock(&lock);
@@ -252,11 +284,14 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
     if(focused){
         if(key(SDL_SCANCODE_A))out->lx=0;if(key(SDL_SCANCODE_D))out->lx=255;if(key(SDL_SCANCODE_W))out->ly=0;if(key(SDL_SCANCODE_S))out->ly=255;
         if(key(SDL_SCANCODE_J))out->rx=0;if(key(SDL_SCANCODE_L))out->rx=255;if(key(SDL_SCANCODE_I))out->ry=0;if(key(SDL_SCANCODE_K))out->ry=255;
-        if(key(SDL_SCANCODE_N)||key(SDL_SCANCODE_KP_2))out->buttons|=0x4000;if(key(SDL_SCANCODE_B)||key(SDL_SCANCODE_KP_6))out->buttons|=0x2000;
-        if(key(SDL_SCANCODE_V)||key(SDL_SCANCODE_KP_4))out->buttons|=0x8000;if(key(SDL_SCANCODE_C)||key(SDL_SCANCODE_KP_8))out->buttons|=0x1000;
-        if(key(SDL_SCANCODE_Q))out->buttons|=0x400;if(key(SDL_SCANCODE_U))out->buttons|=0x800;if(key(SDL_SCANCODE_E))out->l2=255;if(key(SDL_SCANCODE_O))out->r2=255;
-        if(key(SDL_SCANCODE_X))out->buttons|=2;if(key(SDL_SCANCODE_M))out->buttons|=4;if(key(SDL_SCANCODE_ESCAPE))out->buttons|=8;
-        if(key(SDL_SCANCODE_UP))out->buttons|=0x10;if(key(SDL_SCANCODE_RIGHT))out->buttons|=0x20;if(key(SDL_SCANCODE_DOWN))out->buttons|=0x40;if(key(SDL_SCANCODE_LEFT))out->buttons|=0x80;
+        // The PC layout: Space jumps (Cross), Shift dashes (Circle), F melee (Square), E subdue and heal (Triangle),
+        // Q and R the power's moves (L1, R1). Ctrl is L3 and M R3: their use in the game is not known.
+        // O and U are the triggers while the mouse does not aim (F4).
+        static const struct {SDL_Scancode code;uint32_t bit;} keys[]={{SDL_SCANCODE_SPACE,0x4000},{SDL_SCANCODE_LSHIFT,0x2000},
+            {SDL_SCANCODE_F,0x8000},{SDL_SCANCODE_E,0x1000},{SDL_SCANCODE_Q,0x400},{SDL_SCANCODE_R,0x800},{SDL_SCANCODE_LCTRL,2},
+            {SDL_SCANCODE_M,4},{SDL_SCANCODE_ESCAPE,8},{SDL_SCANCODE_UP,0x10},{SDL_SCANCODE_RIGHT,0x20},{SDL_SCANCODE_DOWN,0x40},{SDL_SCANCODE_LEFT,0x80}};
+        for(unsigned k=0;k<sizeof(keys)/sizeof(keys[0]);++k)if(key(keys[k].code))out->buttons|=keys[k].bit;
+        if(key(SDL_SCANCODE_U))out->l2=255;if(key(SDL_SCANCODE_O))out->r2=255;
         const int both=key(touch_keys[K_TOUCH_BOTH]),left=key(touch_keys[K_TOUCH_LEFT])||key(SDL_SCANCODE_TAB)||both,right=key(touch_keys[K_TOUCH_RIGHT])||both;
         const int centre_touch=key(touch_keys[K_TOUCH_CENTER]);
         if(left){contacts[0]=1;xy[0][0]=480;xy[0][1]=471;}if(right){contacts[1]=1;xy[1][0]=1440;xy[1][1]=471;}
@@ -264,11 +299,16 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
         if(left||right||centre_touch)out->buttons|=0x100000;
         for(int i=0;i<4;++i){int down=key(touch_keys[K_SWIPE_UP+i]);if(down&&!swipe_keys[i]){swipe_direction=i;swipe_started=out->timestamp;was_touch[0]=0;}swipe_keys[i]=down;}
         SDL_Window *window=focus;game_window=window;
-        const int f6=key(touch_keys[K_MOUSE]),f7=key(touch_keys[K_SPRAY]),f5=key(touch_keys[K_PANEL]);
+        const int f6=key(touch_keys[K_MOUSE]),f7=key(touch_keys[K_SPRAY]),f5=key(touch_keys[K_PANEL]),f4=key(touch_keys[K_AIM]);
         if(f6&&!mode_keys[0])set_mouse_mode(mouse_mode==1?0:1,window);
         if(f7&&!mode_keys[1])set_mouse_mode(mouse_mode==2?0:2,window);
+        // The mouse aims from the first focused read (settings: mouse_aim), unless it is switched off.
+        static int aim_default=-1;
+        if(aim_default<0){const char *s=getenv("ISS_MOUSE_AIM");aim_default=!s||s[0]!='0';
+            if(aim_default&&mouse_mode==0)set_mouse_mode(3,window);}
+        if(f4&&!mode_keys[3])set_mouse_mode(mouse_mode==3?0:3,window);
         if(f5&&!mode_keys[2])pad_panel_toggle(window);
-        mode_keys[0]=f6;mode_keys[1]=f7;mode_keys[2]=f5;
+        mode_keys[0]=f6;mode_keys[1]=f7;mode_keys[2]=f5;mode_keys[3]=f4;
         const int swap=0;
         mouse_left=mouse_button(swap?SDL_BUTTON_RMASK:SDL_BUTTON_LMASK);mouse_right=mouse_button(swap?SDL_BUTTON_LMASK:SDL_BUTTON_RMASK);
         int client_w=0,client_h=0;float cursor_x,cursor_y;
@@ -294,7 +334,7 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
                 mouse_anchor_x=centre_x;mouse_anchor_y=centre_y;mouse_anchored=1;
                 if(cursor_x!=centre_x||cursor_y!=centre_y)SDL_WarpMouseInWindow(window,centre_x,centre_y);
                 float raw_dx,raw_dy;if(pad_panel_raw(&raw_dx,&raw_dy)){mouse_dx=raw_dx;mouse_dy=raw_dy;}
-                if(mouse_button(SDL_BUTTON_MMASK))memcpy(spray,spray_pose,sizeof(spray));
+                if(mouse_mode==2&&mouse_button(SDL_BUTTON_MMASK))memcpy(spray,spray_pose,sizeof(spray));
             }
         }
     }else{memset(swipe_keys,0,sizeof(swipe_keys));swipe_direction=-1;mouse_anchored=mouse_touch=0;}
@@ -327,6 +367,16 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
         pad_spray_step(spray,mouse_dx*scale,mouse_dy*scale,dt>0.1f?0.1f:dt,(focused&&mouse_right)||cmd_now<cmd_shake_until,(double)out->timestamp/1e6,out->angular,out->acceleration);
         memcpy(out->orientation,spray,sizeof(spray));
         if(focused&&mouse_left){out->r2=255;}
+    }
+
+    // F4: the mouse looks (the camera's angle, or the right stick: aim_step); the left button fires
+    // (R2), the right button aims (L2), the middle button is R3.
+    if(mouse_mode==3){
+        const float dt=spray_tick?(float)(out->timestamp-spray_tick)/1e6f:0;spray_tick=out->timestamp;
+        if(!focused)mouse_dx=mouse_dy=0;
+        if(pad_look_direct){if(++look_unread>2)look[0]=look[1]=0;look[0]+=mouse_dx;look[1]+=mouse_dy;}
+        else{aim_step(mouse_dx,mouse_dy,dt>.1f?.1f:dt);if(aim_out[0]!=128)out->rx=aim_out[0];if(aim_out[1]!=128)out->ry=aim_out[1];}
+        if(focused){if(mouse_left)out->r2=255;if(mouse_right)out->l2=255;if(mouse_button(SDL_BUTTON_MMASK))out->buttons|=4;}
     }
 
     // ISS_PAD_REAL=0 (scripted runs): the real controller and keyboard are ignored, only the pad

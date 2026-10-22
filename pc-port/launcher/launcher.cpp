@@ -499,6 +499,12 @@ void ControlsTab() {
     if (!BeginForm("controls")) return;
     StickDeadZone("Left stick dead zone", "deadzone_left", SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY);
     StickDeadZone("Right stick dead zone", "deadzone_right", SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY);
+    Combo("Mouse look and aim", "mouse_aim", kOnOff);
+    Label("Mouse sensitivity");
+    int sens = std::atoi(Value("mouse_sensitivity"));
+    if (sens < 10 || sens > 1000) sens = 100;
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::SliderInt("##sens", &sens, 10, 1000, "%d%%", ImGuiSliderFlags_Logarithmic)) Set("mouse_sensitivity", std::to_string(sens));
     bool changed = false;
     for (int i = 0; i < kSourceCount; ++i) {
         Label(kSources[i].label);
@@ -522,18 +528,21 @@ void ControlsTab() {
     ImGui::PopFont();
     if (BeginForm("keys")) {
         const char *const keys[][2] = {
+            {"F4", "Mouse look and aim on / off: the mouse turns the camera, left button fires, right button aims, "
+                   "middle button is R3."},
             {"F5", "Touchpad & Spray window: a touchpad to press and drag with the mouse, the touchpad sides, "
                    "click and swipes (TOUCHPAD tab), the graffiti spray can (SPRAY tab)."},
             {"F6", "Mouse as touchpad: left button a finger at the cursor, right button a click."},
             {"F7", "Spray mode for the graffiti missions: right button shakes the can, left button sprays, "
                    "the mouse aims, middle button recenters, Shift aims finely. F7 again to stop."},
-            {"Space / Backspace", "Press the left / right side of the touchpad (F8 both, T the middle)."},
+            {"Z / X", "Press the left / right side of the touchpad (F8 both, T the middle)."},
             {"1 2 3 4", "Touchpad swipe up / down / left / right."},
             {"L3 + R3", "Controllers without a touchpad: hold both, the right stick is the finger, the D-pad swipes, A clicks."},
             {"F9", "Frame rate overlay."},
             {"Alt+Enter", "Fullscreen / windowed."},
-            {"Keyboard", "Move W A S D, camera I J K L, Cross / Circle / Square / Triangle N B V C, L1 / R1 Q U, "
-                         "L2 / R2 E O, L3 / R3 X M, D-pad arrows, Options Esc."},
+            {"Keyboard", "Move W A S D, Space jump, Shift dash (Circle), F melee, E subdue / heal, Q / R the power's L1 / R1 moves, Ctrl L3, M R3, "
+                         "mouse look, left button fires (R2), right button aims (L2), arrows D-pad, Esc Options. "
+                         "Without mouse aim: camera I J K L, U / O L2 / R2."},
         };
         for (const auto &k : keys) {
             ImGui::TableNextRow();

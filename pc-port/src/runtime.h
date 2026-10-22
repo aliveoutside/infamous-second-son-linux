@@ -28,6 +28,10 @@ uintptr_t network_resolve(const char *identity);
 uintptr_t save_resolve(const char *identity);
 uintptr_t trophy_resolve(const char *identity);
 uintptr_t pad_resolve(const char *identity);
+// Mouse look (native/mouse_look.cpp): set when the camera takes the mouse's angle directly; the mouse
+// counts gathered since the camera's last update (0: none, or the mouse does not aim).
+extern int pad_look_direct;
+int pad_look_take(float *dx, float *dy);
 uintptr_t audio_resolve(const char *identity);
 uintptr_t kernel_sync_resolve(const char *identity);
 uintptr_t http_resolve(const char *identity);

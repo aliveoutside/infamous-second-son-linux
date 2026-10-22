@@ -196,6 +196,8 @@ int InstallFov(unsigned char *image,std::uint64_t size){
 }
 
 namespace iss::native {
+std::uint64_t CodeHash(const unsigned char *code,std::size_t size){return Hash(code,size);}
+bool WriteCode(unsigned char *image,std::uint64_t at,const void *bytes,std::size_t size){return Write(image,at,bytes,size);}
 int InstallUltrawide(unsigned char *image,std::uint64_t size){
     const int resolution=InstallResolution(image,size);
     if(resolution<0)return resolution;

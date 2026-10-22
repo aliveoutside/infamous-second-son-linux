@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Linux: the touchpad panel (F5 in game) is drawn by libiss-gpu.so over the game window
 // (gpu/pad_panel_ui.cpp), bound here once the library is loaded. The mouse modes of src/pad.c
-// (F6 touchpad, F7 spray can) work; the spray can reads SDL's relative mouse.
+// (F6 touchpad, F7 spray can, F4 aim) work; the spray can and the aim read SDL's relative mouse.
 #include "../pad_panel.h"
 #include <SDL3/SDL.h>
 #include <string.h>
@@ -26,9 +26,9 @@ void pad_panel_toggle(struct SDL_Window *game) { (void)game; if (panel_toggle) p
 int pad_panel_covers(void) { return panel_covers && panel_covers(); }
 void pad_panel_set_mode(int mode) {
     shown_mode = mode;
-    if (panel_mode) panel_mode(mode);
+    if (panel_mode) panel_mode(mode == 3 ? 0 : mode);
     SDL_Window *window = SDL_GetKeyboardFocus();
-    if (window) SDL_SetWindowRelativeMouseMode(window, mode == 2);
+    if (window) SDL_SetWindowRelativeMouseMode(window, mode == 2 || mode == 3);
 }
 void pad_panel_read(PadPanel *out) {
     memset(out, 0, sizeof(*out));
@@ -38,7 +38,7 @@ void pad_panel_read(PadPanel *out) {
 }
 int pad_panel_raw(float *dx, float *dy) {
     *dx = *dy = 0;
-    if (shown_mode != 2) return 0;
+    if (shown_mode != 2 && shown_mode != 3) return 0;
     SDL_GetRelativeMouseState(dx, dy);
     return 1;
 }

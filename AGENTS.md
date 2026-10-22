@@ -22,6 +22,7 @@ keys or assets, and must never contain any.
 | `pc-port/tests/` | Unit tests, run with ctest. |
 | `pc-port/pgo/` | PGO profile (`*.gcda`), see `pc-port/docs/pgo.md`. |
 | `pc-port/docs/settings.md` | Every setting of `settings.toml`. |
+| `pc-port/docs/mouse-and-keyboard.md` | Keyboard layout, mouse look (camera patch `native/mouse_look.cpp`), the game's pad and camera internals, gdb/IDA tips. |
 | `pc-port/third_party/shadPS4` | shadPS4 fork, a git submodule. |
 
 ## Build
@@ -71,6 +72,8 @@ artifact (and a release asset on `v*` tags).
 - `play.sh` copies `build/gpu/libiss-gpu.so` over `build/libiss-gpu.so` when it is newer; copy it by
   hand if you run `iss-probe` directly.
 - Input code in `pad.c` only reads the keyboard while a game window has focus.
+- The mouse turns the camera through an eboot patch, not the right stick; read
+  `docs/mouse-and-keyboard.md` before changing mouse or camera input.
 - Match the surrounding style. `src/pad.c` is dense C; keep its idiom when editing it.
 
 ## Performance debugging

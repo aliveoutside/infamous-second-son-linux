@@ -99,6 +99,10 @@ const Setting settings_entries[] = {
      "on: every compute shader of the game is compiled ahead of time, in the background while "
      "playing (the first start indexes the game files). off: compiled when first used.",
      precompile_choices},
+    {"mouse_aim", "ISS_MOUSE_AIM", "on",
+     "on: the mouse looks and aims as soon as the game window has focus (left button fires, right "
+     "button aims). F4 switches it off and on in game.", on_off},
+    {"mouse_sensitivity", "ISS_MOUSE_SENS", "100", "Mouse look speed in percent (10 to 1000).", NULL},
     {"deadzone_left", "ISS_PAD_DEADZONE_LEFT", "10",
      "Left stick dead zone in percent of full deflection (0 to 50).", NULL},
     {"deadzone_right", "ISS_PAD_DEADZONE_RIGHT", "10",
@@ -153,11 +157,12 @@ static int check_value(const Setting *s, const char *value) {
         char extra;
         return sscanf(value, "%ux%u%c", &w, &h, &extra) == 2 && w >= 640 && h >= 360 && w <= 7680 && h <= 4320;
     }
-    if (!strcmp(s->key, "fps_limit") || !strcmp(s->key, "fov") || !strncmp(s->key, "deadzone", 8)) {
+    if (!strcmp(s->key, "fps_limit") || !strcmp(s->key, "fov") || !strcmp(s->key, "mouse_sensitivity") || !strncmp(s->key, "deadzone", 8)) {
         char *end;
         const long n = strtol(value, &end, 10);
         if (*end || !*value) return 0;
         if (!strncmp(s->key, "deadzone", 8)) return n >= 0 && n <= 50;
+        if (!strcmp(s->key, "mouse_sensitivity")) return n >= 10 && n <= 1000;
         return !strcmp(s->key, "fov") ? n >= 50 && n <= 200 : n >= 0 && n <= 1000;
     }
     return 1;
