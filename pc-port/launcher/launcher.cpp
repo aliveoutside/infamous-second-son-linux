@@ -227,16 +227,15 @@ void DrawBackground() {
     const ImVec2 size = ImGui::GetIO().DisplaySize;
     draw->AddRectFilled({0, 0}, size, IM_COL32(12, 12, 16, 255));
     if (g_background) {
-        // Cover the window, anchored right: the crow stays visible beside the menu.
+        // Cover the window, anchored right: the crow shows through on the right.
         const float scale = std::max(size.x / g_background_w, size.y / g_background_h);
         const float w = g_background_w * scale, h = g_background_h * scale;
         draw->AddImage(ImTextureRef(ImTextureID(reinterpret_cast<std::uintptr_t>(g_background))), {size.x - w, (size.y - h) / 2},
                        {size.x, (size.y + h) / 2});
     }
-    const float split = size.x * 0.62f;
-    draw->AddRectFilled({0, 0}, {split * 0.7f, size.y}, IM_COL32(8, 8, 12, 235));
-    draw->AddRectFilledMultiColor({split * 0.7f, 0}, {split * 1.15f, size.y}, IM_COL32(8, 8, 12, 235),
-                                  IM_COL32(8, 8, 12, 0), IM_COL32(8, 8, 12, 0), IM_COL32(8, 8, 12, 235));
+    // The form covers the window: the art is dimmed under it, a little lighter on the right.
+    draw->AddRectFilledMultiColor({0, 0}, size, IM_COL32(8, 8, 12, 235), IM_COL32(8, 8, 12, 190),
+                                  IM_COL32(8, 8, 12, 190), IM_COL32(8, 8, 12, 235));
 }
 
 void Style(float scale) {
@@ -676,7 +675,7 @@ void Frame(SDL_Window *window, SDL_Renderer *renderer) {
     const ImVec2 size = ImGui::GetIO().DisplaySize;
     const float margin = ImGui::GetFontSize() * 2;
     ImGui::SetNextWindowPos({margin, margin});
-    ImGui::SetNextWindowSize({std::min(size.x - 2 * margin, std::max(size.x * 0.55f, ImGui::GetFontSize() * 34)), size.y - 2 * margin});
+    ImGui::SetNextWindowSize({size.x - 2 * margin, size.y - 2 * margin});
     ImGui::Begin("launcher", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                       ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
     ImGui::PushFont(g_title, kHeading * 2.2f);
