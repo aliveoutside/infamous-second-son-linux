@@ -1,13 +1,12 @@
 # Builds in the container (pc-port/scripts/linux/portable.Dockerfile, Ubuntu 24.04) as `just build`
-# does, with the PGO profile in pc-port/pgo, runs the tests and uploads the AppImage. A v* tag also
-# attaches it to a GitHub release.
+# does, with the PGO profile in pc-port/pgo, runs the tests and uploads the AppImage
+# as an artifact. Releases are uploaded by hand, from a local build.
 # Caches: the container image (buildx, GitHub cache), SDL3 and ccache (actions/cache).
 name: AppImage
 
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -16,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write  # for releases on tags
+  contents: read
 
 jobs:
   appimage:
@@ -71,9 +70,3 @@ jobs:
           name: inFAMOUS_Second_Son-x86_64.AppImage
           path: pc-port/build/inFAMOUS_Second_Son-x86_64.AppImage
           if-no-files-found: error
-
-      - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: pc-port/build/inFAMOUS_Second_Son-x86_64.AppImage

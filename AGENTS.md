@@ -44,7 +44,7 @@ just launcher               # build and start the launcher
 `scripts/linux/container.sh sh -c 'cd build && ctest -R pad --output-on-failure'`.
 
 CI is `.github/workflows/appimage.yml`: the same container build, the tests, the AppImage as an
-artifact (and a release asset on `v*` tags).
+artifact. Releases are uploaded by hand from a local build (`just build`, with PGO).
 
 ## Running and settings
 
