@@ -8,6 +8,7 @@ typedef struct {
     int left,right,both,centre,options; // buttons held down (options: the pause button)
     int swipe,mode,recentre;       // once: swipe 0 up 1 down 2 left 3 right (-1 none), mode 1/2 (-1 none)
     float sensitivity;             // the spray can's speed (1 = 100%)
+    int hints;                     // once: the on-screen help was set to 0 auto, 1 always, 2 off (-1 none)
 } PadPanel;
 // The physical controller as it is now, for the panel to show (src/pad.c fills it every read).
 typedef struct {

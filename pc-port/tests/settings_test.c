@@ -36,6 +36,8 @@ int main(void) {
     CHECK(settings_valid(mango, "on") && !settings_valid(mango, "yes"));
     const int aim = index_of("mouse_aim");
     CHECK(aim >= 0 && !strcmp(values[aim], "on") && settings_valid(aim, "off") && !settings_valid(aim, "maybe"));
+    const int hints = index_of("hints");
+    CHECK(hints >= 0 && !strcmp(values[hints], "auto") && settings_valid(hints, "off") && settings_valid(hints, "always") && !settings_valid(hints, "never"));
     const int sens = index_of("mouse_sensitivity");
     CHECK(sens >= 0 && !strcmp(values[sens], "100") && settings_valid(sens, "300") && !settings_valid(sens, "5") && !settings_valid(sens, "x"));
     const int dead = index_of("deadzone_left"), dead_right = index_of("deadzone_right");

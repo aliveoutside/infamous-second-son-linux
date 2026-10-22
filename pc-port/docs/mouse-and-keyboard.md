@@ -15,9 +15,16 @@ Offsets are image offsets of the 1.07 eboot (sha256 `2d1ca796...`); at run time 
 - Keyboard (table `keys[]` in `pad_read`, `src/pad.c`): W A S D move, Space = Cross (jump),
   Left Shift = Circle (power dash, menu back), F = Square (melee), E = Triangle (subdue / heal),
   Q / R = L1 / R1 (the current power's moves), Left Ctrl = L3, M = R3, Esc = Options,
-  arrows = D-pad (Down = ultimate), U / O = L2 / R2 when mouse aim is off, I J K L = right stick.
+  arrows = D-pad (Down = ultimate), G = D-pad Down too (ultimate next to WASD), U / O = L2 / R2 when mouse aim is off, I J K L = right stick.
   Touchpad: Z / X (left / right side, right side = absorb), T centre, 1-4 swipes (`touch_keys`).
-  F4 mouse aim, F5 touchpad panel, F6 mouse as touchpad, F7 spray can, F9 FPS overlay, F10 perf mark.
+  F4 mouse aim, F5 touchpad panel, F6 mouse as touchpad, or hold Left Alt for the same until it is let go (`touchpad_hold` in `ISS_TOUCH_KEYS`; an on-screen hint names the key, and once, on the first run, tells where to find it; marker file `touchpad-hint-seen` in the user folder) (left button = finger, right = touchpad click,
+  middle or a side button = R2 held, so a touchpad move that needs R2 is one hand; O also holds R2), F7 spray can, F9 FPS overlay, F10 perf mark.
+  Graffiti: while a stencil is on screen (it reads `GYRO_Y_AXIS`, `GYRO_RETICLE_POS` and tests the SprayShake button, hooked by `native/graffiti.cpp`;
+  `ISS_GRAFFITI_AUTO=0` turns it off) the mouse is the spray can by itself, as F7: move = aim, left
+  button = spray (R2), right = shake, middle = recentre, Shift = fine. A controller without a gyro
+  aims with the right stick and shakes with L2; a DualShock 4 / DualSense uses its own gyro. The can
+  is kept as yaw and pitch within the game's aim window (`pad_spray_step`): the game's aim
+  (`+0x24b790`) is asin of the light bar's direction, +-0.35 rad of yaw by +-0.25 rad of pitch.
   Button meanings come from StrategyWiki (InFAMOUS Second Son/Controls); what L3, R3 and D-pad
   left / right / up do is not documented anywhere found.
 

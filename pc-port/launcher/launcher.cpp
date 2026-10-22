@@ -494,9 +494,109 @@ void StickDeadZone(const char *label, const char *key, SDL_GamepadAxis axis_x, S
     ImGui::Dummy({size, size});
 }
 
+// The keyboard and mouse as the game uses them (src/pad.c). Keys light up while they are pressed, and while Alt
+// is held the mouse turns into the touchpad, as it does in game. Kinds: 0 move, 1 action, 2 power, 3 touchpad,
+// 4 game window.
+void KeyboardDiagram() {
+    struct Key { const char *label, *what; float x, y, w; int kind; ImGuiKey key; int shape; }; // shape: the PlayStation face button, 1 cross 2 circle 3 square 4 triangle
+    static const Key keys[] = {
+        {"Esc", "Options", 0, 0, 1, 4, ImGuiKey_Escape}, {"F4", "aim", 2, 0, 1, 4, ImGuiKey_F4}, {"F5", "panel", 3, 0, 1, 4, ImGuiKey_F5},
+        {"F6", "touchpad", 4, 0, 1, 4, ImGuiKey_F6}, {"F7", "graffiti", 5, 0, 1, 4, ImGuiKey_F7}, {"F9", "fps", 6.5f, 0, 1, 4, ImGuiKey_F9},
+        {"1", "swipe up", 1, 1, 1, 3, ImGuiKey_1}, {"2", "down", 2, 1, 1, 3, ImGuiKey_2}, {"3", "left", 3, 1, 1, 3, ImGuiKey_3},
+        {"4", "right", 4, 1, 1, 3, ImGuiKey_4},
+        {"Tab", "", 0, 2, 1.5f, 3, ImGuiKey_Tab}, {"Q", "L1", 1.5f, 2, 1, 2, ImGuiKey_Q}, {"W", "forward", 2.5f, 2, 1, 0, ImGuiKey_W},
+        {"E", "subdue", 3.5f, 2, 1, 1, ImGuiKey_E, 4}, {"R", "R1", 4.5f, 2, 1, 2, ImGuiKey_R}, {"T", "pad middle", 5.5f, 2, 1, 3, ImGuiKey_T},
+        {"A", "left", 1.75f, 3, 1, 0, ImGuiKey_A}, {"S", "back", 2.75f, 3, 1, 0, ImGuiKey_S}, {"D", "right", 3.75f, 3, 1, 0, ImGuiKey_D},
+        {"F", "melee", 4.75f, 3, 1, 1, ImGuiKey_F, 3}, {"G", "ultimate", 5.75f, 3, 1, 2, ImGuiKey_G},
+        {"Shift", "dash", 0, 4, 2.25f, 1, ImGuiKey_LeftShift, 2}, {"Z", "pad left", 2.25f, 4, 1, 3, ImGuiKey_Z},
+        {"X", "absorb", 3.25f, 4, 1, 3, ImGuiKey_X}, {"M", "R3", 8.25f, 4, 1, 4, ImGuiKey_M},
+        {"Ctrl", "L3", 0, 5, 1.25f, 4, ImGuiKey_LeftCtrl}, {"Alt", "hold: touchpad", 2.5f, 5, 1.5f, 3, ImGuiKey_LeftAlt},
+        {"Space", "jump", 4, 5, 6.25f, 1, ImGuiKey_Space, 1},
+        {"^", "", 12.5f, 4, 1, 4, ImGuiKey_UpArrow}, {"<", "", 11.5f, 5, 1, 4, ImGuiKey_LeftArrow},
+        {"v", "ultimate", 12.5f, 5, 1, 4, ImGuiKey_DownArrow}, {">", "", 13.5f, 5, 1, 4, ImGuiKey_RightArrow},
+    };
+    static const ImU32 fill[] = {IM_COL32(48, 92, 168, 255), IM_COL32(160, 52, 62, 255), IM_COL32(120, 82, 168, 255),
+                                 IM_COL32(168, 128, 36, 255), IM_COL32(64, 68, 78, 255)};
+    static const char *const kinds[] = {"movement", "actions", "powers", "touchpad", "game window"};
+    const bool pad = ImGui::IsKeyDown(ImGuiKey_LeftAlt);
+    const float width = ImGui::GetContentRegionAvail().x;
+    const float u = std::min(width / 14.6f, ImGui::GetFontSize() * 3.4f), gap = u * 0.08f;
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImDrawList *draw = ImGui::GetWindowDrawList();
+    ImFont *font = ImGui::GetFont();
+    const float label_size = ImGui::GetFontSize() * 0.95f, what_size = ImGui::GetFontSize() * 0.72f;
+    const ImU32 white = IM_COL32(245, 246, 248, 255), soft = IM_COL32(245, 246, 248, 215);
+    const auto centred = [&](float size, ImVec2 a, ImVec2 b, float y, const char *text, ImU32 colour) {
+        ImVec2 sz = font->CalcTextSizeA(size, 1e9f, 0.f, text);
+        if (sz.x > b.x - a.x - 4) { size *= (b.x - a.x - 4) / sz.x; sz = font->CalcTextSizeA(size, 1e9f, 0.f, text); }
+        draw->AddText(font, size, {(a.x + b.x - sz.x) / 2, y}, colour, text);
+    };
+    const auto lighter = [](ImU32 c) {
+        const auto up = [](unsigned v) { return std::min(255u, v + 70u); };
+        return IM_COL32(up(c & 255), up((c >> 8) & 255), up((c >> 16) & 255), 255);
+    };
+    for (const Key &k : keys) {
+        const ImVec2 a = {origin.x + k.x * u, origin.y + k.y * u}, b = {a.x + k.w * u - gap, a.y + u - gap};
+        const bool down = ImGui::IsKeyDown(k.key);
+        draw->AddRectFilled(a, b, down ? lighter(fill[k.kind]) : fill[k.kind], u * 0.1f);
+        if (down) draw->AddRect(a, b, white, u * 0.1f, 0, 2.f);
+        const bool caption = *k.what != 0;
+        centred(label_size, a, b, caption ? a.y + u * 0.08f : a.y + (b.y - a.y - label_size) / 2, k.label, white);
+        if (caption) centred(what_size, a, b, b.y - what_size - u * 0.1f, k.what, soft);
+        if (k.shape) {
+            // A badge in the corner with the button's PlayStation shape, as the game's own prompts show it.
+            static const ImU32 shape_colour[] = {0, IM_COL32(120, 170, 240, 255), IM_COL32(240, 100, 100, 255),
+                                                 IM_COL32(240, 140, 200, 255), IM_COL32(90, 210, 150, 255)};
+            const float r = u * 0.17f;
+            const ImVec2 c = {b.x - u * 0.13f, a.y + u * 0.13f};
+            const float h = r * 0.5f;
+            draw->AddCircleFilled(c, r, IM_COL32(20, 22, 28, 235), 20);
+            const ImU32 sc = shape_colour[k.shape];
+            if (k.shape == 1) { draw->AddLine({c.x - h, c.y - h}, {c.x + h, c.y + h}, sc, 1.6f); draw->AddLine({c.x + h, c.y - h}, {c.x - h, c.y + h}, sc, 1.6f); }
+            else if (k.shape == 2) draw->AddCircle(c, h * 1.05f, sc, 16, 1.6f);
+            else if (k.shape == 3) draw->AddRect({c.x - h, c.y - h}, {c.x + h, c.y + h}, sc, 0, 0, 1.6f);
+            else draw->AddTriangle({c.x, c.y - h * 1.15f}, {c.x + h * 1.1f, c.y + h * 0.85f}, {c.x - h * 1.1f, c.y + h * 0.85f}, sc, 1.6f);
+        }
+    }
+    // The mouse: aiming it fires (left, R2) and aims (right, L2), the wheel is R3. Holding Alt makes it the touchpad.
+    const ImVec2 m0 = {origin.x + 9.4f * u, origin.y}, m1 = {m0.x + 2.4f * u, m0.y + 3.5f * u};
+    const ImU32 left_colour = pad ? fill[3] : fill[1], right_colour = pad ? fill[3] : fill[0];
+    draw->AddRectFilled(m0, m1, IM_COL32(40, 43, 51, 255), u * 0.9f, ImDrawFlags_RoundCornersAll);
+    draw->AddRect(m0, m1, pad ? fill[3] : IM_COL32(255, 255, 255, 70), u * 0.9f, ImDrawFlags_RoundCornersAll, pad ? 3.f : 1.5f);
+    const float mid = (m0.x + m1.x) / 2, split = m0.y + 1.35f * u;
+    const ImGuiIO &io = ImGui::GetIO();
+    draw->AddRectFilled({m0.x + 2, m0.y + 2}, {mid - 1, split}, io.MouseDown[0] ? lighter(left_colour) : left_colour, u * 0.9f, ImDrawFlags_RoundCornersTopLeft);
+    draw->AddRectFilled({mid + 1, m0.y + 2}, {m1.x - 2, split}, io.MouseDown[1] ? lighter(right_colour) : right_colour, u * 0.9f, ImDrawFlags_RoundCornersTopRight);
+    draw->AddRectFilled({mid - u * 0.14f, m0.y + 0.3f * u}, {mid + u * 0.14f, m0.y + 0.95f * u}, io.MouseDown[2] ? lighter(left_colour) : white, u * 0.1f);
+    centred(what_size * 1.25f, {m0.x, m0.y}, {mid, split}, m0.y + 1.0f * u, pad ? "finger" : "fire  R2", white);
+    centred(what_size * 1.25f, {mid, m0.y}, {m1.x, split}, m0.y + 1.0f * u, pad ? "click" : "aim  L2", white);
+    centred(what_size * 1.1f, {m0.x, split}, {m1.x, m1.y}, split + 0.4f * u, pad ? "wheel or side" : "look", soft);
+    centred(what_size * 1.1f, {m0.x, split}, {m1.x, m1.y}, split + 0.9f * u, pad ? "button: R2" : "wheel: R3", soft);
+    centred(what_size * 1.1f, {m0.x, m1.y}, {m1.x, m1.y + u}, m1.y + 0.1f * u, pad ? "TOUCHPAD" : "", fill[3]);
+    ImGui::Dummy({width, u * 6.1f});
+    // The legend.
+    float x = 0;
+    const float swatch = ImGui::GetFontSize() * 0.8f;
+    for (int i = 0; i < 5; ++i) {
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        draw->AddRectFilled({at.x + x, at.y + 3}, {at.x + x + swatch, at.y + 3 + swatch}, fill[i], 3);
+        draw->AddText({at.x + x + swatch + 6, at.y}, IM_COL32(210, 212, 218, 255), kinds[i]);
+        x += swatch + 6 + ImGui::CalcTextSize(kinds[i]).x + ImGui::GetFontSize() * 1.2f;
+    }
+    ImGui::Dummy({width, ImGui::GetTextLineHeight() + 6});
+    ImGui::Spacing();
+}
+
 void ControlsTab() {
     int map[kSourceCount];
     ParseMap(Value("pad_map"), map);
+    ImGui::PushFont(g_heading, kHeading);
+    ImGui::TextUnformatted("KEYBOARD AND MOUSE");
+    ImGui::PopFont();
+    KeyboardDiagram();
+    ImGui::PushFont(g_heading, kHeading);
+    ImGui::TextUnformatted("SETTINGS");
+    ImGui::PopFont();
     if (!BeginForm("controls")) return;
     StickDeadZone("Left stick dead zone", "deadzone_left", SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY);
     StickDeadZone("Right stick dead zone", "deadzone_right", SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY);
@@ -506,6 +606,7 @@ void ControlsTab() {
     if (sens < 10 || sens > 1000) sens = 100;
     ImGui::SetNextItemWidth(-FLT_MIN);
     if (ImGui::SliderInt("##sens", &sens, 10, 1000, "%d%%", ImGuiSliderFlags_Logarithmic)) Set("mouse_sensitivity", std::to_string(sens));
+    Combo("On-screen hints", "hints", {{"Auto (full the first times)", "auto"}, {"Always", "always"}, {"Off", "off"}});
     bool changed = false;
     for (int i = 0; i < kSourceCount; ++i) {
         Label(kSources[i].label);
@@ -521,39 +622,6 @@ void ControlsTab() {
     ImGui::EndTable();
     if (ImGui::Button("Recommended layout")) { std::copy(kDefaultMap, kDefaultMap + kSourceCount, map); changed = true; }
     if (changed) Set("pad_map", FormatMap(map));
-
-    // The in-game keys (src/pad.c) and the F5 window (gpu/pad_panel_ui.cpp).
-    ImGui::Spacing();
-    ImGui::PushFont(g_heading, kHeading);
-    ImGui::TextUnformatted("IN GAME");
-    ImGui::PopFont();
-    if (BeginForm("keys")) {
-        const char *const keys[][2] = {
-            {"F4", "Mouse look and aim on / off: the mouse turns the camera, left button fires, right button aims, "
-                   "middle button is R3."},
-            {"F5", "Touchpad & Spray window: a touchpad to press and drag with the mouse, the touchpad sides, "
-                   "click and swipes (TOUCHPAD tab), the graffiti spray can (SPRAY tab)."},
-            {"F6", "Mouse as touchpad: left button a finger at the cursor, right button a click."},
-            {"F7", "Spray mode for the graffiti missions: right button shakes the can, left button sprays, "
-                   "the mouse aims, middle button recenters, Shift aims finely. F7 again to stop."},
-            {"Z / X", "Press the left / right side of the touchpad (F8 both, T the middle)."},
-            {"1 2 3 4", "Touchpad swipe up / down / left / right."},
-            {"L3 + R3", "Controllers without a touchpad: hold both, the right stick is the finger, the D-pad swipes, A clicks."},
-            {"F9", "Frame rate overlay."},
-            {"Alt+Enter", "Fullscreen / windowed."},
-            {"Keyboard", "Move W A S D, Space jump, Shift dash (Circle), F melee, E subdue / heal, Q / R the power's L1 / R1 moves, Ctrl L3, M R3, "
-                         "mouse look, left button fires (R2), right button aims (L2), arrows D-pad, Esc Options. "
-                         "Without mouse aim: camera I J K L, U / O L2 / R2."},
-        };
-        for (const auto &k : keys) {
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            ImGui::TextUnformatted(k[0]);
-            ImGui::TableNextColumn();
-            ImGui::TextWrapped("%s", k[1]);
-        }
-        ImGui::EndTable();
-    }
 }
 
 // Folder dialogs (xdg-desktop-portal or zenity through SDL). The answer may come on another thread.

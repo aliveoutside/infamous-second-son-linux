@@ -32,6 +32,7 @@ uintptr_t pad_resolve(const char *identity);
 // counts gathered since the camera's last update (0: none, or the mouse does not aim).
 extern int pad_look_direct;
 int pad_look_take(float *dx, float *dy);
+void pad_graffiti_seen(void); // a graffiti stencil read the gyro aim (native/graffiti.cpp)
 uintptr_t audio_resolve(const char *identity);
 uintptr_t kernel_sync_resolve(const char *identity);
 uintptr_t http_resolve(const char *identity);

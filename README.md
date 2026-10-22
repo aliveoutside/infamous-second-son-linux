@@ -47,6 +47,8 @@ input and the spray can.
 | Esc | Options |
 | F4 | Mouse aim on / off (`mouse_aim` setting) |
 | Z, X | Touchpad left, right |
+| Hold Alt | Mouse as touchpad while held (left button finger, right click, wheel or side button R2) |
+| F6 | The same, switched on and off |
 | F5 / F9 / Alt+Enter | Touchpad panel / FPS overlay / fullscreen |
 
 The mouse turns the camera directly, like in a PC shooter: no stick emulation, no acceleration.

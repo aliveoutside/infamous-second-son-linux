@@ -68,6 +68,7 @@ static const char *const vsync_choices[] = {"on=Fifo", "off=Immediate", "mailbox
 static const char *const memory_choices[] = {"video=0", "in_place=1", NULL};
 static const char *const shader_choices[] = {"wait=0", "parallel=1", "skip=2", NULL};
 static const char *const precompile_choices[] = {"on=auto", "off=", NULL};
+static const char *const hint_choices[] = {"auto=auto", "always=always", "off=off", NULL};
 static const char *const hud_choices[] = {"16:9=1.7778", "21:9=2.3704", "full=0", NULL};
 static const char *const language_choices[] = {
     "english=1", "french=2", "spanish=3", "german=4", "italian=5", "dutch=6", "portuguese=7",
@@ -104,6 +105,9 @@ const Setting settings_entries[] = {
      "on: the mouse looks and aims as soon as the game window has focus (left button fires, right "
      "button aims). F4 switches it off and on in game.", on_off},
     {"mouse_sensitivity", "ISS_MOUSE_SENS", "100", "Mouse look speed in percent (10 to 1000).", NULL},
+    {"hints", "ISS_HINTS", "auto",
+     "On-screen help for the touchpad (hold Alt) and the spray can (graffiti): auto (in full the first "
+     "three times, then a small label), always or off. Also in the F5 panel.", hint_choices},
     {"deadzone_left", "ISS_PAD_DEADZONE_LEFT", "10",
      "Left stick dead zone in percent of full deflection (0 to 50).", NULL},
     {"deadzone_right", "ISS_PAD_DEADZONE_RIGHT", "10",

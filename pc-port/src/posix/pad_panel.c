@@ -32,7 +32,7 @@ void pad_panel_set_mode(int mode) {
 }
 void pad_panel_read(PadPanel *out) {
     memset(out, 0, sizeof(*out));
-    out->swipe = out->mode = -1;
+    out->swipe = out->mode = out->hints = -1;
     out->sensitivity = 1;
     if (panel_read) panel_read(out);
 }

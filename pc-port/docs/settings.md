@@ -22,6 +22,7 @@ defaults back.
 | `shader_precompile` | `off` | `on`: compute shaders compiled ahead of time in the background, `off` |
 | `mouse_aim` | `on` | Mouse look and aim from the start (left button fires, right aims); F4 toggles in game |
 | `mouse_sensitivity` | `100` | Mouse look speed, 10 to 1000 percent (100: 0.046° per mouse count, see [mouse-and-keyboard.md](mouse-and-keyboard.md)) |
+| `hints` | `auto` | On-screen help for the touchpad (hold Alt) and the spray can: `auto` (in full the first 3 times per mode, then a small label; count in `<data>/hints-seen`), `always`, `off`. Also switched in the F5 panel, which saves it here |
 | `deadzone_left` | `10` | Left stick dead zone, 0 to 50 percent |
 | `deadzone_right` | `10` | Right stick dead zone, 0 to 50 percent |
 | `pad_map` | | Controller layout for pads without a touchpad |

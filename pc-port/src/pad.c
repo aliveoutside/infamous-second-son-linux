@@ -3,6 +3,7 @@
 // as touchpad (F6), spray can (F7) or aim and fire (F4), and the touchpad window (F5, src/pad_panel.c).
 #include "runtime.h"
 #include "pad_panel.h"
+#include "settings.h"
 #include <SDL3/SDL.h>
 #include <string.h>
 #include <stdio.h>
@@ -29,12 +30,12 @@ static uint64_t touch_start;
 static SDL_Gamepad *sdl_pad;
 static uint64_t scan_tick,sensor_tick;
 static float quaternion[4]={0,0,0,1};
-static int sdl_ready;
+static int sdl_ready,sdl_gyro;
 static int swipe_direction=-1,swipe_keys[4];
 static uint64_t swipe_started;
 static void scan_gamepads(void){
     uint64_t now=SDL_GetTicks();
-    if(sdl_pad&&!SDL_GamepadConnected(sdl_pad)){fprintf(stderr,"PAD disconnected\n");SDL_CloseGamepad(sdl_pad);sdl_pad=NULL;scan_tick=0;}
+    if(sdl_pad&&!SDL_GamepadConnected(sdl_pad)){fprintf(stderr,"PAD disconnected\n");SDL_CloseGamepad(sdl_pad);sdl_pad=NULL;sdl_gyro=0;scan_tick=0;}
     if(scan_tick&&now-scan_tick<1000)return;scan_tick=now;
     int count=0;SDL_JoystickID *ids=SDL_GetGamepads(&count);SDL_JoystickID chosen=0;int score=-1;
     for(int i=0;i<count;++i){SDL_GamepadType type=SDL_GetGamepadTypeForID(ids[i]);int s=(type==SDL_GAMEPAD_TYPE_PS4||type==SDL_GAMEPAD_TYPE_PS5)?2:1;
@@ -45,7 +46,7 @@ static void scan_gamepads(void){
     if(sdl_pad)SDL_CloseGamepad(sdl_pad);sdl_pad=next;
     memset(was_touch,0,sizeof(was_touch));memset(quaternion,0,sizeof(quaternion));quaternion[3]=1;sensor_tick=0;
     bool gyro=SDL_SetGamepadSensorEnabled(next,SDL_SENSOR_GYRO,true);
-    bool accel=SDL_SetGamepadSensorEnabled(next,SDL_SENSOR_ACCEL,true);
+    bool accel=SDL_SetGamepadSensorEnabled(next,SDL_SENSOR_ACCEL,true);sdl_gyro=gyro;
     fprintf(stderr,"PAD selected name=%s joystick=%s type=%d vendor=%04x product=%04x touchpads=%d gyro=%d accel=%d\n",
         SDL_GetGamepadName(next),SDL_GetJoystickName(SDL_GetGamepadJoystick(next)),(int)SDL_GetGamepadType(next),SDL_GetGamepadVendor(next),SDL_GetGamepadProduct(next),SDL_GetNumGamepadTouchpads(next),gyro,accel);
 }
@@ -73,12 +74,12 @@ static uint8_t pad_map[SRC_COUNT]={T_CROSS,T_CIRCLE,T_SQUARE,T_TRIANGLE,T_L1,T_R
 static const uint8_t playstation_map[SRC_COUNT]={T_CROSS,T_CIRCLE,T_SQUARE,T_TRIANGLE,T_L1,T_R1,T_L2,T_R2,T_L3,T_R3,T_NONE,
     T_OPTIONS,T_PS,T_NONE,T_UP,T_DOWN,T_LEFT,T_RIGHT};
 // The keyboard's touchpad shortcuts (ISS_TOUCH_KEYS="touch_left=Space,swipe_up=1,..." with SDL key
-// names). Tab stays a second key for the left side.
-enum {K_TOUCH_LEFT,K_TOUCH_RIGHT,K_TOUCH_BOTH,K_TOUCH_CENTER,K_SWIPE_UP,K_SWIPE_DOWN,K_SWIPE_LEFT,K_SWIPE_RIGHT,K_MOUSE,K_SPRAY,K_PANEL,K_AIM,K_COUNT};
+// names). Tab stays a second key for the left side. touchpad_hold: the mouse is the touchpad while the key is held.
+enum {K_TOUCH_LEFT,K_TOUCH_RIGHT,K_TOUCH_BOTH,K_TOUCH_CENTER,K_SWIPE_UP,K_SWIPE_DOWN,K_SWIPE_LEFT,K_SWIPE_RIGHT,K_MOUSE,K_SPRAY,K_PANEL,K_AIM,K_HOLD,K_COUNT};
 static const char *const touch_key_names[K_COUNT]={"touch_left","touch_right","touch_both","touch_center","swipe_up",
-    "swipe_down","swipe_left","swipe_right","mouse_touchpad","spray","panel","aim"};
+    "swipe_down","swipe_left","swipe_right","mouse_touchpad","spray","panel","aim","touchpad_hold"};
 static SDL_Scancode touch_keys[K_COUNT]={SDL_SCANCODE_Z,SDL_SCANCODE_X,SDL_SCANCODE_F8,SDL_SCANCODE_T,SDL_SCANCODE_1,
-    SDL_SCANCODE_2,SDL_SCANCODE_3,SDL_SCANCODE_4,SDL_SCANCODE_F6,SDL_SCANCODE_F7,SDL_SCANCODE_F5,SDL_SCANCODE_F4};
+    SDL_SCANCODE_2,SDL_SCANCODE_3,SDL_SCANCODE_4,SDL_SCANCODE_F6,SDL_SCANCODE_F7,SDL_SCANCODE_F5,SDL_SCANCODE_F4,SDL_SCANCODE_LALT};
 static int pad_swipe=-1,source_was[SRC_COUNT];
 // Each stick's dead zone (`deadzone_left`, `deadzone_right` in settings.toml, ISS_PAD_DEADZONE_LEFT/
 // _RIGHT: percent of full deflection, default 10): radial, and the rest of the range is stretched so
@@ -105,6 +106,7 @@ static void load_controls(void){
         char *v=strchr(item,'=');if(!v)continue;*v++=0;
         for(int k=0;k<K_COUNT;++k)if(!strcmp(item,touch_key_names[k])){const SDL_Scancode code=SDL_GetScancodeFromName(v);
             if(code!=SDL_SCANCODE_UNKNOWN)touch_keys[k]=code;else fprintf(stderr,"PAD_MAP unknown key '%s' for %s\n",v,item);}}
+    setenv("ISS_TOUCHPAD_HOLD_KEY",SDL_GetScancodeName(touch_keys[K_HOLD]),1); // named in the on-screen hint
     if(getenv("ISS_PAD_MAP")||getenv("ISS_TOUCH_KEYS")){fprintf(stderr,"PAD_MAP");for(int i=0;i<SRC_COUNT;++i)fprintf(stderr," %s=%s",source_names[i],targets[pad_map[i]].name);
         fprintf(stderr," keys");for(int k=0;k<K_COUNT;++k)fprintf(stderr," %s=%s",touch_key_names[k],SDL_GetScancodeName(touch_keys[k]));fputc('\n',stderr);}
 }
@@ -181,11 +183,15 @@ static int mouse_button(SDL_MouseButtonFlags mask){return (SDL_GetMouseState(NUL
 // middle button recenters it, Shift aims finely. F4: the mouse is the right stick (look and aim),
 // the left button fires (R2), the right button aims (L2), the middle button is R3 (mouse_sensitivity). The window title names the mode. The keys can be
 // changed with ISS_TOUCH_KEYS (above).
-static int mouse_mode,mode_keys[4],mouse_anchored,mouse_touch,spray_wait_release;
+// A graffiti stencil is on screen while it reads GYRO_Y_AXIS, GYRO_RETICLE_POS or the SprayShake button (native/graffiti.cpp, the game's thread):
+// without a controller's gyro the mouse and the right stick are then the can, as F7, until it stops.
+static volatile uint64_t graffiti_ns;
+void pad_graffiti_seen(void){graffiti_ns=SDL_GetTicksNS();}
+static int hold_active,mouse_mode,mode_keys[4],mouse_anchored,mouse_touch,spray_wait_release;
 static int cmd_spray_toggle,cmd_spray_center;static double cmd_shake_until,cmd_aim_until,cmd_paint_until;static float cmd_aim_dx,cmd_aim_dy; // ISS_PAD_CMD_FILE spray (paint: R2 held)
 static SDL_Window *game_window;
 static float mouse_anchor_x,mouse_anchor_y;
-static float spray[4];
+static float spray[2]; // the can's aim: yaw (right +), pitch (up +), radians; 0 0 recenters
 static uint64_t spray_tick;
 static const float spray_pose[4]={0,0,.70710678f,.70710678f}; // +90 degrees about Z: body +X (R side) up
 static void quat_mul(const float a[4],const float b[4],float out[4]){
@@ -196,16 +202,22 @@ static void quat_rotate(const float q[4],const float v[3],float out[3]){ // q v 
     const float t[3]={2*(q[1]*v[2]-q[2]*v[1]),2*(q[2]*v[0]-q[0]*v[2]),2*(q[0]*v[1]-q[1]*v[0])};
     out[0]=v[0]+q[3]*t[0]+q[1]*t[2]-q[2]*t[1];out[1]=v[1]+q[3]*t[1]+q[2]*t[0]-q[0]*t[2];out[2]=v[2]+q[3]*t[2]+q[0]*t[1]-q[1]*t[0];
 }
-// One read of the spray can: the mouse moved (dx, dy) pixels in dt seconds. The can turns about
-// the world's vertical (right: aims right) and horizontal axes (down: aims down), ISS_SPRAY_SENS
-// times 0.003 rad per pixel (PhonePad's Alt+mouse); the gyro gets the rate in the controller's
-// own axes and the accelerometer gravity (in G), plus a 6 Hz shake along the can while asked.
-void pad_spray_step(float q[4],float dx,float dy,float dt,int shake,double seconds,float angular[3],float accel[3]){
+// One read of the spray can: the mouse moved (dx, dy) pixels in dt seconds. The game's aim
+// (eboot+0x24b790, GYRO_RETICLE_POS) is the asin of the light bar's direction: the screen's width is
+// +-0.35 rad of yaw and its height +-0.25 rad of pitch about a centre that follows past the edges.
+// The can is kept as yaw and pitch, ISS_SPRAY_SENS times 0.0008 rad per pixel, within +-0.7 and
+// +-0.5 rad (the screen once more, for the centre's drift): turned freely, the mouse rolled it far
+// past what a hand does, and the aim went in arcs and would not go below the middle. The orientation
+// is pitch about the world's horizontal, then yaw about its vertical; the gyro gets the rate in the
+// controller's own axes and the accelerometer gravity (in G), plus a 6 Hz shake along the can while asked.
+void pad_spray_step(float aim[2],float dx,float dy,float dt,int shake,double seconds,float q[4],float angular[3],float accel[3]){
     static float sens=-1;if(sens<0){const char *s=getenv("ISS_SPRAY_SENS");sens=s?(float)atof(s):1;if(!(sens>0))sens=1;}
-    const float world[3]={-.003f*sens*dy,-.003f*sens*dx,0};const float angle=sqrtf(world[0]*world[0]+world[1]*world[1]);
-    if(angle>1e-7f){const float s=sinf(angle*.5f)/angle,r[4]={world[0]*s,world[1]*s,0,cosf(angle*.5f)};float n[4];quat_mul(r,q,n);
-        const float norm=sqrtf(n[0]*n[0]+n[1]*n[1]+n[2]*n[2]+n[3]*n[3]);for(int i=0;i<4;++i)q[i]=n[i]/norm;}
-    const float conj[4]={-q[0],-q[1],-q[2],q[3]},up[3]={0,1,0},rate[3]={dt>0?world[0]/dt:0,dt>0?world[1]/dt:0,0};
+    const float yaw=fminf(fmaxf(aim[0]+.0008f*sens*dx,-.7f),.7f),pitch=fminf(fmaxf(aim[1]-.0008f*sens*dy,-.5f),.5f);
+    const float dyaw=yaw-aim[0],dpitch=pitch-aim[1];aim[0]=yaw;aim[1]=pitch;
+    const float qy[4]={0,-sinf(yaw*.5f),0,cosf(yaw*.5f)},qx[4]={sinf(pitch*.5f),0,0,cosf(pitch*.5f)};float t[4];
+    quat_mul(qy,qx,t);quat_mul(t,spray_pose,q);
+    const float rate[3]={dt>0?dpitch*cosf(yaw)/dt:0,dt>0?-dyaw/dt:0,dt>0?dpitch*sinf(yaw)/dt:0};
+    const float conj[4]={-q[0],-q[1],-q[2],q[3]},up[3]={0,1,0};
     quat_rotate(conj,rate,angular);quat_rotate(conj,up,accel);
     if(shake){const float phase=(float)(6.283185307*6.0*seconds);accel[0]+=1.6f*sinf(phase);angular[2]+=4.0f*cosf(phase);}
 }
@@ -239,10 +251,10 @@ static void aim_step(float dx,float dy,float dt){
     aim_time=0;
 }
 static void set_mouse_mode(int mode,SDL_Window *window){
-    mouse_mode=mode;mouse_anchored=mouse_touch=0;spray_tick=0;memset(aim_debt,0,sizeof(aim_debt));look[0]=look[1]=0;aim_out[0]=aim_out[1]=128;aim_time=0;memcpy(spray,spray_pose,sizeof(spray));
+    mouse_mode=mode;mouse_anchored=mouse_touch=0;spray_tick=0;memset(aim_debt,0,sizeof(aim_debt));look[0]=look[1]=0;aim_out[0]=aim_out[1]=128;aim_time=0;spray[0]=spray[1]=0;
     spray_wait_release=mode==2;
     fprintf(stderr,"PAD_MOUSE mode=%s\n",mode==1?"touchpad":mode==2?"spray":mode==3?"aim":"off");
-    pad_panel_set_mode(mode);
+    pad_panel_set_mode(mode==1&&hold_active?4:mode); // 4: touchpad held, the on-screen hint names the key
     if(mode==2){float dx,dy;pad_panel_raw(&dx,&dy);}
     if(!window)return;
     static char base[256];
@@ -250,6 +262,13 @@ static void set_mouse_mode(int mode,SDL_Window *window){
     char title[320];
     snprintf(title,sizeof(title),"%s%s",base,mode==1?"  [touchpad: mouse]":mode==2?"  [spray: mouse]":mode==3?"  [aim: mouse]":"");
     SDL_SetWindowTitle(window,title);
+}
+// Leaving the touchpad or spray mode returns to the mode it was entered from (aim, or off).
+static void toggle_mouse_mode(int mode,SDL_Window *window){
+    static int back;
+    if(mouse_mode==mode){set_mouse_mode(back,window);return;}
+    if(mouse_mode==0||mouse_mode==3)back=mouse_mode;
+    set_mouse_mode(mode,window);
 }
 static uint8_t axis(int16_t v){return (uint8_t)(((int)v+32768)>>8);}
 static int32_t error(unsigned n){return (int32_t)(UINT32_C(0x80920000)|n);}
@@ -289,7 +308,7 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
         // O and U are the triggers while the mouse does not aim (F4).
         static const struct {SDL_Scancode code;uint32_t bit;} keys[]={{SDL_SCANCODE_SPACE,0x4000},{SDL_SCANCODE_LSHIFT,0x2000},
             {SDL_SCANCODE_F,0x8000},{SDL_SCANCODE_E,0x1000},{SDL_SCANCODE_Q,0x400},{SDL_SCANCODE_R,0x800},{SDL_SCANCODE_LCTRL,2},
-            {SDL_SCANCODE_M,4},{SDL_SCANCODE_ESCAPE,8},{SDL_SCANCODE_UP,0x10},{SDL_SCANCODE_RIGHT,0x20},{SDL_SCANCODE_DOWN,0x40},{SDL_SCANCODE_LEFT,0x80}};
+            {SDL_SCANCODE_M,4},{SDL_SCANCODE_ESCAPE,8},{SDL_SCANCODE_UP,0x10},{SDL_SCANCODE_RIGHT,0x20},{SDL_SCANCODE_DOWN,0x40},{SDL_SCANCODE_G,0x40},{SDL_SCANCODE_LEFT,0x80}};
         for(unsigned k=0;k<sizeof(keys)/sizeof(keys[0]);++k)if(key(keys[k].code))out->buttons|=keys[k].bit;
         if(key(SDL_SCANCODE_U))out->l2=255;if(key(SDL_SCANCODE_O))out->r2=255;
         const int both=key(touch_keys[K_TOUCH_BOTH]),left=key(touch_keys[K_TOUCH_LEFT])||key(SDL_SCANCODE_TAB)||both,right=key(touch_keys[K_TOUCH_RIGHT])||both;
@@ -300,8 +319,13 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
         for(int i=0;i<4;++i){int down=key(touch_keys[K_SWIPE_UP+i]);if(down&&!swipe_keys[i]){swipe_direction=i;swipe_started=out->timestamp;was_touch[0]=0;}swipe_keys[i]=down;}
         SDL_Window *window=focus;game_window=window;
         const int f6=key(touch_keys[K_MOUSE]),f7=key(touch_keys[K_SPRAY]),f5=key(touch_keys[K_PANEL]),f4=key(touch_keys[K_AIM]);
-        if(f6&&!mode_keys[0])set_mouse_mode(mouse_mode==1?0:1,window);
-        if(f7&&!mode_keys[1])set_mouse_mode(mouse_mode==2?0:2,window);
+        if(f6&&!mode_keys[0])toggle_mouse_mode(1,window);
+        // The hold key: the mouse is the touchpad until it is let go, then back to the mode it came from.
+        static int hold_was,hold_back;const int hold=key(touch_keys[K_HOLD]);
+        if(hold&&!hold_was&&mouse_mode!=1){hold_back=mouse_mode;hold_active=1;set_mouse_mode(1,window);}
+        if(!hold&&hold_was&&hold_active){hold_active=0;if(mouse_mode==1)set_mouse_mode(hold_back,window);}
+        hold_was=hold;
+        if(f7&&!mode_keys[1])toggle_mouse_mode(2,window);
         // The mouse aims from the first focused read (settings: mouse_aim), unless it is switched off.
         static int aim_default=-1;
         if(aim_default<0){const char *s=getenv("ISS_MOUSE_AIM");aim_default=!s||s[0]!='0';
@@ -324,6 +348,8 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
                     xy[0][0]=touch_coord((cursor_x+.5f)/(float)client_w,1919);xy[0][1]=touch_coord((cursor_y+.5f)/(float)client_h,941);
                     if(mouse_right)out->buttons|=0x100000;}
                 else mouse_touch=0;
+                // R2 for moves that hold it while a finger moves (middle or a side button; O also works).
+                if(!pad_panel_covers()&&mouse_button(SDL_BUTTON_MMASK|SDL_BUTTON_X1MASK|SDL_BUTTON_X2MASK))out->r2=255;
             }else{
                 // The cursor is held (hidden) at the window's centre, so the can turns as far as the
                 // mouse moves. The movement is the mouse's raw counts (no pointer acceleration: the
@@ -334,7 +360,7 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
                 mouse_anchor_x=centre_x;mouse_anchor_y=centre_y;mouse_anchored=1;
                 if(cursor_x!=centre_x||cursor_y!=centre_y)SDL_WarpMouseInWindow(window,centre_x,centre_y);
                 float raw_dx,raw_dy;if(pad_panel_raw(&raw_dx,&raw_dy)){mouse_dx=raw_dx;mouse_dy=raw_dy;}
-                if(mouse_mode==2&&mouse_button(SDL_BUTTON_MMASK))memcpy(spray,spray_pose,sizeof(spray));
+                if(mouse_mode==2&&mouse_button(SDL_BUTTON_MMASK))spray[0]=spray[1]=0;
             }
         }
     }else{memset(swipe_keys,0,sizeof(swipe_keys));swipe_direction=-1;mouse_anchored=mouse_touch=0;}
@@ -350,12 +376,22 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
         if(!contacts[0]&&!contacts[1]){contacts[0]=1;xy[0][0]=960;xy[0][1]=471;}}
     if(panel.options)out->buttons|=8;
     if(panel.swipe>=0){swipe_direction=panel.swipe;swipe_started=out->timestamp;was_touch[0]=0;}
-    if(panel.mode>=0&&game_window)set_mouse_mode(panel.mode==mouse_mode?0:panel.mode,game_window);
-    if(panel.recentre)memcpy(spray,spray_pose,sizeof(spray));
+    if(panel.mode>=0&&game_window)toggle_mouse_mode(panel.mode,game_window);
+    if(panel.recentre)spray[0]=spray[1]=0;
+    // The panel's hints switch (auto / always / off) is saved to settings.toml as `hints`.
+    if(panel.hints>=0&&panel.hints<3){static const char *const names[3]={"auto","always","off"};static char values[64][SETTINGS_VALUE_SIZE];
+        int at=-1;for(int i=0;i<settings_entry_count;++i)if(!strcmp(settings_entries[i].key,"hints"))at=i;
+        setenv("ISS_HINTS",names[panel.hints],1);
+        if(at>=0&&settings_entry_count<=64){settings_load(values);snprintf(values[at],SETTINGS_VALUE_SIZE,"%s",names[panel.hints]);
+            fprintf(stderr,"PAD hints=%s saved=%d\n",names[panel.hints],settings_save((const char (*)[SETTINGS_VALUE_SIZE])values)==0);}}
     // Scripted spray (ISS_PAD_CMD_FILE: spray, center, shake:s, paint:s, aimleft/aimright/aimup/aimdown:s): the can
     // mode toggled, shaken and turned as the mouse would.
-    if(cmd_spray_toggle){cmd_spray_toggle=0;set_mouse_mode(mouse_mode==2?0:2,game_window);spray_wait_release=0;}
-    if(cmd_spray_center){cmd_spray_center=0;memcpy(spray,spray_pose,sizeof(spray));}
+    if(cmd_spray_toggle){cmd_spray_toggle=0;toggle_mouse_mode(2,game_window);spray_wait_release=0;}
+    if(cmd_spray_center){cmd_spray_center=0;spray[0]=spray[1]=0;}
+    static int graffiti_back=-1;
+    const uint64_t seen=graffiti_ns;const int stencil=seen&&SDL_GetTicksNS()-seen<500000000u&&!(sdl_pad&&sdl_gyro);
+    if(stencil&&graffiti_back<0&&mouse_mode!=1){graffiti_back=mouse_mode;if(mouse_mode!=2)set_mouse_mode(2,game_window);}
+    if(!stencil&&graffiti_back>=0){if(mouse_mode==2&&graffiti_back!=2)set_mouse_mode(graffiti_back,game_window);graffiti_back=-1;}
     const double cmd_now=(double)out->timestamp/1e6;
     if(mouse_mode==2&&cmd_now<cmd_aim_until){mouse_dx+=cmd_aim_dx;mouse_dy+=cmd_aim_dy;}
     if(mouse_mode==2){
@@ -364,8 +400,12 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
         const float scale=panel.sensitivity*(focused&&shift_held()?.35f:1.f);
         if(!focused&&cmd_now>=cmd_aim_until)mouse_dx=mouse_dy=0;
         if(spray_wait_release){if(!mouse_left&&!mouse_right)spray_wait_release=0;mouse_left=mouse_right=0;}
-        pad_spray_step(spray,mouse_dx*scale,mouse_dy*scale,dt>0.1f?0.1f:dt,(focused&&mouse_right)||cmd_now<cmd_shake_until,(double)out->timestamp/1e6,out->angular,out->acceleration);
-        memcpy(out->orientation,spray,sizeof(spray));
+        // The right stick turns the can too (full deflection: 1000 pixels a second, squared for fine
+        // aim, past a 15% dead zone) and L2 shakes it; neither reaches the game while it is the can.
+        for(int i=0;i<2;++i){const float v=((i?out->ry:out->rx)-127.5f)/127.5f,m=fabsf(v)<.15f?0:(fabsf(v)-.15f)/.85f;
+            (i?&mouse_dy:&mouse_dx)[0]+=(v<0?-1:1)*m*m*1000.f*(dt>0.1f?0.1f:dt);}
+        const int stick_shake=out->l2>30;out->rx=out->ry=128;out->l2=0;
+        pad_spray_step(spray,mouse_dx*scale,mouse_dy*scale,dt>0.1f?0.1f:dt,(focused&&mouse_right)||stick_shake||cmd_now<cmd_shake_until,(double)out->timestamp/1e6,out->orientation,out->angular,out->acceleration);
         if(focused&&mouse_left){out->r2=255;}
     }
 

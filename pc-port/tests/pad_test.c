@@ -11,16 +11,26 @@ typedef int32_t(GUEST_ABI *Open)(int,int,int,const void*);
 typedef int32_t(GUEST_ABI *Read)(int,void*);
 static bool SDLCALL sensors(void *p,bool on){(void)p;(void)on;return true;}
 static float scalar(const unsigned char *p,int offset){float f;memcpy(&f,p+offset,4);return f;}
-void pad_spray_step(float q[4],float dx,float dy,float dt,int shake,double seconds,float angular[3],float accel[3]);
+void pad_spray_step(float aim[2],float dx,float dy,float dt,int shake,double seconds,float q[4],float angular[3],float accel[3]);
 // The F7 spray can: held on its side (gravity along the controller's +X), a mouse move to the
-// right turns it about the vertical (gyro -X), a move down about the horizontal (gyro +Y).
+// right turns it about the vertical (gyro -X), a move down about the horizontal (gyro +Y). The
+// light bar's direction gives the game's aim (eboot+0x24b790: asin of it), which stays straight
+// and reaches below the middle however far the mouse goes.
+static void spray_dir(const float q[4],float d[3]){ // q (0,0,-1) q*
+    const float x=q[0],y=q[1],z=q[2],w=q[3];d[0]=-2*(x*z+w*y);d[1]=-2*(y*z-w*x);d[2]=-(1-2*x*x-2*y*y);
+}
 static void spray_test(void){
-    float q[4]={0,0,.70710678f,.70710678f},w[3],a[3];
-    pad_spray_step(q,0,0,.01f,0,0,w,a);CHECK(fabsf(a[0]-1)<.001f&&fabsf(a[1])<.001f&&fabsf(w[0])<.001f);
-    pad_spray_step(q,10,0,.01f,0,0,w,a);CHECK(fabsf(w[0]+3)<.01f&&fabsf(w[1])<.01f&&fabsf(a[0]-1)<.001f);
+    float aim[2]={0,0},q[4],w[3],a[3],d[3];
+    pad_spray_step(aim,0,0,.01f,0,0,q,w,a);CHECK(fabsf(a[0]-1)<.001f&&fabsf(a[1])<.001f&&fabsf(w[0])<.001f);
+    spray_dir(q,d);CHECK(fabsf(d[2]+1)<.001f);
+    pad_spray_step(aim,10,0,.01f,0,0,q,w,a);CHECK(fabsf(w[0]+.8f)<.01f&&fabsf(w[1])<.01f&&fabsf(a[0]-1)<.001f);
     float norm=0;for(int i=0;i<4;++i)norm+=q[i]*q[i];CHECK(fabsf(norm-1)<.001f);
-    pad_spray_step(q,0,10,.01f,0,0,w,a);CHECK(fabsf(w[1]-3)<.01f&&fabsf(w[0])<.01f&&a[0]<1);
-    pad_spray_step(q,0,0,.01f,1,1.0/24,w,a);CHECK(a[0]>1.5f);
+    pad_spray_step(aim,0,10,.01f,0,0,q,w,a);CHECK(fabsf(w[1]-.8f)<.02f&&fabsf(w[0])<.01f&&a[0]<1);
+    pad_spray_step(aim,0,0,.01f,1,1.0/24,q,w,a);CHECK(a[0]>1.5f);
+    // Far down, then along: the aim's height stays put and is below the middle.
+    aim[0]=aim[1]=0;pad_spray_step(aim,0,5000,.01f,0,0,q,w,a);spray_dir(q,d);const float low=asinf(d[1]);CHECK(low<-.45f&&low>-.55f);
+    for(int i=0;i<40;++i){pad_spray_step(aim,-50,0,.01f,0,0,q,w,a);spray_dir(q,d);CHECK(fabsf(asinf(d[1])-low)<.001f);}
+    CHECK(aim[0]>=-.7f&&asinf(d[0])<-.6f);
 }
 int main(int argc,char **argv){
     int monitor=argc>1&&!strcmp(argv[1],"--monitor");

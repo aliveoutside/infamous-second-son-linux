@@ -3,12 +3,13 @@
 // like the save dialog: it works the same on X11, Wayland and fullscreen. The runtime (src/pad.c)
 // reads it through iss_gpu_pad_panel_*. TOUCHPAD: a pad to press and drag with the mouse, the
 // sides, click and swipes of PhonePad Desktop, and the mouse as touchpad (F6). SPRAY: the spray
-// can of the graffiti missions (F7), and its speed.
+// can of the graffiti missions (F7), and its speed. Both: the on-screen hints switch (`hints`).
 #include <SDL3/SDL.h>
 #include <imgui.h>
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <chrono>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -18,10 +19,10 @@ namespace iss::save_ui { ImFont* UiFont(bool bold); }
 namespace iss::pad_ui {
 namespace {
 enum { B_TAB_TOUCH, B_TAB_SPRAY, B_CLOSE, B_LEFT, B_BOTH, B_RIGHT, B_CLICK, B_UP, B_DOWN, B_SWLEFT, B_SWRIGHT,
-       B_MOUSE, B_OPTIONS, B_SPRAY, B_RECENTRE, B_LESS, B_MORE, B_COUNT };
+       B_MOUSE, B_OPTIONS, B_SPRAY, B_RECENTRE, B_LESS, B_MORE, B_HINTS, B_COUNT };
 const char* const labels[B_COUNT] = {"TOUCHPAD", "SPRAY", "X", "Left", "Both", "Right", "Click", "Up  Swipe",
     "Down  Swipe", "Left  Swipe", "Right  Swipe", "Mouse touchpad   (F6)", "Options (pause)", "START SPRAY MODE   (F7)",
-    "Recenter", "-", "+"};
+    "Recenter", "-", "+", ""};
 constexpr float W = 420, H = 660, TITLE = 30, PAD_X = 12, PAD_Y = 74, PAD_W = 396, PAD_H = 194; // the pad is 1920:942
 
 struct Rect { float l, t, r, b; };
@@ -32,14 +33,21 @@ struct State {
     float k = 0, ox = 0, oy = 0, px = -1, py = -1, drag_x = 0, drag_y = 0;
     PadPanel out{};
     PadLive live{};
+    // The on-screen help (`hints`: 0 auto, 1 always, 2 off) of the mode on now (kind: 0 none, 1 touchpad,
+    // 2 spray can): in full (`full`) until an action or a few seconds pass, then a small label.
+    int hints = 0, kind = 0;
+    bool full = false, acted = false;
+    std::chrono::steady_clock::time_point entered{};
+    uint32_t buttons = 0; // mouse buttons and triggers down at the last frame, for the first press
     State() {
-        out.swipe = out.mode = -1; out.sensitivity = 1;
+        out.swipe = out.mode = out.hints = -1; out.sensitivity = 1;
         if (const char* p = std::getenv("ISS_PAD_PANEL")) shown = p[0] == '1'; // starts open (checks and screenshots)
+        if (const char* h = std::getenv("ISS_HINTS")) hints = !std::strcmp(h, "always") ? 1 : !std::strcmp(h, "off") ? 2 : 0;
     }
 };
 State& S() { static State s; return s; }
 
-bool visible(const State& s, int b) { return b <= B_CLOSE || (s.tab == 0 ? b >= B_LEFT && b <= B_OPTIONS : b >= B_SPRAY); }
+bool visible(const State& s, int b) { return b <= B_CLOSE || b == B_HINTS || (s.tab == 0 ? b >= B_LEFT && b <= B_OPTIONS : b >= B_SPRAY); }
 Rect base_rect(int b) {
     switch (b) {
     case B_TAB_TOUCH: return {12, 38, 206, 66};
@@ -51,6 +59,7 @@ Rect base_rect(int b) {
     case B_RECENTRE: return {12, 134, 206, 164};
     case B_LESS: return {214, 134, 254, 164};
     case B_MORE: return {368, 134, 408, 164};
+    case B_HINTS: return {12, 474, 408, 504};
     default: {
         const int i = b - B_LEFT, row = i / 4, col = i % 4;
         const float l = PAD_X + col * 101, t = 278.f + row * 38;
@@ -91,6 +100,7 @@ void press(State& s, int b, bool down) {
     case B_MOUSE: if (down) o.mode = 1; break;
     case B_LESS: if (down && o.sensitivity > .25f) o.sensitivity -= .1f; break;
     case B_MORE: if (down && o.sensitivity < 1.95f) o.sensitivity += .1f; break;
+    case B_HINTS: if (down) { s.hints = (s.hints + 1) % 3; o.hints = s.hints; } break;
     case B_TAB_TOUCH: if (down) s.tab = 0; break;
     case B_TAB_SPRAY: if (down) s.tab = 1; break;
     default: break;
@@ -222,9 +232,121 @@ bool OnEvent(const SDL_Event& e) {
 bool Shown() { State& s = S(); std::lock_guard lock{s.mutex}; return s.shown; }
 
 // Every presented frame (render thread), before ImGui::Render.
+// A caption at the bottom or top of the screen: a bold title over one line of help.
+void DrawCaption(float width, float height, bool top, const char* title, const char* line) {
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImFont* bold = iss::save_ui::UiFont(true);
+    ImFont* font = iss::save_ui::UiFont(false);
+    if (!font) font = ImGui::GetFont();
+    if (!bold) bold = font;
+    const float k = std::clamp(height / 1200.f, 0.7f, 1.6f), fs = 17 * k, ts = 20 * k, pad = 14 * k;
+    const ImVec2 a = bold->CalcTextSizeA(ts, 1e9f, 0.f, title), b = font->CalcTextSizeA(fs, 1e9f, 0.f, line);
+    const float w = std::max(a.x, b.x) + 2 * pad, h = a.y + b.y + 2.5f * pad;
+    const float l = (width - w) / 2, t = top ? 28 * k : height - h - 44 * k;
+    dl->AddRectFilled({l, t}, {l + w, t + h}, C(14, 15, 18, 218), 8 * k);
+    dl->AddRect({l, t}, {l + w, t + h}, C(255, 255, 255, 40), 8 * k);
+    dl->AddText(bold, ts, {l + (w - a.x) / 2, t + pad}, C(246, 190, 30), title);
+    // Each line of help ('\n' between them) centred on its own.
+    float y = t + pad * 1.5f + a.y;
+    for (const char* p = line; *p;) {
+        const char* end = std::strchr(p, '\n');
+        if (!end) end = p + std::strlen(p);
+        const ImVec2 c = font->CalcTextSizeA(fs, 1e9f, 0.f, p, end);
+        dl->AddText(font, fs, {l + (w - c.x) / 2, y}, C(232, 234, 238), p, end);
+        y += c.y;
+        p = *end ? end + 1 : end;
+    }
+}
+// The first three times a mode comes on (`hints` auto; counted per mode in <data>/hints-seen) its help is shown
+// in full, then as a small label; `always` shows it in full every time, `off` never.
+std::string HintsFile() {
+    const char* dir = std::getenv("ISS_USER_DIR");
+    return (dir && *dir ? std::string(dir) + "/" : std::string()) + "hints-seen";
+}
+void EnterMode(State& s, int kind) {
+    if (kind == s.kind) return;
+    s.kind = kind;
+    if (!kind) return;
+    s.entered = std::chrono::steady_clock::now();
+    s.acted = false;
+    s.buttons = ~0u; // a button already down (the click that began the mode) is not the first action
+    if (s.hints != 0) { s.full = s.hints == 1; return; }
+    int seen[3] = {0, 0, 0};
+    const std::string path = HintsFile();
+    if (FILE* f = std::fopen(path.c_str(), "rb")) {
+        if (std::fscanf(f, "touchpad %d spray %d", &seen[1], &seen[2]) != 2) seen[1] = seen[2] = 0;
+        std::fclose(f);
+    }
+    s.full = seen[kind] < 3;
+    if (s.full) {
+        ++seen[kind];
+        if (FILE* f = std::fopen(path.c_str(), "wb")) { std::fprintf(f, "touchpad %d spray %d\n", seen[1], seen[2]); std::fclose(f); }
+    }
+}
+const char* hold_key() {
+    const char* name = std::getenv("ISS_TOUCHPAD_HOLD_KEY");
+    return name && *name ? name : "Left Alt";
+}
+// A small label at the top or bottom centre: the mode, and how to leave it.
+void DrawChip(float width, float height, bool top, const char* text) {
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImFont* font = iss::save_ui::UiFont(true);
+    if (!font) font = ImGui::GetFont();
+    const float k = std::clamp(height / 1200.f, 0.7f, 1.6f), fs = 15 * k, pad = 10 * k;
+    const ImVec2 sz = font->CalcTextSizeA(fs, 1e9f, 0.f, text);
+    const float w = sz.x + 2 * pad, h = sz.y + 1.2f * pad, l = (width - w) / 2, t = top ? 28 * k : height - h - 44 * k;
+    dl->AddRectFilled({l, t}, {l + w, t + h}, C(14, 15, 18, 170), h / 2);
+    dl->AddText(font, fs, {l + pad, t + 0.6f * pad}, C(246, 190, 30, 230), text);
+}
+// What the player sees without opening the panel: the help of the touchpad or spray mode while it is on, and
+// once, on the first run, how to reach the touchpad (marked by a file in the user folder).
+void DrawHints(State& s, float width, float height) {
+    if (s.shown || s.hints == 2) return;
+    if (s.kind) {
+        // The first press of a mouse button or a trigger after the mode began puts the help away.
+        float mx, my;
+        const uint32_t now = SDL_GetMouseState(&mx, &my) | (s.live.lt > 30 ? 0x100u : 0u) | (s.live.rt > 30 ? 0x200u : 0u);
+        if (now & ~s.buttons) s.acted = true;
+        s.buttons = now;
+        const float t = std::chrono::duration<float>(std::chrono::steady_clock::now() - s.entered).count();
+        const bool full = s.hints == 1 || (s.full && !s.acted && t < 6.f);
+        char title[96];
+        if (s.kind == 2) {
+            if (full) DrawCaption(width, height, true, "SPRAY CAN   (F7 to stop)",
+                                  "Mouse: aim     Left button: spray     Right button: shake     Middle: recentre     Shift: fine\n"
+                                  "Controller: right stick aims     R2 sprays     L2 shakes");
+            else DrawChip(width, height, true, "SPRAY CAN   |   F7 to stop");
+            return;
+        }
+        if (s.mode == 4) std::snprintf(title, sizeof(title), "TOUCHPAD   (hold %s)", hold_key());
+        else std::snprintf(title, sizeof(title), "TOUCHPAD   (F6 to go back)");
+        if (full) DrawCaption(width, height, false, title, "Left button: finger     Right button: click     Wheel or side button: R2");
+        else DrawChip(width, height, false, title);
+        return;
+    }
+    using clock = std::chrono::steady_clock;
+    static const clock::time_point start = clock::now();
+    static bool seen = false, marked = false;
+    static std::string marker;
+    if (seen) return;
+    const float t = std::chrono::duration<float>(clock::now() - start).count();
+    if (t < 45.f) return;
+    if (marker.empty()) {
+        const char* dir = std::getenv("ISS_USER_DIR");
+        marker = (dir && *dir ? std::string(dir) + "/" : std::string()) + "touchpad-hint-seen";
+        if (FILE* f = std::fopen(marker.c_str(), "rb")) { std::fclose(f); seen = true; return; }
+    }
+    if (t > 60.f) { seen = true; return; }
+    if (!marked) { marked = true; if (FILE* f = std::fopen(marker.c_str(), "wb")) std::fclose(f); }
+    char line[160];
+    std::snprintf(line, sizeof(line), "When the game asks for the touchpad, hold %s: the mouse becomes the touchpad.", hold_key());
+    DrawCaption(width, height, true, "TOUCHPAD", line);
+}
+
 void Draw(float width, float height) {
     State& s = S();
     std::lock_guard lock{s.mutex};
+    DrawHints(s, width, height);
     if (!s.shown) return;
     s.k = std::clamp(height / 1200.f, 0.7f, 1.6f);
     const float k = s.k;
@@ -273,7 +395,7 @@ void Draw(float width, float height) {
         if (!visible(s, b)) continue;
         const Rect r = screen_rect(s, base_rect(b));
         const bool tab_on = (b == B_TAB_TOUCH && s.tab == 0) || (b == B_TAB_SPRAY && s.tab == 1);
-        const bool active = b == s.pressed || (b == B_SPRAY && s.mode == 2) || (b == B_MOUSE && s.mode == 1) ||
+        const bool active = b == s.pressed || (b == B_SPRAY && s.mode == 2) || (b == B_MOUSE && (s.mode == 1 || s.mode == 4)) ||
                             (b == B_LEFT && o.left) || (b == B_RIGHT && o.right) || (b == B_BOTH && o.both) ||
                             (b == B_CLICK && o.centre) || (b == B_OPTIONS && o.options);
         ImU32 c = b == B_CLOSE ? (active ? col(196, 43, 28) : col(14, 15, 18)) : active ? blue : col(42, 46, 54);
@@ -281,7 +403,9 @@ void Draw(float width, float height) {
         dl->AddRectFilled({r.l, r.t}, {r.r, r.b}, c, b == B_CLOSE ? 0 : 8 * k);
         if (b <= B_TAB_SPRAY && tab_on) dl->AddRectFilled({r.l + 8 * k, r.b - 3 * k}, {r.r - 8 * k, r.b}, blue);
         const char* label = b == B_SPRAY && s.mode == 2 ? "SPRAY MODE ON   .   F7 TO STOP"
-                            : b == B_MOUSE && s.mode == 1 ? "Mouse touchpad: ON  (F6)" : labels[b];
+                            : b == B_MOUSE && (s.mode == 1 || s.mode == 4) ? "Mouse touchpad: ON  (F6)"
+                            : b == B_HINTS ? (s.hints == 1 ? "On-screen hints: always" : s.hints == 2 ? "On-screen hints: off"
+                                                                                       : "On-screen hints: auto") : labels[b];
         centered(r, label, b <= B_TAB_SPRAY && !tab_on ? dim : fg, fs);
     }
     DrawLive(dl, font, s, small, alpha);
@@ -298,7 +422,7 @@ extern "C" __declspec(dllexport) void iss_gpu_pad_panel_read(PadPanel* out) {
     auto& s = iss::pad_ui::S();
     std::lock_guard lock{s.mutex};
     *out = s.out;
-    s.out.swipe = s.out.mode = -1;
+    s.out.swipe = s.out.mode = s.out.hints = -1;
     s.out.recentre = 0;
 }
 extern "C" __declspec(dllexport) void iss_gpu_pad_panel_mode(int mode) {
@@ -306,6 +430,7 @@ extern "C" __declspec(dllexport) void iss_gpu_pad_panel_mode(int mode) {
     std::lock_guard lock{s.mutex};
     s.mode = mode;
     if (mode == 2) { s.tab = 1; iss::pad_ui::release_all(s); }
+    iss::pad_ui::EnterMode(s, mode == 2 ? 2 : mode == 1 || mode == 4 ? 1 : 0);
 }
 // 1 while the pointer is on the visible panel: the mouse modes of src/pad.c ignore those clicks.
 extern "C" __declspec(dllexport) int iss_gpu_pad_panel_covers(void) {
