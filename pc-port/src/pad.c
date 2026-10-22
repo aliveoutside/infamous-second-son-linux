@@ -308,7 +308,7 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
         // O and U are the triggers while the mouse does not aim (F4).
         static const struct {SDL_Scancode code;uint32_t bit;} keys[]={{SDL_SCANCODE_SPACE,0x4000},{SDL_SCANCODE_LSHIFT,0x2000},
             {SDL_SCANCODE_F,0x8000},{SDL_SCANCODE_E,0x1000},{SDL_SCANCODE_Q,0x400},{SDL_SCANCODE_R,0x800},{SDL_SCANCODE_LCTRL,2},
-            {SDL_SCANCODE_M,4},{SDL_SCANCODE_ESCAPE,8},{SDL_SCANCODE_UP,0x10},{SDL_SCANCODE_RIGHT,0x20},{SDL_SCANCODE_DOWN,0x40},{SDL_SCANCODE_G,0x40},{SDL_SCANCODE_LEFT,0x80}};
+            {SDL_SCANCODE_M,4},{SDL_SCANCODE_ESCAPE,8},{SDL_SCANCODE_UP,0x10},{SDL_SCANCODE_RIGHT,0x20},{SDL_SCANCODE_G,0x40},{SDL_SCANCODE_LEFT,0x80}};
         for(unsigned k=0;k<sizeof(keys)/sizeof(keys[0]);++k)if(key(keys[k].code))out->buttons|=keys[k].bit;
         if(key(SDL_SCANCODE_U))out->l2=255;if(key(SDL_SCANCODE_O))out->r2=255;
         const int both=key(touch_keys[K_TOUCH_BOTH]),left=key(touch_keys[K_TOUCH_LEFT])||key(SDL_SCANCODE_TAB)||both,right=key(touch_keys[K_TOUCH_RIGHT])||both;

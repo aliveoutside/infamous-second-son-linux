@@ -43,7 +43,7 @@ input and the spray can.
 | Space / Shift / F / E | Jump / power dash / melee / subdue and heal |
 | Q / R | L1 / R1: the current power's moves |
 | Ctrl / M | L3 / R3 |
-| Arrows | D-pad |
+| Up / Left / Right arrows, G | D-pad (G is Down: ultimate) |
 | Esc | Options |
 | F4 | Mouse aim on / off (`mouse_aim` setting) |
 | Z, X | Touchpad left, right |

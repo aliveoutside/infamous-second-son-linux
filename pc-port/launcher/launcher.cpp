@@ -513,7 +513,7 @@ void KeyboardDiagram() {
         {"Ctrl", "L3", 0, 5, 1.25f, 4, ImGuiKey_LeftCtrl}, {"Alt", "hold: touchpad", 2.5f, 5, 1.5f, 3, ImGuiKey_LeftAlt},
         {"Space", "jump", 4, 5, 6.25f, 1, ImGuiKey_Space, 1},
         {"^", "", 12.5f, 4, 1, 4, ImGuiKey_UpArrow}, {"<", "", 11.5f, 5, 1, 4, ImGuiKey_LeftArrow},
-        {"v", "ultimate", 12.5f, 5, 1, 4, ImGuiKey_DownArrow}, {">", "", 13.5f, 5, 1, 4, ImGuiKey_RightArrow},
+        {"v", "", 12.5f, 5, 1, 4, ImGuiKey_DownArrow}, {">", "", 13.5f, 5, 1, 4, ImGuiKey_RightArrow},
     };
     static const ImU32 fill[] = {IM_COL32(48, 92, 168, 255), IM_COL32(160, 52, 62, 255), IM_COL32(120, 82, 168, 255),
                                  IM_COL32(168, 128, 36, 255), IM_COL32(64, 68, 78, 255)};
