@@ -6,7 +6,7 @@ An experimental native Linux port of the PS4 game *inFAMOUS Second Son*. The gam
 code runs directly on your CPU. Its rendering goes to Vulkan through a renderer built on
 [shadPS4](https://github.com/shadps4-emu/shadPS4)'s video core.
 
-> **You need your own copy of the game** (CUSA00004, version 1.07). This repository contains no
+> **You need your own copy of the game** (CUSA00004 or CUSA00223, version 1.07). This repository contains no
 > game files, keys or copyrighted assets.
 
 [▶ Video showcase](https://youtu.be/V8LJlxHLb_Q)

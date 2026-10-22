@@ -16,7 +16,7 @@ defaults back.
 | `mangohud` | `off` | Launcher only: run the game under MangoHud, if installed |
 | `fov` | `100` | 50 to 200, percent of the game's |
 | `hud_width` | `16:9` | `16:9`, `21:9`, `full` |
-| `language` | `english` | english, french, italian, german, spanish, dutch, portuguese, russian, polish, turkish; danish, finnish, norwegian, swedish (subtitles only) |
+| `language` | `english` | english, french, italian, german, spanish, dutch, portuguese, russian, polish, turkish; danish, finnish, norwegian, swedish (subtitles only); latino, brazilian (CUSA00223 only) |
 | `gpu_memory` | `video` | `video`, `in_place` (much slower on NVIDIA) |
 | `shaders` | `wait` | `wait`, `parallel` (more compiler threads), `skip` (draws of compiling pipelines skipped) |
 | `shader_precompile` | `off` | `on`: compute shaders compiled ahead of time in the background, `off` |

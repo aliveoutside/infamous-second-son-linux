@@ -29,5 +29,5 @@ tested defaults are in `src/settings.c`.
 
 | | |
 |---|---|
-| Game | CUSA00004, version 01.07 |
+| Game | CUSA00004 (Europe) or CUSA00223 (North America, same `eboot.bin`), version 01.07 |
 | eboot SHA-256 | `2d1ca79630d7bbe6fa29575f59aa7996d43071d74ac8e4f7d40137967d9039ab` |

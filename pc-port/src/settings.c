@@ -71,8 +71,8 @@ static const char *const precompile_choices[] = {"on=auto", "off=", NULL};
 static const char *const hud_choices[] = {"16:9=1.7778", "21:9=2.3704", "full=0", NULL};
 static const char *const language_choices[] = {
     "english=1", "french=2", "spanish=3", "german=4", "italian=5", "dutch=6", "portuguese=7",
-    "russian=8", "finnish=12", "swedish=13", "danish=14", "norwegian=15", "polish=16", "turkish=19",
-    NULL};
+    "russian=8", "finnish=12", "swedish=13", "danish=14", "norwegian=15", "polish=16", "brazilian=17",
+    "turkish=19", "latino=20", NULL};
 const Setting settings_entries[] = {
     {"game_dir", "ISS_GAME_DIR", "", "The game folder (the one with eboot.bin).", NULL},
     {"save_dir", "ISS_SAVE_ROOT", "", "Where saves go. Empty: <data folder>/savedata.", NULL},
@@ -87,7 +87,8 @@ const Setting settings_entries[] = {
     {"hud_width", "ISS_HUD_ASPECT", "16:9", "HUD edges on screens wider than 16:9: 16:9, 21:9 or full.", hud_choices},
     {"language", "ISS_LANGUAGE", "english",
      "english french italian german spanish dutch portuguese russian polish turkish (voices), "
-     "danish finnish norwegian swedish (subtitles only).", language_choices},
+     "danish finnish norwegian swedish (subtitles only); North American edition: "
+     "english french latino brazilian.", language_choices},
     {"gpu_memory", "ISS_UNIFIED_MEMORY", "video",
      "video: the GPU reads copies in video memory. in_place: reads the game's memory directly "
      "(much slower on NVIDIA).", memory_choices},

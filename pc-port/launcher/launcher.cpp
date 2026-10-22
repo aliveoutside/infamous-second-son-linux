@@ -400,7 +400,8 @@ void GameTab() {
            {"Spanish", "spanish"}, {"Dutch", "dutch"}, {"Portuguese", "portuguese"}, {"Russian", "russian"},
            {"Polish", "polish"}, {"Turkish", "turkish"}, {"Danish (subtitles)", "danish"},
            {"Finnish (subtitles)", "finnish"}, {"Norwegian (subtitles)", "norwegian"},
-           {"Swedish (subtitles)", "swedish"}});
+           {"Swedish (subtitles)", "swedish"},
+           {"Spanish, Latin America (NA edition)", "latino"}, {"Portuguese, Brazil (NA edition)", "brazilian"}});
     ImGui::EndTable();
 }
 
