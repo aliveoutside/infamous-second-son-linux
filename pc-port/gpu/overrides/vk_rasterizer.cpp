@@ -1956,7 +1956,11 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline,bool is_indexed,u32
     if (cycles) g_draw_cycles.Mark(2);
     // ISS_NATIVE_PASSES: the template of a learn request's draw, under the key of its registers
     // (indexed or DRAW_INDEX_AUTO: the same pipeline and resources).
-    const u64 pass_learn_key = native_pass_learn && !OnDrawWorker()
+    // FSR's SMAA passes are never learned: a template lets the engine threads record the draw into
+    // a native pass segment, which skips Draw()'s FSR hooks (no dispatch, no resolve, no frame
+    // generation); they stay draws of the command processor.
+    const u64 pass_learn_key = native_pass_learn && !OnDrawWorker() &&
+                                       !FsrFullPath(DrawRegs(), pipeline_cache)
                                    ? NativePassLearnKey(native_pass_learn) : 0;
     native_pass_learn = 0;
     std::vector<NativeImageCapture> pass_capture;
