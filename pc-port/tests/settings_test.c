@@ -38,6 +38,17 @@ int main(void) {
     CHECK(aim >= 0 && !strcmp(values[aim], "on") && settings_valid(aim, "off") && !settings_valid(aim, "maybe"));
     const int hints = index_of("hints");
     CHECK(hints >= 0 && !strcmp(values[hints], "auto") && settings_valid(hints, "off") && settings_valid(hints, "always") && !settings_valid(hints, "never"));
+    const int perf = index_of("performance_mode"), native = index_of("native_passes");
+    CHECK(perf >= 0 && !strcmp(values[perf], "off") && settings_valid(perf, "low") && settings_valid(perf, "office") && !settings_valid(perf, "high"));
+    CHECK(native >= 0 && !strcmp(values[native], "on") && settings_valid(native, "off") && !settings_valid(native, "maybe"));
+    // FSR 3 (fsr_aa, frame_generation) replaced the FSR 1 upscaling (fsr, retired).
+    const int fsr_aa = index_of("fsr_aa"), fg = index_of("frame_generation");
+    CHECK(fsr_aa >= 0 && !strcmp(values[fsr_aa], "off") && settings_valid(fsr_aa, "on") && !settings_valid(fsr_aa, "yes"));
+    CHECK(fg >= 0 && !strcmp(values[fg], "off") && settings_valid(fg, "on") && !settings_valid(fg, "2x"));
+    CHECK(index_of("fsr") < 0);
+    const int mode = index_of("fsr_mode"), sharp = index_of("fsr_sharpness");
+    CHECK(mode >= 0 && !strcmp(values[mode], "native") && settings_valid(mode, "performance") && !settings_valid(mode, "fast"));
+    CHECK(sharp >= 0 && !strcmp(values[sharp], "0") && settings_valid(sharp, "100") && !settings_valid(sharp, "101"));
     const int sens = index_of("mouse_sensitivity");
     CHECK(sens >= 0 && !strcmp(values[sens], "100") && settings_valid(sens, "300") && !settings_valid(sens, "5") && !settings_valid(sens, "x"));
     const int dead = index_of("deadzone_left"), dead_right = index_of("deadzone_right");

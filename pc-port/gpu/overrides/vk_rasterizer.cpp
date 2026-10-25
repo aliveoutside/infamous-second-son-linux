@@ -1,3 +1,4 @@
+#include "fsr_upscale.h"
 #include <shared_mutex>
 #include <algorithm>
 #include <execution>
@@ -1355,6 +1356,391 @@ void Rasterizer::BindPipelineLazy(Scheduler& on, vk::PipelineBindPoint bind_poin
     });
 }
 
+// ISS_FSR: what the SMAA edges draw of a frame shows the resolve (the tonemap output it reads and
+// the scene depth it is drawn with); the images are looked up again by the resolve.
+namespace {
+struct FsrScene {
+    VideoCore::ImageId color{};
+    VideoCore::ImageId depth{};
+    u32 color_generation{};
+    u32 depth_generation{};
+    int dst_sel[4]{};
+    int phase{}; // SMAA T2x subsample index of the frame: 1 or 2, 0 unknown
+    int frames{}; // SMAA blend weights draws since the last resolve
+    // The motion vectors the resolve reads, learned at the resolve.
+    VideoCore::ImageId motion{};
+    u32 motion_generation{};
+    bool dispatched{}; // FSR ran on a render since the last resolve: last
+    u64 scene_address{};  // what SMAA wrote (the neighborhood target) on that render
+    u64 output_address{}; // what the resolve writes, learned at the resolve
+    // Upscaling (fsr_mode below native): the resolve is of the render size, the upscale pass
+    // after it gets the FSR output instead. Pending from the resolve to that pass.
+    bool upscale_pending{};
+    iss::fsr::Frame last;
+};
+FsrScene g_fsr_scene;
+constexpr u64 kFsrEdgesPsHash = 0xabc3c768;
+constexpr u64 kFsrResolvePsHash = 0xa6d23116;
+constexpr u64 kFsrBlendWeightsPsHash = 0x961c93ba;
+constexpr u64 kFsrNeighborhoodPsHash = 0x947b9a11; // SMAA's last pass, once per scene render
+// A plain copy. On a frame that missed its 30 FPS slot the game leaves its T2x resolve out and
+// copies the SMAA output to the resolve's target (and its history): FSR takes it as the resolve.
+constexpr u64 kFsrCopyPsHash = 0xbb06bcb3;
+// With a render size below the output size: the pass that takes the resolve's output to the
+// output size: a plain copy in bytes (the red and blue it swaps and its sRGB decode and encode
+// only undo how its image is viewed; swapping the bytes turned the picture blue).
+constexpr u64 kFsrUpscalePsHash = 0x529286b5;
+// The pixel programs of those draws go to the full path: the fast and native paths come before
+// the pipeline (and its hash) is known. The engine keeps copies of a shader at several addresses
+// and the fast path switches between them (fast_draw.inl), so every program address is told by
+// its hash, once. A pass taken by the fast path is missed: FSR loses a frame of its history.
+struct FsrProgram {
+    u64 address;
+    u32 settings;
+    bool fsr;
+};
+std::array<FsrProgram, 4096> g_fsr_programs{};
+bool FsrFullPath(const AmdGpu::Regs& regs, Vulkan::PipelineCache& cache) {
+    if (!iss::fsr::Enabled()) {
+        return false;
+    }
+    const u64 ps = regs.ps_program.Address<u64>();
+    if (!ps) {
+        return false;
+    }
+    u32 settings;
+    std::memcpy(&settings, &regs.ps_program.settings, sizeof(settings));
+    auto& entry = g_fsr_programs[(ps * 0x9E3779B97F4A7C15ULL) >> 52];
+    if (entry.address != ps || entry.settings != settings) {
+        const u64 hash = cache.GraphicsProgramHash(regs.ps_program);
+        entry = {ps, settings,
+                 hash == kFsrEdgesPsHash || hash == kFsrBlendWeightsPsHash ||
+                     hash == kFsrResolvePsHash || hash == kFsrNeighborhoodPsHash ||
+                     hash == kFsrCopyPsHash || hash == kFsrUpscalePsHash};
+    }
+    return entry.fsr;
+}
+// ISS_FSR_DEBUG: frames that are not one edges, one blend weights and one resolve with the
+// other jitter phase, with the wall time, to match against what is seen on screen.
+void FsrWatch(u64 hash, bool pipelined);
+} // namespace
+
+namespace {
+// ISS_FSR_DEBUG: every SMAA pass of a frame with more than one (or the first frames): the images
+// each pass reads and writes (guest addresses, sizes), the jitter phase of its blend weights, and
+// what the resolve reads. Shows which pass is the scene the resolve uses.
+void FsrPassLog(const AmdGpu::Regs& regs, const Shader::Info& ps, bool pipelined) {
+    static const bool debug = std::getenv("ISS_FSR_DEBUG") != nullptr;
+    if (!debug) {
+        return;
+    }
+    const u64 hash = ps.pgm_hash;
+    const char* name = hash == kFsrEdgesPsHash          ? "edges"
+                       : hash == kFsrBlendWeightsPsHash ? "blend"
+                       : hash == kFsrNeighborhoodPsHash ? "neighborhood"
+                       : hash == kFsrResolvePsHash      ? "resolve"
+                                                        : nullptr;
+    if (!name) {
+        return;
+    }
+    static std::string log;
+    static int edges = 0;
+    static u64 resolves = 0, printed = 0;
+    char line[512];
+    int n = std::snprintf(line, sizeof(line), "  flip %llu %s%s target %#llx",
+                          (unsigned long long)iss::fsr::GetStats().flips.load(std::memory_order_relaxed),
+                          name, pipelined ? " (pipelined)" : "",
+                          regs.color_buffers[0] ? (unsigned long long)regs.color_buffers[0].Address() : 0ull);
+    for (size_t i = 0; i < ps.images.size() && i < 5 && n < 400; ++i) {
+        const auto sharp = ps.images[i].GetSharp(ps);
+        n += std::snprintf(line + n, sizeof(line) - n, " in%zu %#llx %ux%u", i,
+                           (unsigned long long)sharp.Address(), unsigned(sharp.width + 1),
+                           unsigned(sharp.height + 1));
+    }
+    if (hash == kFsrBlendWeightsPsHash) {
+        n += std::snprintf(line + n, sizeof(line) - n, " phase %d", g_fsr_scene.phase);
+    }
+    log += line;
+    log += '\n';
+    edges += hash == kFsrEdgesPsHash;
+    if (hash == kFsrResolvePsHash) {
+        const auto now = std::chrono::steady_clock::now();
+        static const auto start = now;
+        if ((edges != 1 || resolves < 3) && (printed < 60 || (printed % 100) == 0)) {
+            std::fprintf(stderr, "FSR_PASSES t=%.2fs resolve %llu, %d scene passes:\n%s",
+                         std::chrono::duration<float>(now - start).count(),
+                         (unsigned long long)resolves, edges, log.c_str());
+        }
+        printed += edges != 1;
+        ++resolves;
+        edges = 0;
+        log.clear();
+    } else if (log.size() > 8192) {
+        log.clear(); // no resolve: not a frame
+    }
+}
+
+void FsrWatch(u64 hash, bool pipelined) {
+    static const bool debug = std::getenv("ISS_FSR_DEBUG") != nullptr;
+    static int edges = 0, blends = 0, last_phase = 0;
+    static u64 resolves = 0;
+    static auto last = std::chrono::steady_clock::now();
+    static const auto start = last;
+    if (!debug) {
+        return;
+    }
+    if (hash == kFsrEdgesPsHash) {
+        ++edges;
+    } else if (hash == kFsrBlendWeightsPsHash) {
+        ++blends;
+    } else if (hash == kFsrResolvePsHash) {
+        const auto now = std::chrono::steady_clock::now();
+        const float dt = std::chrono::duration<float, std::milli>(now - last).count();
+        const float t = std::chrono::duration<float>(now - start).count();
+        const int phase = g_fsr_scene.phase;
+        if (edges != 1 || blends != 1 || phase == last_phase || pipelined || dt > 50.0f) {
+            std::fprintf(stderr,
+                         "FSR_WATCH t=%.2fs resolve %llu: edges %d blends %d phase %d (last %d) "
+                         "pipelined %d dt %.1f ms\n",
+                         t, (unsigned long long)resolves, edges, blends, phase, last_phase,
+                         int(pipelined), dt);
+        }
+        ++resolves;
+        edges = blends = 0;
+        last_phase = phase;
+        last = now;
+    }
+}
+} // namespace
+
+// ISS_FSR_DEBUG: why a frame keeps the game's resolve (counts, every 256th of a reason).
+static bool FsrSkip(int reason) {
+    static const bool debug = std::getenv("ISS_FSR_DEBUG") != nullptr;
+    static u64 skips[6]{};
+    if (debug && (skips[reason]++ & 255) == 0) {
+        static constexpr const char* names[] = {"no edges draw", "no jitter phase",
+                                                "image generation changed", "no motion learned",
+                                                "no target", "no FSR run on this render"};
+        std::fprintf(stderr, "FSR: skipped: %s (%llu)\n", names[reason],
+                     (unsigned long long)skips[reason]);
+    }
+    return false;
+}
+
+// At SMAA's last pass of each scene render: FSR on its colour, depth and motion into its own
+// output. A hitch renders the scene twice before one resolve; each render gets its dispatch, so
+// FSR's history stays whole and the resolve takes the last one.
+void Rasterizer::FsrDispatch() {
+    if (!g_fsr_scene.color || !g_fsr_scene.depth) {
+        FsrSkip(0); // the first frames, before an edges draw
+        return;
+    }
+    if (!g_fsr_scene.phase) {
+        FsrSkip(1);
+        return;
+    }
+    if (!g_fsr_scene.motion) {
+        FsrSkip(3); // the first frame: the resolve shows where the vectors are
+        return;
+    }
+    if (texture_cache.ImageGeneration(g_fsr_scene.color) != g_fsr_scene.color_generation ||
+        texture_cache.ImageGeneration(g_fsr_scene.depth) != g_fsr_scene.depth_generation ||
+        texture_cache.ImageGeneration(g_fsr_scene.motion) != g_fsr_scene.motion_generation) {
+        FsrSkip(2);
+        return;
+    }
+    auto& color = texture_cache.GetImage(g_fsr_scene.color);
+    auto& depth = texture_cache.GetImage(g_fsr_scene.depth);
+    auto& motion = texture_cache.GetImage(g_fsr_scene.motion);
+    const u32 width = color.info.size.width, height = color.info.size.height;
+    const auto same_size = [&](const VideoCore::Image& image) {
+        return image.info.size.width == width && image.info.size.height == height;
+    };
+    if (!same_size(depth) || !same_size(motion)) {
+        static int reported = 0;
+        if (reported++ < 4) {
+            std::fprintf(stderr, "FSR: input sizes differ, the game's resolve stays\n");
+        }
+        return;
+    }
+    iss::fsr::Frame frame;
+    frame.phase = g_fsr_scene.phase;
+    if (!iss::fsr::Prepare(instance, width, height, frame)) {
+        return;
+    }
+    const auto convert = [](const VideoCore::Image& image, bool depth_image) {
+        return iss::fsr::Image{
+            .image = image.GetImage(),
+            .format = image.info.pixel_format,
+            .usage = image.usage_flags,
+            .aspect = depth_image ? vk::ImageAspectFlagBits::eDepth : vk::ImageAspectFlagBits::eColor,
+            .width = image.info.size.width,
+            .height = image.info.size.height,
+        };
+    };
+    frame.color = convert(color, false);
+    frame.depth = convert(depth, true);
+    frame.motion = convert(motion, false);
+    if (!iss::fsr::Check(frame)) {
+        return;
+    }
+    scheduler.EndRendering();
+    using Stage = vk::PipelineStageFlagBits2;
+    using Access = vk::AccessFlagBits2;
+    bool flush = runtime.Transit(&color, vk::ImageLayout::eShaderReadOnlyOptimal,
+                                 Stage::eComputeShader, Access::eShaderRead);
+    flush |= runtime.Transit(&motion, vk::ImageLayout::eShaderReadOnlyOptimal,
+                             Stage::eComputeShader, Access::eShaderRead);
+    flush |= runtime.Transit(&depth, vk::ImageLayout::eShaderReadOnlyOptimal,
+                             Stage::eComputeShader, Access::eShaderRead);
+    if (flush) {
+        runtime.FlushBarriers();
+    }
+    scheduler.Recorder().Record(
+        [frame](vk::CommandBuffer cmdbuf) { iss::fsr::Record(cmdbuf, frame); });
+    // FSR bound its own pipelines and descriptors.
+    scheduler.GetDynamicState().Invalidate();
+    g_fsr_scene.dispatched = true;
+    g_fsr_scene.scene_address = DrawRegs().color_buffers[0] ? DrawRegs().color_buffers[0].Address() : 0;
+    g_fsr_scene.last = frame;
+}
+
+// The game's T2x resolve: replaced by the last FSR output, copied into its target.
+bool Rasterizer::FsrResolve(const GraphicsPipeline* pipeline, bool copy) {
+    const auto& regs = DrawRegs();
+    const auto& ps = pipeline->GetStage(Shader::SwStage::Fragment);
+    if (ps.images.empty() || !regs.color_buffers[0]) {
+        return FsrSkip(4);
+    }
+    if (!copy) {
+        VideoCore::TextureCache::ImageDesc motion_desc{ps.images[0].GetSharp(ps), ps.images[0]};
+        if (const auto motion_id = texture_cache.FindImage(motion_desc)) {
+            g_fsr_scene.motion = motion_id;
+            g_fsr_scene.motion_generation = texture_cache.ImageGeneration(motion_id);
+        }
+        g_fsr_scene.output_address = regs.color_buffers[0].Address();
+    }
+    const bool dispatched = std::exchange(g_fsr_scene.dispatched, false);
+    if (!dispatched) {
+        return FsrSkip(5);
+    }
+    auto hint = DrawCbExtents()[0];
+    if (!hint.Valid()) {
+        hint = texture_cache.LearnedTargetExtent(regs.color_buffers[0].Address(),
+                                                 regs.color_buffers[0].Pitch());
+    }
+    VideoCore::TextureCache::ImageDesc out_desc{regs.color_buffers[0], hint};
+    const auto out_id = texture_cache.FindImage(out_desc);
+    if (!out_id) {
+        return FsrSkip(4);
+    }
+    auto& output = texture_cache.GetImage(out_id);
+    const auto& frame = g_fsr_scene.last;
+    const u32 out_w = output.info.size.width, out_h = output.info.size.height;
+    // Upscaling into a resolve of the render size: the output size goes to the pass after it.
+    const bool render_size = iss::fsr::Upscaling() && out_w == frame.color.width &&
+                             out_h == frame.color.height;
+    g_fsr_scene.upscale_pending = false;
+    if ((!render_size && (out_w != frame.output.width || out_h != frame.output.height)) ||
+        output.info.pixel_format != frame.color.format) {
+        static int reported = 0;
+        if (reported++ < 4) {
+            std::fprintf(stderr, "FSR: target %ux%u %s differs, the game's resolve stays\n",
+                         output.info.size.width, output.info.size.height,
+                         vk::to_string(output.info.pixel_format).c_str());
+        }
+        return false;
+    }
+    if (static int reported = 0; reported++ < 2 && std::getenv("ISS_FSR_DEBUG")) {
+        const auto sw = regs.color_buffers[0].Swizzle();
+        std::fprintf(stderr, "FSR: target %ux%u format %s cb swizzle %d%d%d%d edges dst_sel %d%d%d%d\n",
+                     output.info.size.width, output.info.size.height,
+                     vk::to_string(output.info.pixel_format).c_str(), int(sw.r), int(sw.g),
+                     int(sw.b), int(sw.a), g_fsr_scene.dst_sel[0], g_fsr_scene.dst_sel[1],
+                     g_fsr_scene.dst_sel[2], g_fsr_scene.dst_sel[3]);
+    }
+    // ISS_FG: the output before the HUD and the optical flow. After a hitch (two renders for
+    // this resolve) the vectors cover one render, not the time shown: FG starts over.
+    auto fg_frame = frame;
+    fg_frame.reset = frame.reset || g_fsr_scene.frames > 1;
+    if (g_fsr_scene.frames > 1) {
+        iss::fsr::GetStats().double_renders.fetch_add(1, std::memory_order_relaxed);
+    }
+    iss::fsr::FgPrepared fg{};
+    const bool fg_prepare = iss::fsr::FgPrepare(instance, fg_frame, fg);
+    scheduler.EndRendering();
+    if (runtime.Transit(&output, vk::ImageLayout::eTransferDstOptimal,
+                        vk::PipelineStageFlagBits2::eTransfer,
+                        vk::AccessFlagBits2::eTransferWrite)) {
+        runtime.FlushBarriers();
+    }
+    const vk::Image target = output.GetImage();
+    g_fsr_scene.upscale_pending = render_size;
+    scheduler.Recorder().Record([fg_frame, fg, fg_prepare, target, out_w, out_h](vk::CommandBuffer cmdbuf) {
+        iss::fsr::RecordCopyOut(cmdbuf, fg_frame, target, out_w, out_h);
+        if (fg_prepare) {
+            iss::fsr::FgRecordPrepare(cmdbuf, fg_frame, fg);
+        }
+    });
+    scheduler.GetDynamicState().Invalidate();
+    output.flags |= VideoCore::ImageFlagBits::GpuModified;
+    output.flags &= ~VideoCore::ImageFlagBits::Dirty;
+    return true;
+}
+
+// Upscaling: the game's upscale pass from the resolve's output (of the render size) gets the FSR
+// output of the output size in its place.
+bool Rasterizer::FsrUpscalePass(const GraphicsPipeline* pipeline) {
+    const auto& regs = DrawRegs();
+    const auto* ps = pipeline->GetStages()[static_cast<u32>(Shader::SwStage::Fragment)];
+    if (!ps || ps->pgm_hash != kFsrUpscalePsHash || ps->images.size() != 1 ||
+        !regs.color_buffers[0] ||
+        ps->images[0].GetSharp(*ps).Address() != g_fsr_scene.output_address) {
+        return false;
+    }
+    g_fsr_scene.upscale_pending = false;
+    const auto& frame = g_fsr_scene.last;
+    auto hint = DrawCbExtents()[0];
+    if (!hint.Valid()) {
+        hint = texture_cache.LearnedTargetExtent(regs.color_buffers[0].Address(),
+                                                 regs.color_buffers[0].Pitch());
+    }
+    VideoCore::TextureCache::ImageDesc out_desc{regs.color_buffers[0], hint};
+    const auto out_id = texture_cache.FindImage(out_desc);
+    if (!out_id) {
+        return false;
+    }
+    auto& output = texture_cache.GetImage(out_id);
+    const auto format = output.info.pixel_format;
+    const bool bytes4 = format == vk::Format::eR8G8B8A8Unorm || format == vk::Format::eR8G8B8A8Srgb ||
+                        format == vk::Format::eB8G8R8A8Unorm || format == vk::Format::eB8G8R8A8Srgb;
+    if (output.info.size.width != frame.output.width ||
+        output.info.size.height != frame.output.height || !bytes4) {
+        static int reported = 0;
+        if (reported++ < 4) {
+            std::fprintf(stderr, "FSR: upscale target %ux%u %s, the game scales the picture up\n",
+                         output.info.size.width, output.info.size.height,
+                         vk::to_string(format).c_str());
+        }
+        return false;
+    }
+    scheduler.EndRendering();
+    if (runtime.Transit(&output, vk::ImageLayout::eTransferDstOptimal,
+                        vk::PipelineStageFlagBits2::eTransfer,
+                        vk::AccessFlagBits2::eTransferWrite)) {
+        runtime.FlushBarriers();
+    }
+    const vk::Image target = output.GetImage();
+    const u32 w = frame.output.width, h = frame.output.height;
+    scheduler.Recorder().Record([frame, target, w, h](vk::CommandBuffer cmdbuf) {
+        iss::fsr::RecordCopyOut(cmdbuf, frame, target, w, h);
+    });
+    scheduler.GetDynamicState().Invalidate();
+    output.flags |= VideoCore::ImageFlagBits::GpuModified;
+    output.flags &= ~VideoCore::ImageFlagBits::Dirty;
+    return true;
+}
+
 std::size_t Rasterizer::Draw(bool is_indexed, u32 index_offset,
                              std::span<const u32> following_commands, std::size_t native_packet_budget) {
     const iss::cp_path::Scope cp_path_scope{iss::cp_path::Draw};
@@ -1364,7 +1750,7 @@ std::size_t Rasterizer::Draw(bool is_indexed, u32 index_offset,
     // ISS_NATIVE_PASSES learn request: the full path (DrawRecord), which keeps the template.
     const bool pass_learn = native_pass_learn != 0 && !pipelined;
     // Pause guard (pause_guard.h): in the pause every native/fast path below is off.
-    const bool native_off = pass_learn || iss::pause_guard::Blocked();
+    const bool native_off = pass_learn || iss::pause_guard::Blocked() || FsrFullPath(DrawRegs(), pipeline_cache);
     if(!pipelined){DrainDrawPipe(5);SubmitFeedbackBatch(scheduler);PeriodicSubmit(scheduler);}
     iss::diagnostics::Scope phase_scope(iss::diagnostics::Draw);
     RENDERER_TRACE;
@@ -1433,6 +1819,79 @@ std::size_t Rasterizer::Draw(bool is_indexed, u32 index_offset,
     if (g_draw_cycles.enabled) g_draw_cycles.Mark(1);
     if (!pipeline) {
         return 0;
+    }
+    if (const char* fp = std::getenv("ISS_FSR_PROBE"); fp && fp[0] == '1') [[unlikely]] {
+        static std::atomic<u64> reached{0};
+        const auto* ps = pipeline->GetStages()[static_cast<u32>(Shader::SwStage::Fragment)];
+        if (ps && ps->pgm_hash == 0xabc3c768) {
+            // SMAA edges: its colour texture is the tonemap output, its depth the scene depth.
+            static std::atomic<u64> edges{0};
+            const u64 n = edges.fetch_add(1) + 1;
+            if (n <= 3 || n % 1024 == 0) {
+                const auto& regs = DrawRegs();
+                std::fprintf(stderr, "FSR_PROBE edges n=%llu target=%llx depth=%llx dvalid=%d\n",
+                             (unsigned long long)n, (unsigned long long)regs.color_buffers[0].Address(),
+                             (unsigned long long)regs.depth_buffer.DepthAddress(),
+                             int(regs.depth_buffer.DepthValid()));
+                for (size_t i = 0; i < ps->images.size(); ++i) {
+                    const auto t = ps->images[i].GetSharp(*ps);
+                    std::fprintf(stderr, "FSR_PROBE   edges img%zu: addr=%llx %ux%u dfmt=%d nfmt=%d\n", i,
+                                 (unsigned long long)t.Address(), unsigned(t.width) + 1,
+                                 unsigned(t.height) + 1, int(t.GetDataFmt()), int(t.GetNumberFmt()));
+                }
+            }
+        }
+        if (ps && ps->pgm_hash == 0xa6d23116) {
+            const u64 n = reached.fetch_add(1) + 1;
+            if (n == 1 || (n & 1023) == 0)
+                std::fprintf(stderr, "FSR_PROBE resolve reached Draw() n=%llu pipelined=%d\n",
+                             (unsigned long long)n, int(pipelined));
+        }
+    }
+    if (iss::fsr::Enabled()) [[unlikely]] {
+        const auto* ps = pipeline->GetStages()[static_cast<u32>(Shader::SwStage::Fragment)];
+        if (ps) {
+            FsrWatch(ps->pgm_hash, pipelined);
+        }
+        if (g_fsr_scene.upscale_pending && !pipelined && FsrUpscalePass(pipeline)) {
+            return 0;
+        }
+        if (ps && ps->pgm_hash == kFsrBlendWeightsPsHash && !ps->buffers.empty()) {
+            // SMAA blend weights: its constants hold the frame's subsample indices (1,1,1 or
+            // 2,2,2 at dword 12), the game's own jitter phase. Frames without a resolve (the
+            // game draws SMAA twice then) advance it too, so a resolve count would drift.
+            const auto sharp = ps->buffers[0].GetSharp(*ps);
+            if (sharp.base_address >= 0x10000 && sharp.GetSize() >= 13 * sizeof(float)) {
+                float index;
+                std::memcpy(&index, reinterpret_cast<const float*>(sharp.base_address) + 12,
+                            sizeof(index));
+                g_fsr_scene.phase = index == 1.0f ? 1 : index == 2.0f ? 2 : 0;
+            }
+            ++g_fsr_scene.frames;
+        }
+        if (ps) {
+            FsrPassLog(regs, *ps, pipelined); // after the blend weights set the phase
+        }
+        if (!pipelined && ps && ps->pgm_hash == kFsrNeighborhoodPsHash) {
+            FsrDispatch();
+        }
+        const auto* cb = &DrawRegs().color_buffers[0];
+        const bool copy = !pipelined && ps && ps->pgm_hash == kFsrCopyPsHash &&
+                          g_fsr_scene.dispatched && g_fsr_scene.scene_address && *cb &&
+                          cb->Address() == g_fsr_scene.output_address && ps->images.size() == 1 &&
+                          ps->images[0].GetSharp(*ps).Address() == g_fsr_scene.scene_address;
+        if (copy) {
+            FsrWatch(kFsrResolvePsHash, false); // the frame's resolve, for the debug lines
+        }
+        if (copy || (!pipelined && ps && ps->pgm_hash == kFsrResolvePsHash)) {
+            const bool fsr = FsrResolve(pipeline, copy);
+            g_fsr_scene.frames = 0;
+            auto& stats = iss::fsr::GetStats();
+            (fsr ? stats.fsr_resolves : stats.game_resolves).fetch_add(1, std::memory_order_relaxed);
+            if (fsr) {
+                return 0;
+            }
+        }
     }
     // Diagnostic only (wrong image): ISS_DIAG_SKIP_DRAWS=1 drops the dominant city draw family,
     // 2 drops every direct draw, to measure how the frame rate follows command processor work.
@@ -1508,6 +1967,47 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline,bool is_indexed,u32
         return;
     }
     if (is_indexed && native_visual_latch.material_verified) CompleteNativeVisualPlans(pipeline);
+    // ISS_FSR_PROBE=1 (diagnosis, FSR prototype): the images the T2x temporal resolve (pixel shader
+    // a6d23116) reads, in shader order, and its target.
+    static const bool fsr_probe = [] {
+        const char* p = std::getenv("ISS_FSR_PROBE");
+        return p && p[0] == '1';
+    }();
+    if (fsr_probe && !OnDrawWorker() &&
+        pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash == 0xa6d23116) {
+        static u64 probe_calls = 0;
+        if (probe_calls++ < 4 || probe_calls % 600 == 0) {
+            std::fprintf(stderr, "FSR_PROBE call=%llu target=%llx fmt=%u images=%zu\n",
+                         (unsigned long long)probe_calls,
+                         (unsigned long long)regs.color_buffers[0].Address(),
+                         unsigned(regs.color_buffers[0].GetDataFmt()), image_bindings.size());
+            const auto& ps = pipeline->GetStage(Shader::SwStage::Fragment);
+            for (size_t i = 0; i < ps.images.size(); ++i) {
+                const auto t = ps.images[i].GetSharp(ps);
+                std::fprintf(stderr, "FSR_PROBE   img%zu: addr=%llx %ux%u dfmt=%d nfmt=%d type=%d written=%d\n", i,
+                             (unsigned long long)t.Address(), unsigned(t.width) + 1, unsigned(t.height) + 1,
+                             int(t.GetDataFmt()), int(t.GetNumberFmt()), int(t.GetType()),
+                             int(ps.images[i].is_written));
+            }
+        }
+    }
+    if (iss::fsr::Enabled() && !OnDrawWorker() &&
+        pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash == kFsrEdgesPsHash) [[unlikely]] {
+        const auto& ps = pipeline->GetStage(Shader::SwStage::Fragment);
+        if (!ps.images.empty()) {
+            const auto sharp = ps.images[0].GetSharp(ps);
+            const auto sel = sharp.DstSelect();
+            g_fsr_scene.dst_sel[0] = int(sel.r), g_fsr_scene.dst_sel[1] = int(sel.g);
+            g_fsr_scene.dst_sel[2] = int(sel.b), g_fsr_scene.dst_sel[3] = int(sel.a);
+            VideoCore::TextureCache::ImageDesc color_desc{sharp, ps.images[0]};
+            g_fsr_scene.color = texture_cache.FindImage(color_desc);
+            g_fsr_scene.depth = db_desc.first;
+            g_fsr_scene.color_generation =
+                g_fsr_scene.color ? texture_cache.ImageGeneration(g_fsr_scene.color) : 0;
+            g_fsr_scene.depth_generation =
+                g_fsr_scene.depth ? texture_cache.ImageGeneration(g_fsr_scene.depth) : 0;
+        }
+    }
     if (cycles) g_draw_cycles.Mark(3);
     if (iss::command_trace::enabled) {
         for (const auto* stage : pipeline->GetStages()) if (stage)
@@ -4225,7 +4725,8 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
             if (vsharp.base_address == 0 || vsharp.GetSize() == 0) {
                 buffer_infos.emplace_back(VK_NULL_HANDLE, 0, VK_WHOLE_SIZE);
             } else {
-                const u64 size = memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize());
+                const u64 size = VideoCore::ClampHugeRead(
+                    memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize()), desc.is_written);
                 if (size != vsharp.GetSize()) {
                     LOG_ERROR(Render, "Clamped size from {} to {} for stage {:#x}",
                               vsharp.GetSize(), size, stage.pgm_hash);

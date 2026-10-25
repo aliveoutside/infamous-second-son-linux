@@ -326,7 +326,17 @@ void DisplayTab() {
     Combo("Frame rate limit", "fps_limit",
           {{"Unlimited", "0"}, {"30", "30"}, {"40", "40"}, {"50", "50"}, {"60", "60"}, {"75", "75"}, {"90", "90"},
            {"100", "100"}, {"120", "120"}, {"144", "144"}, {"165", "165"}, {"240", "240"}});
-    Combo("Upscaling (FSR 1)", "fsr", kOnOff);
+    Combo("Anti-aliasing (FSR 3)", "fsr_aa", kOnOff);
+    Combo("Render size (FSR 3)", "fsr_mode",
+          {{"Native", "native"}, {"Quality (1/1.5)", "quality"}, {"Balanced (1/1.7)", "balanced"},
+           {"Performance (1/2)", "performance"}, {"Ultra performance (1/3)", "ultra_performance"}});
+    Label("Sharpening (FSR 3)");
+    int sharpness = std::atoi(Value("fsr_sharpness"));
+    if (sharpness < 0 || sharpness > 100) sharpness = 0;
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::SliderInt("##fsr_sharpness", &sharpness, 0, 100, "%d%%"))
+        Set("fsr_sharpness", std::to_string(sharpness / 5 * 5));
+    Combo("Frame generation (FSR 3)", "frame_generation", kOnOff);
     if (HaveMangoHud()) Combo("MangoHud", "mangohud", kOnOff);
     ImGui::EndTable();
 }
@@ -389,6 +399,8 @@ void GraphicsTab() {
     Combo("GPU memory", "gpu_memory", {{"Video memory", "video"}, {"In place", "in_place"}});
     Combo("New shaders", "shaders", {{"Wait", "wait"}, {"Parallel", "parallel"}, {"Skip draws", "skip"}});
     Combo("Precompile shaders", "shader_precompile", {{"Off", "off"}, {"On", "on"}});
+    Combo("Native render passes", "native_passes", kOnOff);
+    Combo("Performance mode", "performance_mode", {{"Off", "off"}, {"Low", "low"}, {"Office", "office"}});
     ImGui::EndTable();
 }
 

@@ -27,14 +27,17 @@
 //   33.3 ms. fps_limit below keeps the top.
 // - ISS_GPU_BLACKBOX off: the GPU crash recorder costs ~3% of the command processor.
 // - ISS_GC_TRIGGER_MB: the renderer reads a 752 MB texture budget on an 8 GB RADV card and
-//   collected textures every frame; a fixed trigger until the budget code is fixed.
+//   collected textures every frame; a fixed trigger, the fallback when the driver reports no usage.
+// - ISS_GC_BUDGET_MB=auto: the texture budget is what the card has left after the arena, staging
+//   and swapchain, measured live (ported from iss_pc), instead of a fixed trigger that the
+//   game's 5 GB of use always exceeded: ~28k textures were deleted and uploaded again per session.
 // - ISS_FAST_DRAW/ISS_FAST_REBIND: draws that repeat the previous draw's state record only the
 //   geometry; city view with ~13k draws per frame 22.7 -> 34.2 FPS, no ISS_FAST_DRAW_VERIFY
 //   mismatches (2026-10-22).
 static const char *const tuned_defaults[][2] = {
     {"ISS_GPU", "1"}, {"ISS_WINDOW_SIZE", "1920x1080"},
     {"ISS_SUBMIT_INTERVAL_US", "500"}, {"ISS_CP_CPU", "auto"}, {"BB_VBLANK_HZ", "240"},
-    {"ISS_GPU_BLACKBOX", "0"}, {"ISS_GC_TRIGGER_MB", "3500"},
+    {"ISS_GPU_BLACKBOX", "0"}, {"ISS_GC_TRIGGER_MB", "3500"}, {"ISS_GC_BUDGET_MB", "auto"},
     {"ISS_RING_BARRIERS", "1"}, {"ISS_REAL_OCCLUSION", "1"}, {"ISS_CP_SPLIT", "0"},
     {"ISS_PREWARM_LARGE_UPLOAD", "0"}, {"ISS_MINIMAL_LOGS", "1"}, {"ISS_GPU_PROFILE", "0"},
     {"ISS_RENDER_REUSE", "1"}, {"ISS_PARALLEL_RENDER", "1"}, {"ISS_DESCRIPTOR_FAST_PATH", "1"},
@@ -68,7 +71,10 @@ static const char *const vsync_choices[] = {"on=Fifo", "off=Immediate", "mailbox
 static const char *const memory_choices[] = {"video=0", "in_place=1", NULL};
 static const char *const shader_choices[] = {"wait=0", "parallel=1", "skip=2", NULL};
 static const char *const precompile_choices[] = {"on=auto", "off=", NULL};
+static const char *const perf_choices[] = {"off=off", "low=low", "office=office", NULL};
 static const char *const hint_choices[] = {"auto=auto", "always=always", "off=off", NULL};
+static const char *const fsr_mode_choices[] = {"native=1.0", "quality=1.5", "balanced=1.7",
+                                               "performance=2.0", "ultra_performance=3.0", NULL};
 static const char *const hud_choices[] = {"16:9=1.7778", "21:9=2.3704", "full=0", NULL};
 static const char *const language_choices[] = {
     "english=1", "french=2", "spanish=3", "german=4", "italian=5", "dutch=6", "portuguese=7",
@@ -82,7 +88,18 @@ const Setting settings_entries[] = {
     {"fullscreen", "ISS_FULLSCREEN", "off", "on or off. Alt+Enter switches in game.", on_off},
     {"vsync", "BB_PRESENT_MODE", "mailbox", "on, off (lowest latency, tears) or mailbox.", vsync_choices},
     {"fps_limit", "BB_FPS_LIMIT", "60", "Frame rate limit, 0 = unlimited.", NULL},
-    {"fsr", "BB_FSR1", "off", "FSR 1 upscaling to windows larger than the render size: on or off.", on_off},
+    {"fsr_aa", "ISS_FSR", "off",
+     "on: FSR 3 replaces the game's own anti-aliasing (SMAA T2x), at the render size. Also in the F1 menu.",
+     on_off},
+    {"fsr_mode", "ISS_FSR_MODE", "native",
+     "The 3D picture's size, the output size divided by: native (1), quality (1.5), balanced (1.7), "
+     "performance (2) or ultra_performance (3). With fsr_aa FSR 3 scales it up, without it the game "
+     "does. Read at start. Also in the F1 menu.", fsr_mode_choices},
+    {"fsr_sharpness", "ISS_FSR_SHARPNESS", "0",
+     "FSR 3 sharpening in percent (0 = off, 100 = strongest), with fsr_aa. Also in the F1 menu.", NULL},
+    {"frame_generation", "ISS_FG", "off",
+     "on: FSR 3 frame generation, a frame shown between two of the game's (needs fsr_aa). Also in the "
+     "F1 menu.", on_off},
     {"mangohud", "ISS_MANGOHUD", "off", "on: the launcher starts the game under MangoHud (if installed).", on_off},
     {"fov", "ISS_FOV", "100", "Field of view in percent of the game's (50 to 200).", NULL},
     {"hud_width", "ISS_HUD_ASPECT", "16:9", "HUD edges on screens wider than 16:9: 16:9, 21:9 or full.", hud_choices},
@@ -101,6 +118,14 @@ const Setting settings_entries[] = {
      "on: every compute shader of the game is compiled ahead of time, in the background while "
      "playing (the first start indexes the game files). off: compiled when first used.",
      precompile_choices},
+    {"native_passes", "ISS_NATIVE_PASSES", "on",
+     "on: the engine's own threads record whole render passes into Vulkan, so the command processor "
+     "thread (the limit in busy city views) translates far fewer draws. Switch it off if the GPU driver "
+     "crashes (NVIDIA 595 did in iss_pc's tests).", on_off},
+    {"performance_mode", "ISS_PERF_MODE", "off",
+     "The game's own lower quality settings for slower PCs: off, low (shorter LOD distances, one "
+     "sun-shadow cascade less, half-resolution particles) or office (LOD 0.5, quarter-resolution "
+     "particles, no high-res texture blocks, half the pedestrians). 1.07 eboot only.", perf_choices},
     {"mouse_aim", "ISS_MOUSE_AIM", "on",
      "on: the mouse looks and aims as soon as the game window has focus (left button fires, right "
      "button aims). F4 switches it off and on in game.", on_off},
@@ -117,6 +142,14 @@ const Setting settings_entries[] = {
      "Empty: the default.", NULL},
 };
 enum { setting_count = sizeof(settings_entries) / sizeof(settings_entries[0]) };
+// Settings that no longer exist, skipped without an error (the next save drops them). fsr: the
+// FSR 1 window upscaling, removed.
+static const char *const retired_keys[] = {"fsr", NULL};
+static int retired(const char *key) {
+    for (const char *const *r = retired_keys; *r; ++r)
+        if (!strcmp(*r, key)) return 1;
+    return 0;
+}
 const int settings_entry_count = setting_count;
 
 static char *trim(char *s) {
@@ -162,12 +195,14 @@ static int check_value(const Setting *s, const char *value) {
         char extra;
         return sscanf(value, "%ux%u%c", &w, &h, &extra) == 2 && w >= 640 && h >= 360 && w <= 7680 && h <= 4320;
     }
-    if (!strcmp(s->key, "fps_limit") || !strcmp(s->key, "fov") || !strcmp(s->key, "mouse_sensitivity") || !strncmp(s->key, "deadzone", 8)) {
+    if (!strcmp(s->key, "fps_limit") || !strcmp(s->key, "fov") || !strcmp(s->key, "mouse_sensitivity") || !strncmp(s->key, "deadzone", 8) ||
+        !strcmp(s->key, "fsr_sharpness")) {
         char *end;
         const long n = strtol(value, &end, 10);
         if (*end || !*value) return 0;
         if (!strncmp(s->key, "deadzone", 8)) return n >= 0 && n <= 50;
         if (!strcmp(s->key, "mouse_sensitivity")) return n >= 10 && n <= 1000;
+        if (!strcmp(s->key, "fsr_sharpness")) return n >= 0 && n <= 100;
         return !strcmp(s->key, "fov") ? n >= 50 && n <= 200 : n >= 0 && n <= 1000;
     }
     return 1;
@@ -350,7 +385,7 @@ int settings_apply(int argc, char **argv) {
             int found = 0;
             for (int i = 0; i < setting_count; ++i)
                 if (!strcmp(settings_entries[i].key, key)) { snprintf(player[i], sizeof(player[i]), "%s", value); have[i] = found = 1; }
-            if (!found) { fprintf(stderr, "settings: %s:%d: unknown setting %s\n", path, number, key); ++errors; }
+            if (!found && !retired(key)) { fprintf(stderr, "settings: %s:%d: unknown setting %s\n", path, number, key); ++errors; }
         }
         fclose(f);
     }
@@ -369,6 +404,17 @@ int settings_apply(int argc, char **argv) {
         }
         setenv(s->variable, mapped, 0);
         if (!strcmp(s->key, "fps_limit")) fps_limit = atoi(getenv(s->variable));
+    }
+    // native_passes: the profile the original launcher ran it with (all of it needs the first).
+    if (getenv("ISS_NATIVE_PASSES") && !strcmp(getenv("ISS_NATIVE_PASSES"), "1")) {
+        static const char *const native_profile[][2] = {
+            {"ISS_NATIVE_PASSES_ASYNC_SCAN", "1"}, {"ISS_NATIVE_PASSES_DYNAMIC", "1"},
+            {"ISS_NATIVE_PASSES_SUBMIT", "1"}, {"ISS_NATIVE_MATERIALS", "1"}, {"ISS_NATIVE_ASC_ASYNC", "1"},
+            {"ISS_NATIVE_GBUFFER_SETS", "1"}, {"ISS_NATIVE_INSTANCED_FEATURE", "1"}, {"ISS_SPEC_TRANSLATE", "1"},
+            {"ISS_STAGE_MEMO", "1"}, {"ISS_STAGE_MEMO_LOOSE", "1"}, {"ISS_STAGE_MEMO_TEXEL", "1"},
+        };
+        for (size_t i = 0; i < sizeof(native_profile) / sizeof(native_profile[0]); ++i)
+            setenv(native_profile[i][0], native_profile[i][1], 0);
     }
     // shaders: parallel compiles new graphics pipelines on the compiler threads (waited for on
     // the bind); skip also draws nothing with them until they are ready (full screen passes wait).

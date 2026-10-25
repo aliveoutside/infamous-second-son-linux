@@ -176,5 +176,15 @@ if(ISS_LTO)
   target_compile_options(iss-gpu PRIVATE -flto=auto)
   target_link_options(iss-gpu PRIVATE -flto=auto)
 endif()
+# ISS_FSR: the FSR 3 temporal upscaler of FireBurn/FSR-Vulkan (a Vulkan build of AMD's FidelityFX
+# 3.1 SDK, shaders included) replaces the game's T2x resolve. Only the upscaler is built.
+foreach(opt TESTS PROBE FSR3_3_1_5_SCAFFOLD FSR4_V07_VULKAN INSTALL)
+  set(FFX_VK_PORTABLE_BUILD_${opt} OFF CACHE BOOL "" FORCE)
+endforeach()
+set(FFX_VK_PORTABLE_INSTALL OFF CACHE BOOL "" FORCE)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+add_subdirectory("${CMAKE_SOURCE_DIR}/third_party/fsr-vulkan" "${CMAKE_BINARY_DIR}/fsr-vulkan" EXCLUDE_FROM_ALL)
+target_link_libraries(iss-gpu PRIVATE ffx-vulkan::portable)
+
 add_dependencies(iss-gpu shadps4-libraries)
 target_link_libraries(iss-gpu PRIVATE -Wl,--start-group ${SHADPS4_LIBRARIES} -Wl,--end-group PkgConfig::SDL3 pthread dl vulkan tbb)

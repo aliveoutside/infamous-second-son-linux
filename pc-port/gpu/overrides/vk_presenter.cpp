@@ -7,6 +7,7 @@
 #include "common/path_util.h"
 #include "common/perf_stats.h"
 #include "common/causal_frame_trace.h"
+#include "fsr_upscale.h"
 #include "runtime_timeline.h"
 #include "common/singleton.h"
 #include "core/debug_state.h"
@@ -473,9 +474,12 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     const u32 num_images = swapchain.GetImageCount();
     const vk::Device device = instance.GetDevice();
 
-    // Create presentation frames.
-    present_frames.resize(num_images);
-    for (u32 i = 0; i < num_images; i++) {
+    // Create presentation frames. Two more for frame generation (switched on in game too): the
+    // generated frame and the real one parked behind it are in flight while the next flip is
+    // prepared.
+    const u32 num_frames = num_images + 2;
+    present_frames.resize(num_frames);
+    for (u32 i = 0; i < num_frames; i++) {
         Frame& frame = present_frames[i];
         frame.id = i;
         auto fence = Check<"create present done fence">(
@@ -484,12 +488,8 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
         free_queue.push(&frame);
     }
 
-    fsr_settings.enable = EmulatorSettings.IsFsrEnabled();
-    fsr_settings.use_rcas = EmulatorSettings.IsRcasEnabled();
-    fsr_settings.rcas_attenuation =
-        static_cast<float>(EmulatorSettings.GetRcasAttenuation() / 1000.f);
-
-    fsr_pass.Create(device, instance.GetAllocator(), num_images);
+    // shadPS4's FSR 1 pass is not used: the game's picture is scaled to the window by the post
+    // process pass alone (FSR 3 is the game's resolve, ISS_FSR).
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
 
     ImGui::Layer::AddLayer(Common::Singleton<Core::Devtools::Layer>::Instance());
@@ -699,12 +699,12 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     // barrier and the post process pass: push descriptors and constants, no state kept) go to the
     // recording thread in order with the frame, like every other command. Taking the command
     // buffer here waited for that thread to record the whole frame first: ~14% of the command
-    // processor in the city, the next frame started only then. FSR keeps state: the old way.
+    // processor in the city, the next frame started only then. FG records here: the old way.
     static const bool present_stream = [] {
         const char* value = std::getenv("ISS_PRESENT_STREAM");
         return value && value[0] == '1';
     }();
-    const bool streamed = present_stream && !fsr_settings.enable &&
+    const bool streamed = present_stream && !iss::fsr::FgEnabled() &&
                           !draw_scheduler.DirectCommandBuffer();
     vk::CommandBuffer cmdbuf{};
     if (!streamed) {
@@ -749,7 +749,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     const u32 capture_game_only_count = VideoCore::ConsumeGameOnlyScreenshotRequests();
     std::optional<ScreenshotReadback> pending_screenshot;
 
-    // Capture the guest output before any host-side scaling (FSR/PP) is applied.
+    // Capture the guest output before any host-side scaling (PP) is applied.
     if (capture_game_only_count > 0) {
         const bool hdr_encoded =
             attribute.attrib.pixel_format == Libraries::VideoOut::PixelFormat::A2R10G10B10Bt2020Pq;
@@ -780,6 +780,20 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
 
     // Continue with host-side passes that draw the displayed (scaled) frame.
 
+    // ISS_FG: the frame between the last flip and this one, from a copy of this one (8-bit
+    // buffers only).
+    const iss::fsr::Flip fg_flip{image.GetImage(), image_size.width, image_size.height};
+    bool fg_show = false;
+    const bool fg = !streamed && iss::fsr::FgEnabled() &&
+                    image.info.pixel_format == vk::Format::eR8G8B8A8Srgb &&
+                    iss::fsr::FgBeginDispatch(fg_flip, fg_show);
+    if (fg) {
+        runtime.Transit(&image, vk::ImageLayout::eTransferSrcOptimal,
+                        vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferRead);
+        runtime.FlushBarriers();
+        iss::fsr::FgRecordDispatch(cmdbuf, fg_flip);
+    }
+
     runtime.Transit(&image, vk::ImageLayout::eShaderReadOnlyOptimal,
                     vk::PipelineStageFlagBits2::eFragmentShader, vk::AccessFlagBits2::eShaderRead);
     runtime.FlushBarriers();
@@ -801,9 +815,20 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
         // The pass binds its own pipeline and dynamic state behind the tracking.
         draw_scheduler.GetDynamicState().binds.Forget();
     } else {
-        image_view = fsr_pass.Render(cmdbuf, image_view, image_size,
-                                     {frame->width, frame->height}, fsr_settings, frame->is_hdr);
         pp_pass.Render(cmdbuf, image_view, image_size, *frame, pp_settings);
+    }
+
+    // The generated frame through the same pass, shown before this one (VideoOutDriver).
+    Frame* generated = nullptr;
+    if (fg && fg_show) {
+        generated = GetRenderFrame();
+        auto barrier = pre_barrier;
+        barrier.image = generated->image;
+        cmdbuf.pipelineBarrier2(vk::DependencyInfo{
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers = &barrier,
+        });
+        pp_pass.Render(cmdbuf, iss::fsr::FgView(), image_size, *generated, pp_settings);
     }
 
     DebugState.game_resolution = {image_size.width, image_size.height};
@@ -819,6 +844,11 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     // Flush frame creation commands.
     frame->ready_semaphore = draw_scheduler.GetWorkSemaphore()->Handle();
     frame->ready_tick = draw_scheduler.CurrentTick();
+    if (generated) {
+        generated->ready_semaphore = frame->ready_semaphore;
+        generated->ready_tick = frame->ready_tick;
+    }
+    iss::fsr::SetGeneratedFrame(generated);
     SubmitInfo info{};
     draw_scheduler.Flush(info);
     return frame;
@@ -1161,6 +1191,9 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         is_reusing_frame,is_game_frame,trace_acquired-trace_start,
         trace_flush-trace_acquired,Common::Perf::NowNs()-trace_flushed);
     free_frame();
+    if (!is_reusing_frame) {
+        iss::fsr::GetStats().presents.fetch_add(1, std::memory_order_relaxed);
+    }
     if (!is_reusing_frame && is_game_frame) {
         if (causal_trace) {
             Common::Perf::CausalFrame::Observe(

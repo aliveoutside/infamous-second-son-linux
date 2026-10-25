@@ -78,7 +78,10 @@ APPRUN
 chmod +x $b/AppRun
 
 # linuxdeploy copies the shared libraries the three binaries need into usr/lib (the system's
-# libc, GL and Vulkan loader stay on its exclude list) and makes the AppImage.
+# libc and GL stay on its exclude list) and makes the AppImage. The Vulkan loader is excluded by
+# hand: shadPS4 opens the system's libvulkan.so, and a second, bundled loader that libiss-gpu.so
+# links would read that loader's dispatch tables at its own offsets (FSR's vkCreateBuffer ended in
+# vkCreateImageView).
 # Libraries built next to the port (SDL3 in the portable build) are found through ISS_LIB_PATH.
 LD_LIBRARY_PATH="${ISS_LIB_PATH:+$ISS_LIB_PATH:}${LD_LIBRARY_PATH:-}" \
 OUTPUT=$b/inFAMOUS_Second_Son-x86_64.AppImage APPIMAGE_EXTRACT_AND_RUN=1 "$linuxdeploy" \
@@ -86,6 +89,7 @@ OUTPUT=$b/inFAMOUS_Second_Son-x86_64.AppImage APPIMAGE_EXTRACT_AND_RUN=1 "$linux
   --deploy-deps-only "$app/usr/build/iss-launcher" \
   --deploy-deps-only "$app/usr/build/iss-probe" \
   --deploy-deps-only "$app/usr/build/libiss-gpu.so" \
+  --exclude-library 'libvulkan.so*' \
   --desktop-file $b/iss-pc.desktop --icon-file $b/iss-pc.png \
   --custom-apprun $b/AppRun \
   --output appimage

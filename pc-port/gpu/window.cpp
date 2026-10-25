@@ -17,6 +17,7 @@
 #include "visual_capture.h"
 namespace iss::save_ui { bool OnEvent(const SDL_Event& e); }
 namespace iss::pad_ui { bool OnEvent(const SDL_Event& e); }
+namespace iss::menu_ui { bool OnEvent(const SDL_Event& e); }
 namespace Frontend {
 WindowSDL::WindowSDL(s32 w,s32 h,const char *title):width{w},height{h},base_title{title}{
     // ISS_WINDOW_SIZE=1920x1080: the window's size (the game's own picture is 1080p either way).
@@ -53,6 +54,7 @@ WindowSDL::WindowSDL(s32 w,s32 h,const char *title):width{w},height{h},base_titl
 WindowSDL::~WindowSDL(){if(window)SDL_DestroyWindow(window);}
 bool WindowSDL::PollEvents(){SDL_Event e;while(SDL_PollEvent(&e)){
     if(iss::save_ui::OnEvent(e))continue; // the save dialog takes the input while it is up
+    if(iss::menu_ui::OnEvent(e))continue; // the in-game menu (F1) for the mouse on it
     if(iss::pad_ui::OnEvent(e))continue;  // so does the touchpad panel (F5) for the mouse on it
     if(e.type==SDL_EVENT_KEY_DOWN&&!e.key.repeat){
         if(e.key.key==SDLK_RETURN&&(e.key.mod&SDL_KMOD_ALT)){

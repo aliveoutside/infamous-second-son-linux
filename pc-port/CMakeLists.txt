@@ -39,7 +39,7 @@ set(ISS_RUNTIME_SOURCES
   src/posix/probe.c src/runtime.c src/posix/memory.c src/sync.c src/kernel_sync.c src/posix/threads.c
   src/posix/time.c src/posix/files.c src/services.c src/dialogs.c src/save_dialog.c src/np.c src/network.c
   src/posix/http.c src/saves.c src/trophies.c src/pad.c src/posix/pad_panel.c src/audio.c src/gpu.c
-  src/content.c src/posix/tcb_patch.c src/posix/native_hooks.cpp native/ultrawide.cpp native/mouse_look.cpp native/graffiti.cpp
+  src/content.c src/posix/tcb_patch.c src/posix/native_hooks.cpp native/ultrawide.cpp native/mouse_look.cpp native/graffiti.cpp native/perf_mode.cpp
   src/settings.c)
 set(ISS_COMPILE_OPTIONS -Wall -Wextra -Wno-format -Wno-unused-parameter -Wno-sign-compare -Wno-missing-field-initializers
   -Wno-unused-function -Wno-unused-but-set-variable -Wno-unused-variable -Wno-misleading-indentation -Wno-maybe-uninitialized)

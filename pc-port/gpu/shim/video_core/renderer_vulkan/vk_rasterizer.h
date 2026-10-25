@@ -657,6 +657,10 @@ private:
     bool DrawAsync() const;
     u64 DrawContextChanges() const;
     bool OnDrawWorker() const;
+    /// ISS_FSR: the T2x resolve draw done by the FSR upscaler. False: the game's draw runs.
+    bool FsrResolve(const GraphicsPipeline* pipeline, bool copy = false);
+    void FsrDispatch();
+    bool FsrUpscalePass(const GraphicsPipeline* pipeline);
     std::unique_ptr<DrawPipeState> draw_pipe_state;
     void PrepareRenderState(const GraphicsPipeline* pipeline);
     RenderState BeginRendering(const GraphicsPipeline* pipeline);

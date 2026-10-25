@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include "host.h"
+#include <stddef.h>
 #include <stdint.h>
 #define GUEST_ABI __attribute__((sysv_abi))
 #ifdef __cplusplus
@@ -44,6 +45,9 @@ int gpu_dialog_open(const void *dialog);
 int gpu_dialog_poll(void *result);
 void gpu_dialog_close(void);
 int gpu_dialog_active(void);
+// The in-game menu (F1): 1 while it is up; one setting it changed (settings.toml key, value), 0: none.
+int gpu_menu_shown(void);
+int gpu_menu_take(char *key,size_t key_size,char *value,size_t value_size);
 int runtime_file_mount(unsigned slot,const char *guest,const char *host,int readonly);
 void runtime_file_unmount(unsigned slot);
 void *memory_allocate_image(uint64_t size);

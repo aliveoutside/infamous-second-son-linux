@@ -107,13 +107,14 @@ private:
         s32 index;
         bool eop;
         u64 trace_id{};
+        Vulkan::Frame* generated{}; // ISS_FG: the frame shown before this one
 
         operator bool() const noexcept {
             return frame != nullptr;
         }
     };
 
-    void Flip(const Request& req, u64 vblank_count);
+    void Flip(const Request& req, u64 vblank_count, bool present = true);
     void DrawBlankFrame(); // Video port out not open
     void DrawLastFrame();  // Used when there is no flip request
     void SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop,

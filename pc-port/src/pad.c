@@ -250,6 +250,12 @@ static void aim_step(float dx,float dy,float dt){
     }
     aim_time=0;
 }
+// One setting written to settings.toml, the file's other values kept.
+static void save_setting(const char *key,const char *value){static char values[64][SETTINGS_VALUE_SIZE];
+    int at=-1;for(int i=0;i<settings_entry_count;++i)if(!strcmp(settings_entries[i].key,key))at=i;
+    if(at<0||settings_entry_count>64)return;
+    settings_load(values);snprintf(values[at],SETTINGS_VALUE_SIZE,"%s",value);
+    fprintf(stderr,"SETTINGS %s=%s saved=%d\n",key,value,settings_save((const char (*)[SETTINGS_VALUE_SIZE])values)==0);}
 static void set_mouse_mode(int mode,SDL_Window *window){
     mouse_mode=mode;mouse_anchored=mouse_touch=0;spray_tick=0;memset(aim_debt,0,sizeof(aim_debt));look[0]=look[1]=0;aim_out[0]=aim_out[1]=128;aim_time=0;spray[0]=spray[1]=0;
     spray_wait_release=mode==2;
@@ -379,11 +385,14 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
     if(panel.mode>=0&&game_window)toggle_mouse_mode(panel.mode,game_window);
     if(panel.recentre)spray[0]=spray[1]=0;
     // The panel's hints switch (auto / always / off) is saved to settings.toml as `hints`.
-    if(panel.hints>=0&&panel.hints<3){static const char *const names[3]={"auto","always","off"};static char values[64][SETTINGS_VALUE_SIZE];
-        int at=-1;for(int i=0;i<settings_entry_count;++i)if(!strcmp(settings_entries[i].key,"hints"))at=i;
-        setenv("ISS_HINTS",names[panel.hints],1);
-        if(at>=0&&settings_entry_count<=64){settings_load(values);snprintf(values[at],SETTINGS_VALUE_SIZE,"%s",names[panel.hints]);
-            fprintf(stderr,"PAD hints=%s saved=%d\n",names[panel.hints],settings_save((const char (*)[SETTINGS_VALUE_SIZE])values)==0);}}
+    if(panel.hints>=0&&panel.hints<3){static const char *const names[3]={"auto","always","off"};
+        setenv("ISS_HINTS",names[panel.hints],1);save_setting("hints",names[panel.hints]);}
+    // The in-game menu (F1): what it switched is saved too; while it is up the mouse is its own
+    // (no aim, the cursor free), and back to its mode after.
+    {char menu_key[64],menu_value[64];while(gpu_menu_take(menu_key,sizeof(menu_key),menu_value,sizeof(menu_value)))save_setting(menu_key,menu_value);
+        static int menu_back=-1;const int menu=gpu_menu_shown();
+        if(menu&&menu_back<0&&game_window){menu_back=mouse_mode;if(mouse_mode)set_mouse_mode(0,game_window);}
+        if(!menu&&menu_back>=0){if(menu_back&&game_window)set_mouse_mode(menu_back,game_window);menu_back=-1;}}
     // Scripted spray (ISS_PAD_CMD_FILE: spray, center, shake:s, paint:s, aimleft/aimright/aimup/aimdown:s): the can
     // mode toggled, shaken and turned as the mouse would.
     if(cmd_spray_toggle){cmd_spray_toggle=0;toggle_mouse_mode(2,game_window);spray_wait_release=0;}

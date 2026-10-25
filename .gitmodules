@@ -1,3 +1,6 @@
 [submodule "pc-port/third_party/shadPS4"]
 	path = pc-port/third_party/shadPS4
 	url = https://github.com/aliveoutside/shadPS4-AYOUB1080p.git
+[submodule "pc-port/third_party/fsr-vulkan"]
+	path = pc-port/third_party/fsr-vulkan
+	url = https://github.com/FireBurn/FSR-Vulkan

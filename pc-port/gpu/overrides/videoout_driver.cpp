@@ -7,6 +7,7 @@
 #include "common/debug.h"
 #include "common/perf_stats.h"
 #include "common/thread.h"
+#include "fsr_upscale.h"
 #include "runtime_timeline.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
@@ -17,7 +18,9 @@
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
 
+#include <algorithm>
 #include <atomic>
+#include <thread>
 
 extern std::unique_ptr<Vulkan::Presenter> presenter;
 extern std::unique_ptr<AmdGpu::Liverpool> liverpool;
@@ -243,7 +246,7 @@ int VideoOutDriver::ChangeBufferAttribute(VideoOutPort* port, s32 attributeIndex
     return 0;
 }
 
-void VideoOutDriver::Flip(const Request& req, u64 vblank_count) {
+void VideoOutDriver::Flip(const Request& req, u64 vblank_count, bool present) {
     const u64 present_start = iss::timeline::enabled ? Common::Perf::NowNs() : 0;
     const u64 frame_address = iss::timeline::enabled
                                   ? reinterpret_cast<u64>(req.frame) : 0;
@@ -258,8 +261,10 @@ void VideoOutDriver::Flip(const Request& req, u64 vblank_count) {
     // Update HDR status before presenting.
     presenter->SetHDR(req.port->is_hdr);
 
-    // Present the frame.
-    presenter->Present(req.frame);
+    // Present the frame (ISS_FG: later, the generated one is shown first).
+    if (present) {
+        presenter->Present(req.frame);
+    }
     if (iss::timeline::enabled) {
         iss::timeline::Emit("vo_present_return", req.trace_id, vblank_count,
                             frame_address, frame_ready_tick,
@@ -375,6 +380,7 @@ bool VideoOutDriver::SubmitFlip(VideoOutPort* port, s32 index, s64 flip_arg,
 
 void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop,
                                         u64 trace_id) {
+    iss::fsr::GetStats().flips.fetch_add(1, std::memory_order_relaxed);
     const u64 prepare_start = iss::timeline::enabled ? Common::Perf::NowNs() : 0;
     if (iss::timeline::enabled) {
         iss::timeline::Emit("vo_prepare_begin", trace_id, 0,
@@ -390,6 +396,7 @@ void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_
         const auto& group = port->groups[buffer.group_index];
         frame = presenter->PrepareFrame(group, buffer.address_left);
     }
+    Vulkan::Frame* generated = iss::fsr::TakeGeneratedFrame();
     if (iss::timeline::enabled) {
         iss::timeline::Emit("vo_prepare_end", trace_id, 0,
                             reinterpret_cast<u64>(frame), frame->ready_tick,
@@ -407,6 +414,7 @@ void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_
             .index = index,
             .eop = is_eop,
             .trace_id = trace_id,
+            .generated = generated,
         });
         if (iss::timeline::enabled) {
             iss::timeline::Emit("vo_queue_push", trace_id, 0,
@@ -466,8 +474,24 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
     auto last_flip = std::chrono::steady_clock::time_point{};
     s32 seen_flip_rate = -1;
     bool was_paused = false;
+    // ISS_FG: a flip with a generated frame shows it at once and the real one half a frame later
+    // (the average time between real flips), at the exact time: a vblank tick is too coarse.
+    Request parked{};
+    auto parked_due = std::chrono::steady_clock::time_point{};
+    auto last_real = std::chrono::steady_clock::time_point{};
+    std::chrono::nanoseconds real_interval{16'666'667};
+    u64 shown_generated = 0, shown_real = 0;
+    const auto present_parked = [&] {
+        presenter->Present(parked.frame);
+        parked = {};
+        FRAME_END;
+    };
     while (!token.stop_requested()) {
         timer.Start();
+        if (parked && parked_due - std::chrono::steady_clock::now() < vblank_period) {
+            std::this_thread::sleep_until(parked_due);
+            present_parked();
+        }
         if (main_port.flip_rate != seen_flip_rate) {
             seen_flip_rate = main_port.flip_rate;
             std::fprintf(stderr, "VIDEOOUT flip_rate=%d (guest) forced=%d\n", seen_flip_rate,
@@ -482,6 +506,9 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
         }
         was_paused = paused;
         if (paused) {
+            if (parked) {
+                present_parked();
+            }
             DrawLastFrame();
             timer.End();
             continue;
@@ -493,7 +520,7 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
         u64 presented_trace_id{};
         const bool limit_ok =
             frame_limit == 0 || std::chrono::steady_clock::now() - last_flip >= min_flip_interval;
-        if (vblank_status.count % (flip_rate + 1) == 0 && limit_ok) {
+        if (!parked && vblank_status.count % (flip_rate + 1) == 0 && limit_ok) {
             u64 queue_depth{};
             const auto request = receive_request(vblank_count, flip_rate,
                                                  queue_depth);
@@ -508,8 +535,31 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
             } else {
                 presented_trace_id = request.trace_id;
                 last_flip = std::chrono::steady_clock::now();
-                Flip(request, vblank_count);
-                FRAME_END;
+                if (last_real != std::chrono::steady_clock::time_point{}) {
+                    const auto dt = std::min<std::chrono::nanoseconds>(last_flip - last_real,
+                                                                       std::chrono::milliseconds(50));
+                    real_interval += (dt - real_interval) / 8;
+                }
+                last_real = last_flip;
+                ++shown_real;
+                if (request.generated) {
+                    // The game sees its flip now: its buffer was copied when the flip was prepared.
+                    presenter->Present(request.generated, false, false);
+                    Flip(request, vblank_count, false);
+                    parked = request;
+                    parked_due = last_flip + real_interval / 2;
+                    ++shown_generated;
+                    iss::fsr::GetStats().fg_generated.fetch_add(1, std::memory_order_relaxed);
+                } else {
+                    Flip(request, vblank_count);
+                    FRAME_END;
+                }
+                if ((shown_real & 1023) == 0 && iss::fsr::FgEnabled()) {
+                    std::fprintf(stderr, "FG: shown real %llu generated %llu interval %.2f ms\n",
+                                 (unsigned long long)shown_real,
+                                 (unsigned long long)shown_generated,
+                                 real_interval.count() / 1e6);
+                }
             }
         }
 

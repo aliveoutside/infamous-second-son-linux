@@ -19,6 +19,9 @@ static int (*dialog_open)(const IssDialog *);
 static int (*dialog_poll)(IssDialogResult *);
 static void (*dialog_close)(void);
 static int (*dialog_active)(void);
+// The in-game menu (F1, gpu/ingame_menu.cpp): up or not, and the settings it changed.
+static int (*menu_shown)(void);
+static int (*menu_take)(char *,size_t,char *,size_t);
 // The window's first size: 1280x720, or 720 high in the aspect of ISS_RESOLUTION (native/ultrawide.cpp).
 // The picture is fitted to whatever size the window gets.
 static void window_size(uint32_t *width,uint32_t *height){
@@ -43,6 +46,7 @@ int gpu_start(uint32_t sdk_version,uint64_t image_base){
     void (*mapped)(uint64_t,uint64_t,uint8_t *)=(void *)dlsym(library,"iss_gpu_map");
     dialog_open=(void *)dlsym(library,"iss_gpu_dialog_open");dialog_poll=(void *)dlsym(library,"iss_gpu_dialog_poll");
     dialog_close=(void *)dlsym(library,"iss_gpu_dialog_close");dialog_active=(void *)dlsym(library,"iss_gpu_dialog_active");
+    menu_shown=(void *)dlsym(library,"iss_gpu_menu_shown");menu_take=(void *)dlsym(library,"iss_gpu_menu_take");
     if(!initialize||!resolve_import||!handle_fault||!mapped)return -1;
     IssGpuCallbacks callbacks={0};callbacks.struct_size=sizeof(callbacks);callbacks.sdk_version=sdk_version;
     callbacks.psf_attributes=545259522;window_size(&callbacks.width,&callbacks.height);
@@ -66,6 +70,8 @@ int gpu_dialog_open(const void *dialog){return dialog_open?dialog_open((const Is
 int gpu_dialog_poll(void *result){return dialog_poll?dialog_poll((IssDialogResult *)result):-1;}
 void gpu_dialog_close(void){if(dialog_close)dialog_close();}
 int gpu_dialog_active(void){return dialog_active?dialog_active():0;}
+int gpu_menu_shown(void){return menu_shown?menu_shown():0;}
+int gpu_menu_take(char *key,size_t key_size,char *value,size_t value_size){return menu_take?menu_take(key,key_size,value,value_size):0;}
 int gpu_readback(uint64_t address,uint64_t size){return readback_memory?readback_memory(address,size):0;}
 int gpu_invalidate(uint64_t address,uint64_t size){return invalidate_memory?invalidate_memory(address,size):0;}
 void gpu_file_opened(const char *guest_path){if(file_opened)file_opened(guest_path);}

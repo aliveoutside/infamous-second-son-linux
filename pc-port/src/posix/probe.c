@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // iss-probe: loads the prepared inFAMOUS eboot image, resolves its imports and enters it.
 #include "../runtime.h"
+#include <execinfo.h>
 #include <signal.h>
 #include <sys/mman.h>
 #include <ucontext.h>
@@ -135,6 +136,11 @@ static void fault(int signal_number, siginfo_t *info, void *context) {
     }
     if (getenv("ISS_FAULT_DUMP")) {
         fprintf(stderr, "FAULT si_addr=%p code=%d\n", info->si_addr, info->si_code);
+        if (address < (uintptr_t)image || address - (uintptr_t)image >= image_size) {
+            // A host library: its unwind tables reach through the signal frame.
+            void *frames[48];
+            backtrace_symbols_fd(frames, backtrace(frames, 48), 2);
+        }
         for (int r = 0; r < 23; ++r) fprintf(stderr, "  greg[%d]=%llx\n", r, (unsigned long long)uc->uc_mcontext.gregs[r]);
         for (int q = 0; q < 16 && sp > 4096; ++q) fprintf(stderr, "  [rsp+%d]=%llx\n", q * 8, (unsigned long long)((uint64_t *)sp)[q]);
         if (caller > 0x10000000 && caller < 0xf0000000) {

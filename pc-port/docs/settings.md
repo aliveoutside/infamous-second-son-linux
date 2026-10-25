@@ -12,7 +12,10 @@ defaults back.
 | `fullscreen` | `off` | `on`, `off` (Alt+Enter in game) |
 | `vsync` | `mailbox` | `on`, `off`, `mailbox` |
 | `fps_limit` | `60` | `0` = unlimited |
-| `fsr` | `off` | FSR 1 upscaling: `on`, `off` |
+| `fsr_aa` | `off` | `on`: FSR 3 replaces the game's SMAA T2x resolve at the render size (`ISS_FSR`). Switched in the F1 menu too, which saves it here |
+| `fsr_mode` | `native` | The 3D picture at the output size divided by `native` 1, `quality` 1.5, `balanced` 1.7, `performance` 2, `ultra_performance` 3 (`ISS_FSR_MODE`). With `fsr_aa` FSR 3 scales it up to the output size, without it the game does; the HUD stays sharp. Read at start; F1 menu too |
+| `fsr_sharpness` | `0` | FSR 3 sharpening, 0 to 100 percent (`ISS_FSR_SHARPNESS`). F1 menu too, live |
+| `frame_generation` | `off` | `on`: FSR 3 frame generation, one frame shown between two real ones, paced half a frame apart (`ISS_FG`, needs `fsr_aa`). Skipped after a hitch (over 2.5 times the usual frame, at least 50 ms) or a frame the game rendered twice. F1 menu too |
 | `mangohud` | `off` | Launcher only: run the game under MangoHud, if installed |
 | `fov` | `100` | 50 to 200, percent of the game's |
 | `hud_width` | `16:9` | `16:9`, `21:9`, `full` |
@@ -20,6 +23,8 @@ defaults back.
 | `gpu_memory` | `video` | `video`, `in_place` (much slower on NVIDIA) |
 | `shaders` | `wait` | `wait`, `parallel` (more compiler threads), `skip` (draws of compiling pipelines skipped) |
 | `shader_precompile` | `off` | `on`: compute shaders compiled ahead of time in the background, `off` |
+| `native_passes` | `on` | The engine threads record whole render passes into Vulkan (`ISS_NATIVE_PASSES` and the profile of the original launcher), so the command processor thread, the limit in busy city views, translates far fewer draws. Needs a restart. Set `off` if the driver crashes (NVIDIA 595 under Linux did in iss_pc's tests); the pause menu hung the GPU once on a Windows build, see `ISS_NATIVE_PASSES_BLEND_DENY` |
+| `performance_mode` | `off` | The game's own lower quality settings (eboot 1.07 only, bytes checked first): `low` (LOD 0.7, one sun-shadow cascade less, half-resolution particles, 2 high-res texture blocks), `office` (LOD 0.5, quarter-resolution particles, no high-res blocks, half the pedestrians). Measured by axylpup: +13% / +19% in the heaviest city view |
 | `mouse_aim` | `on` | Mouse look and aim from the start (left button fires, right aims); F4 toggles in game |
 | `mouse_sensitivity` | `100` | Mouse look speed, 10 to 1000 percent (100: 0.046° per mouse count, see [mouse-and-keyboard.md](mouse-and-keyboard.md)) |
 | `hints` | `auto` | On-screen help for the touchpad (hold Alt) and the spray can: `auto` (in full the first 3 times per mode, then a small label; count in `<data>/hints-seen`), `always`, `off`. Also switched in the F5 panel, which saves it here |

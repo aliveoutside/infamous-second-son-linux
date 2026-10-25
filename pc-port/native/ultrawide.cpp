@@ -126,10 +126,19 @@ bool ParseResolution(const char *text,std::uint32_t &width,std::uint32_t &height
 
 int InstallResolution(unsigned char *image,std::uint64_t size){
     const char *option=std::getenv("ISS_RESOLUTION");
-    if(!option||!*option)return 0;
-    std::uint32_t width,height;
-    if(!ParseResolution(option,width,height)){std::fprintf(stderr,"ULTRAWIDE rejected: ISS_RESOLUTION=%s (expected WxH)\n",option);return -1;}
-    if(width==1920&&height==1080)return 0;
+    // ISS_RENDER_SIZE=WxH (experiment): the 3D picture drawn at this size, the output (post
+    // passes, HUD) at ISS_RESOLUTION or 1920x1080. The game does this on a PS4 Pro (3200x1800
+    // into 3840x2160, the video mode change below).
+    const char *render_option=std::getenv("ISS_RENDER_SIZE");
+    // ISS_FSR_MODE (fsr_mode): the render size is the output size divided by this.
+    const char *mode_option=std::getenv("ISS_FSR_MODE");
+    const double mode_scale=mode_option&&*mode_option?std::atof(mode_option):1.0;
+    const bool scaled=mode_scale>1.0&&mode_scale<=4.0&&(!render_option||!*render_option);
+    if((!option||!*option)&&(!render_option||!*render_option)&&!scaled)return 0;
+    std::uint32_t width=1920,height=1080,render_w=0,render_h=0;
+    if(option&&*option&&!ParseResolution(option,width,height)){std::fprintf(stderr,"ULTRAWIDE rejected: ISS_RESOLUTION=%s (expected WxH)\n",option);return -1;}
+    if(render_option&&*render_option&&!ParseResolution(render_option,render_w,render_h)){std::fprintf(stderr,"ULTRAWIDE rejected: ISS_RENDER_SIZE=%s (expected WxH)\n",render_option);return -1;}
+    if(width==1920&&height==1080&&!scaled&&(!render_w||(render_w==1920&&render_h==1080)))return 0;
     if(!Matches(image,size,kResolution,std::size(kResolution))){std::fputs("ULTRAWIDE rejected: eboot function identity mismatch\n",stderr);return -1;}
     if(const char *hud=std::getenv("ISS_HUD_ASPECT"))hud_aspect=float(std::atof(hud));
     if(!(hud_aspect>=0.5f&&hud_aspect<=8.f))hud_aspect=0;
@@ -154,19 +163,38 @@ int InstallResolution(unsigned char *image,std::uint64_t size){
             w-=8;
         }
     }
+    if(scaled){render_w=std::uint32_t(width/mode_scale)&~7u;render_h=std::uint32_t(height/mode_scale)&~7u;}
+    if(!render_w){render_w=width;render_h=height;}
     ui_width=reinterpret_cast<std::int32_t*>(image+kUiWidth);ui_height=reinterpret_cast<std::int32_t*>(image+kUiHeight);
     safe_x=reinterpret_cast<std::int32_t*>(image+kSafeX);safe_y=reinterpret_cast<std::int32_t*>(image+kSafeY);
     // mov dword [rbx+0xc], render width; [rbx+0x10], render height; [rbx], output width; [rbx+4], output height.
-    bool ok=Write32(image,0x1eff47 + 3,width)&&Write32(image,0x1eff4e + 3,height)&&
+    bool ok=Write32(image,0x1eff47 + 3,render_w)&&Write32(image,0x1eff4e + 3,render_h)&&
             Write32(image,0x1eff55 + 2,width)&&Write32(image,0x1eff5b + 3,height)&&
             // The video mode change: mov esi, 1920 / mov edi, 1080 (the non-Pro output and render size).
-            Write32(image,0x1f0d3d + 1,width)&&Write32(image,0x1f0d4c + 1,height)&&
-            // mov dword [r15], UI height; mov dword [r12], UI width.
-            Write32(image,0x1f03f8 + 3,ui_h)&&Write32(image,0x1f03ff + 4,ui_w);
-    for(const auto &site:kSafeAreaSites)ok=ok&&CallAndSkip(image,site[0],site[1],reinterpret_cast<const void*>(&SafeArea));
+            Write32(image,0x1f0d3d + 1,width)&&Write32(image,0x1f0d4c + 1,height);
+    if(ok&&(render_w!=width||render_h!=height)){
+        // The Pro render size (mov eax, 3200 / mov edx, 1800) becomes this one, and the two
+        // cmove eax, esi / cmove edx, edi that put the output size there outside Pro mode are
+        // nops: the render size then always comes from those immediates.
+        static const unsigned char nop3[3]={0x0f,0x1f,0x00};
+        ok=Write32(image,0x1f0d42 + 1,render_w)&&Write32(image,0x1f0d51 + 1,render_h)&&
+           Write(image,0x1f0d59,nop3,3)&&Write(image,0x1f0d5f,nop3,3);
+    }
+    if(width!=1920||height!=1080){
+        // mov dword [r15], UI height; mov dword [r12], UI width.
+        ok=ok&&Write32(image,0x1f03f8 + 3,ui_h)&&Write32(image,0x1f03ff + 4,ui_w);
+        for(const auto &site:kSafeAreaSites)ok=ok&&CallAndSkip(image,site[0],site[1],reinterpret_cast<const void*>(&SafeArea));
+    }
     if(!ok)return -1;
-    std::fprintf(stderr,"ULTRAWIDE resolution=%ux%u render=%ux%u ui=%ux%u hud_aspect=%.4f tiles=%llu\n",
-                 requested_w,requested_h,width,height,ui_w,ui_h,double(hud_aspect),(unsigned long long)tile_count(width,height));
+    if(render_w!=width||render_h!=height){
+        // For FSR 3 (gpu/fsr_upscale.cpp): the size it scales the render size up to.
+        char output[32];
+        std::snprintf(output,sizeof(output),"%ux%u",width,height);
+        setenv("ISS_FSR_OUTPUT_SIZE",output,1);
+    }
+    std::fprintf(stderr,"ULTRAWIDE resolution=%ux%u output=%ux%u render=%ux%u ui=%ux%u hud_aspect=%.4f tiles=%llu\n",
+                 requested_w,requested_h,width,height,render_w,render_h,ui_w,ui_h,double(hud_aspect),
+                 (unsigned long long)tile_count(render_w,render_h));
     return 1;
 }
 
