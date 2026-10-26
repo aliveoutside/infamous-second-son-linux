@@ -2,6 +2,7 @@
 // ISS_NATIVE_PASSES: the engine side (native_passes.h). Runs on the engine's threads, except
 // Claim/Finish/PublishSpanStart (command processor) and BeforeSubmit (the submitting thread).
 #include "native_passes.h"
+#include "settings_value.h"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -1164,7 +1165,7 @@ bool IndirectEnabled() {
 
 bool Enabled() {
     static const bool enabled = [] {
-        const char* value = std::getenv("ISS_NATIVE_PASSES");
+        const char* value = iss::Setting("native_passes");
         return value && value[0] == '1';
     }();
     return enabled;

@@ -1,4 +1,5 @@
 #include "gpu_blackbox.h"
+#include "settings_value.h"
 #include "pipeline_library.h"
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
@@ -1465,7 +1466,7 @@ std::string ResolveShaderIndex(const char* value) {
         const auto path = Common::FS::GetUserPath(Common::FS::PathType::CacheDir) / "shaders.idx";
         resolved = path.string();
         if (std::filesystem::exists(path)) return;
-        const char* game_dir = std::getenv("ISS_GAME_DIR");
+        const char* game_dir = iss::Setting("game_dir");
         if (!game_dir) return;
         const u64 start = Common::Perf::NowNs();
         iss::g_preload_total.store(1658, std::memory_order_relaxed); // the game's pack count
@@ -1492,7 +1493,7 @@ void PipelineCache::StartAotCompute(const char* index_value) {
         bytes.resize(file.GetSize());
         file.Read(bytes);
     }
-    const char* game_dir = std::getenv("ISS_GAME_DIR");
+    const char* game_dir = iss::Setting("game_dir");
     if (bytes.size() < 12 || std::memcmp(bytes.data(), "ISSAOT01", 8) != 0 || !game_dir) {
         std::fprintf(stderr, "AOT_COMPUTE index unusable (or ISS_GAME_DIR unset)\n");
         return;
@@ -1724,7 +1725,7 @@ const std::unordered_map<u64, ShaderLoc>& ShaderLocations() {
         const char* index = "auto";
         resolved = ResolveShaderIndex(index);
         index = resolved.c_str();
-        const char* game_dir = std::getenv("ISS_GAME_DIR");
+        const char* game_dir = iss::Setting("game_dir");
         if (!*index || !game_dir) return;
         Common::FS::IOFile file{std::filesystem::path{index}, Common::FS::FileAccessMode::Read};
         if (!file.IsOpen()) return;

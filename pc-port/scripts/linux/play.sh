@@ -6,7 +6,7 @@ set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$root"
 b=${ISS_BUILD:-build}  # build-pgo while training PGO
-# Until game_dir is set in settings.toml, the folder prepare.py recorded is used.
+# For prepare.py below. iss-probe itself takes game_dir from settings.toml, else from out/game_dir.txt.
 if [[ -z "${ISS_GAME_DIR:-}" && -f out/game_dir.txt ]]; then export ISS_GAME_DIR=$(head -n1 out/game_dir.txt); fi
 [[ -x $b/iss-probe ]] || { echo "$b/iss-probe is missing: build the port first" >&2; exit 1; }
 # The prepared image (setup.sh, or here on the first start, as in the AppImage).

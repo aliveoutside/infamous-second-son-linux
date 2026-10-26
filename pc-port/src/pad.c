@@ -91,11 +91,11 @@ static void stick(int ax,int ay,float stick_dead,uint8_t *ox,uint8_t *oy){
     *ox=(uint8_t)lrintf(fminf(fmaxf(x*127.5f+127.5f,0),255));*oy=(uint8_t)lrintf(fminf(fmaxf(y*127.5f+127.5f,0),255));
 }
 static void load_controls(void){
-    static const char *const dead_names[2]={"ISS_PAD_DEADZONE_LEFT","ISS_PAD_DEADZONE_RIGHT"};
+    static const char *const dead_names[2]={"deadzone_left","deadzone_right"};
     float *const dead_values[2]={&stick_dead_left,&stick_dead_right};
-    for(int i=0;i<2;++i){const char *dead=getenv(dead_names[i]);
+    for(int i=0;i<2;++i){const char *dead=settings_get(dead_names[i]);
         if(dead&&*dead){const float d=(float)atof(dead)/100;*dead_values[i]=d>=0&&d<=0.5f?d:0.10f;}}
-    const char *s=getenv("ISS_PAD_MAP");
+    const char *s=settings_get("pad_map");
     while(s&&*s){char item[64];size_t n=strcspn(s,",");if(n>=sizeof(item))n=sizeof(item)-1;memcpy(item,s,n);item[n]=0;s+=n;if(*s==',')++s;
         char *v=strchr(item,'=');if(!v)continue;*v++=0;
         for(int i=0;i<SRC_COUNT;++i)if(!strcmp(item,source_names[i]))for(int t=0;t<T_COUNT;++t)if(!strcmp(v,targets[t].name))pad_map[i]=(uint8_t)t;}
@@ -228,7 +228,7 @@ int pad_look_take(float *dx,float *dy){
 }
 static float aim_debt[2],aim_time;static uint8_t aim_out[2]={128,128};
 static void aim_step(float dx,float dy,float dt){
-    static float k=-1;if(k<0){const char *s=getenv("ISS_MOUSE_SENS");const float p=s?(float)atof(s)/100:1;k=2400.f/(p>0?p:1);}
+    static float k=-1;if(k<0){const char *s=settings_get("mouse_sensitivity");const float p=s?(float)atof(s)/100:1;k=2400.f/(p>0?p:1);}
     aim_debt[0]+=dx;aim_debt[1]+=dy;aim_time+=dt;
     if(aim_time<.004f)return;
     for(int i=0;i<2;++i){
@@ -281,7 +281,7 @@ static int32_t GUEST_ABI pad_close(int handle){if(handle!=1||!opened)return erro
 static int32_t GUEST_ABI pad_info(int handle,PadInfo *out){
     if(handle!=1||!opened)return error(3);if(!out)return error(1);memset(out,0,sizeof(*out));
     out->density=44.86f;out->width=1920;out->height=942;out->left_dead=10;
-    {const char *aim=getenv("ISS_MOUSE_AIM");out->right_dead=(!aim||aim[0]!='0')&&!pad_look_direct?0:10;} // the mouse as stick needs none
+    {const char *aim=settings_get("mouse_aim");out->right_dead=(!aim||aim[0]!='0')&&!pad_look_direct?0:10;} // the mouse as stick needs none
     out->connected=out->count=1;return 0;
 }
 static int32_t GUEST_ABI pad_read(int handle,PadData *out){
@@ -323,7 +323,7 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
         if(f7&&!mode_keys[1])toggle_mouse_mode(2,window);
         // The mouse aims from the first focused read (settings: mouse_aim), unless it is switched off.
         static int aim_default=-1;
-        if(aim_default<0){const char *s=getenv("ISS_MOUSE_AIM");aim_default=!s||s[0]!='0';
+        if(aim_default<0){const char *s=settings_get("mouse_aim");aim_default=!s||s[0]!='0';
             if(aim_default&&mouse_mode==0)set_mouse_mode(3,window);}
         if(f4&&!mode_keys[3])set_mouse_mode(mouse_mode==3?0:3,window);
         if(f5&&!mode_keys[2])pad_panel_toggle(window);
@@ -375,10 +375,10 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
     if(panel.recentre)spray[0]=spray[1]=0;
     // The panel's hints switch (auto / always / off) is saved to settings.toml as `hints`.
     if(panel.hints>=0&&panel.hints<3){static const char *const names[3]={"auto","always","off"};
-        setenv("ISS_HINTS",names[panel.hints],1);save_setting("hints",names[panel.hints]);}
+        settings_set("hints",names[panel.hints]);save_setting("hints",names[panel.hints]);}
     // The in-game menu (F1): what it switched is saved too; while it is up the mouse is its own
     // (no aim, the cursor free), and back to its mode after.
-    {char menu_key[64],menu_value[64];while(gpu_menu_take(menu_key,sizeof(menu_key),menu_value,sizeof(menu_value)))save_setting(menu_key,menu_value);
+    {char menu_key[64],menu_value[64];while(gpu_menu_take(menu_key,sizeof(menu_key),menu_value,sizeof(menu_value))){settings_set(menu_key,menu_value);save_setting(menu_key,menu_value);}
         static int menu_back=-1;const int menu=gpu_menu_shown();
         if(menu&&menu_back<0&&game_window){menu_back=mouse_mode;if(mouse_mode)set_mouse_mode(0,game_window);}
         if(!menu&&menu_back>=0){if(menu_back&&game_window)set_mouse_mode(menu_back,game_window);menu_back=-1;}}

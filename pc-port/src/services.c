@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "runtime.h"
+#include "settings.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,7 +54,7 @@ static int32_t GUEST_ABI user_event(int32_t *e){if(!e)return (int32_t)UINT32_C(0
 // The system language (SCE_SYSTEM_SERVICE_PARAM_ID_LANG): ISS_LANGUAGE=<PS4 language id, 0-30>,
 // set by src/settings.c from `language` in settings.toml; 17 when unset.
 static int32_t system_language(void){
-    const char *s=getenv("ISS_LANGUAGE");char *end;long id=s?strtol(s,&end,10):-1;
+    const char *s=settings_get("language");char *end;long id=s?strtol(s,&end,10):-1;
     return s&&*s&&!*end&&id>=0&&id<=30?(int32_t)id:17;
 }
 static int32_t GUEST_ABI system_param(int id,int32_t *out){

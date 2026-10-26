@@ -1,11 +1,12 @@
 // Adapted from bloodborne_pc@4d4d20812c0af23a11c8b8d40f5e06a9054925ef, GPL-2.0-or-later.
-// bbport: shadPS4 settings used by the video core, read once from BB_* environment
-// variables (defaults match shadPS4 except the pipeline cache, which is on).
+// bbport: shadPS4 settings used by the video core, read once from settings.toml (vsync, fps_limit;
+// gpu/settings_value.h), the defaults match shadPS4 except the pipeline cache, which is on.
 #pragma once
 #include <algorithm>
 #include <cstdlib>
 #include <string>
 #include "common/types.h"
+#include "settings_value.h"
 
 enum GpuReadbacksMode : int { Disabled, Relaxed, Precise };
 
@@ -13,7 +14,7 @@ class EmulatorSettingsImpl {
 public:
     static EmulatorSettingsImpl* GetInstance() { static EmulatorSettingsImpl s; return &s; }
     static long Number(const char* name, long fallback) {
-        const char* v = std::getenv(name);
+        const char* v = iss::Setting(name);
         return v ? std::strtol(v, nullptr, 10) : fallback;
     }
     s32 GetGpuId() { return -1; }
@@ -21,7 +22,7 @@ public:
     u32 GetInternalScreenHeight() { return 1080; }
     std::string GetPresentMode() {
         static const std::string value = [] {
-            const char* v = std::getenv("BB_PRESENT_MODE");
+            const char* v = iss::Setting("vsync");
             return std::string{v ? v : "Mailbox"};
         }();
         return value;
@@ -32,12 +33,12 @@ public:
     u32 GetReadbacksMode() { return GpuReadbacksMode::Precise; }
     // The guest flips on the emulated vblank at 240 Hz: a finished frame is presented as soon as it
     // arrives (IsUncappedVblank) instead of on the next of 60 ticks (at 60 Hz a 20 ms frame waited
-    // 33.3 ms, and frames alternated 10/20 ms at 100 Hz). BB_FPS_LIMIT paces the game itself.
+    // 33.3 ms, and frames alternated 10/20 ms at 100 Hz). fps_limit paces the game itself.
     u32 GetVblankFrequency() { return 240; }
     bool IsUncappedVblank() { return true; }
-    /// Frames per second the present thread lets through; 0 = no limit (BB_FPS_LIMIT).
+    /// Frames per second the present thread lets through; 0 = no limit (fps_limit).
     u32 GetFrameLimit() {
-        static const u32 value = u32(std::max(0L, Number("BB_FPS_LIMIT", 0)));
+        static const u32 value = u32(std::max(0L, Number("fps_limit", 0)));
         return value;
     }
     bool IsCopyGpuBuffers() { return false; }

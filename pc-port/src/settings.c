@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Player settings and the renderer's tuned defaults (settings.h).
 //
-// The runtime and libiss-gpu.so read their options from the process environment (getenv). The
-// player never sets any of them: this file fills them in before anything reads them, from
-//   1. the environment itself (ISS_USER_DIR, ISS_SETTINGS and ISS_GAME_DIR, which the scripts set),
-//   2. ~/.config/iss-pc/settings.toml (written with the defaults on the first start),
-//   3. the built-in defaults below.
+// The runtime, the eboot patches and libiss-gpu.so read their options with settings_get, by key, from
+//   1. ~/.config/iss-pc/settings.toml (written with the defaults on the first start),
+//   2. the built-in defaults below.
+// The environment holds no setting: only ISS_SETTINGS and ISS_USER_DIR pick another file and folder.
 #include "settings.h"
 #include <ctype.h>
 #include <errno.h>
@@ -16,8 +15,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-// What a player sets (SettingsEntry, settings.h). Each maps to one variable; the values are checked
-// here so a typo is reported at start instead of silently ignored by the code that reads the variable.
+// What a player sets (SettingsEntry, settings.h). The values are checked here so a typo is reported
+// at start instead of silently ignored by the code that reads the key.
 typedef SettingsEntry Setting;
 static const char *const on_off[] = {"on=1", "off=0", NULL};
 static const char *const vsync_choices[] = {"on=Fifo", "off=Immediate", "mailbox=Mailbox", NULL};
@@ -34,63 +33,63 @@ static const char *const language_choices[] = {
     "russian=8", "finnish=12", "swedish=13", "danish=14", "norwegian=15", "polish=16", "brazilian=17",
     "turkish=19", "latino=20", NULL};
 const Setting settings_entries[] = {
-    {"game_dir", "ISS_GAME_DIR", "", "The game folder (the one with eboot.bin).", NULL},
-    {"save_dir", "ISS_SAVE_ROOT", "", "Where saves go. Empty: <data folder>/savedata.", NULL},
-    {"resolution", "ISS_RESOLUTION", "1920x1080",
+    {"game_dir", "", "The game folder (the one with eboot.bin).", NULL},
+    {"save_dir", "", "Where saves go. Empty: <data folder>/savedata.", NULL},
+    {"resolution", "1920x1080",
      "Render size, WIDTHxHEIGHT. Wider than 16:9 shows more to the sides (Hor+).", NULL},
-    {"fullscreen", "ISS_FULLSCREEN", "off", "on or off. Alt+Enter switches in game.", on_off},
-    {"vsync", "BB_PRESENT_MODE", "mailbox", "on, off (lowest latency, tears) or mailbox.", vsync_choices},
-    {"fps_limit", "BB_FPS_LIMIT", "60", "Frame rate limit, 0 = unlimited.", NULL},
-    {"fsr_aa", "ISS_FSR", "off",
+    {"fullscreen", "off", "on or off. Alt+Enter switches in game.", on_off},
+    {"vsync", "mailbox", "on, off (lowest latency, tears) or mailbox.", vsync_choices},
+    {"fps_limit", "60", "Frame rate limit, 0 = unlimited.", NULL},
+    {"fsr_aa", "off",
      "on: FSR 3 replaces the game's own anti-aliasing (SMAA T2x), at the render size. Also in the F1 menu.",
      on_off},
-    {"fsr_mode", "ISS_FSR_MODE", "native",
+    {"fsr_mode", "native",
      "The 3D picture's size, the output size divided by: native (1), quality (1.5), balanced (1.7), "
      "performance (2) or ultra_performance (3). With fsr_aa FSR 3 scales it up, without it the game "
      "does. Read at start. Also in the F1 menu.", fsr_mode_choices},
-    {"fsr_sharpness", "ISS_FSR_SHARPNESS", "0",
+    {"fsr_sharpness", "0",
      "FSR 3 sharpening in percent (0 = off, 100 = strongest), with fsr_aa. Also in the F1 menu.", NULL},
-    {"frame_generation", "ISS_FG", "off",
+    {"frame_generation", "off",
      "on: FSR 3 frame generation, a frame shown between two of the game's (needs fsr_aa). Also in the "
      "F1 menu.", on_off},
-    {"mangohud", "ISS_MANGOHUD", "off", "on: the launcher starts the game under MangoHud (if installed).", on_off},
-    {"fov", "ISS_FOV", "100", "Field of view in percent of the game's (50 to 200).", NULL},
-    {"hud_width", "ISS_HUD_ASPECT", "16:9", "HUD edges on screens wider than 16:9: 16:9, 21:9 or full.", hud_choices},
-    {"language", "ISS_LANGUAGE", "english",
+    {"mangohud", "off", "on: the launcher starts the game under MangoHud (if installed).", on_off},
+    {"fov", "100", "Field of view in percent of the game's (50 to 200).", NULL},
+    {"hud_width", "16:9", "HUD edges on screens wider than 16:9: 16:9, 21:9 or full.", hud_choices},
+    {"language", "english",
      "english french italian german spanish dutch portuguese russian polish turkish (voices), "
      "danish finnish norwegian swedish (subtitles only); North American edition: "
      "english french latino brazilian.", language_choices},
-    {"gpu_memory", "ISS_UNIFIED_MEMORY", "video",
+    {"gpu_memory", "video",
      "video: the GPU reads copies in video memory. in_place: reads the game's memory directly "
      "(much slower on NVIDIA).", memory_choices},
-    {"shaders", "ISS_ASYNC_SHADERS", "wait",
+    {"shaders", "wait",
      "New shaders: wait (the frame stops while one compiles), parallel (a burst compiles on more "
      "threads, still waited for) or skip (objects using it are not drawn until it is ready).",
      shader_choices},
-    {"shader_precompile", "ISS_AOT_COMPUTE", "off",
+    {"shader_precompile", "off",
      "on: every compute shader of the game is compiled ahead of time, in the background while "
      "playing (the first start indexes the game files). off: compiled when first used.",
      precompile_choices},
-    {"native_passes", "ISS_NATIVE_PASSES", "on",
+    {"native_passes", "on",
      "on: the engine's own threads record whole render passes into Vulkan, so the command processor "
      "thread (the limit in busy city views) translates far fewer draws. Switch it off if the GPU driver "
      "crashes (NVIDIA 595 did in iss_pc's tests).", on_off},
-    {"performance_mode", "ISS_PERF_MODE", "off",
+    {"performance_mode", "off",
      "The game's own lower quality settings for slower PCs: off, low (shorter LOD distances, one "
      "sun-shadow cascade less, half-resolution particles) or office (LOD 0.5, quarter-resolution "
      "particles, no high-res texture blocks, half the pedestrians). 1.07 eboot only.", perf_choices},
-    {"mouse_aim", "ISS_MOUSE_AIM", "on",
+    {"mouse_aim", "on",
      "on: the mouse looks and aims as soon as the game window has focus (left button fires, right "
      "button aims). F4 switches it off and on in game.", on_off},
-    {"mouse_sensitivity", "ISS_MOUSE_SENS", "100", "Mouse look speed in percent (10 to 1000).", NULL},
-    {"hints", "ISS_HINTS", "auto",
+    {"mouse_sensitivity", "100", "Mouse look speed in percent (10 to 1000).", NULL},
+    {"hints", "auto",
      "On-screen help for the touchpad (hold Alt) and the spray can (graffiti): auto (in full the first "
      "three times, then a small label), always or off. Also in the F5 panel.", hint_choices},
-    {"deadzone_left", "ISS_PAD_DEADZONE_LEFT", "10",
+    {"deadzone_left", "10",
      "Left stick dead zone in percent of full deflection (0 to 50).", NULL},
-    {"deadzone_right", "ISS_PAD_DEADZONE_RIGHT", "10",
+    {"deadzone_right", "10",
      "Right stick dead zone in percent of full deflection (0 to 50).", NULL},
-    {"pad_map", "ISS_PAD_MAP", "",
+    {"pad_map", "",
      "Controller layout for pads without a touchpad, e.g. \"view=touch_left,menu=touch_right\". "
      "Empty: the default.", NULL},
 };
@@ -104,6 +103,8 @@ static int retired(const char *key) {
     return 0;
 }
 const int settings_entry_count = setting_count;
+// settings_get's values: the code value of each key, empty for the code's own default.
+static char current[setting_count][SETTINGS_VALUE_SIZE];
 
 static char *trim(char *s) {
     while (isspace((unsigned char)*s)) ++s;
@@ -159,6 +160,27 @@ static int check_value(const Setting *s, const char *value) {
         return !strcmp(s->key, "fov") ? n >= 50 && n <= 200 : n >= 0 && n <= 1000;
     }
     return 1;
+}
+
+static int key_index(const char *key) {
+    for (int i = 0; key && i < setting_count; ++i)
+        if (!strcmp(settings_entries[i].key, key)) return i;
+    return -1;
+}
+
+const char *settings_get(const char *key) {
+    const int i = key_index(key);
+    return i >= 0 && current[i][0] ? current[i] : NULL;
+}
+
+int settings_set(const char *key, const char *value) {
+    const int i = key_index(key);
+    if (i < 0) return -1;
+    const Setting *s = &settings_entries[i];
+    const char *mapped = *value ? choice_value(s, value) : "";
+    if (!mapped || (*value && !check_value(s, value))) return -1;
+    snprintf(current[i], sizeof(current[i]), "%s", mapped);
+    return 0;
 }
 
 static void config_path(char *out, size_t size, const char *name) {
@@ -266,7 +288,6 @@ static void default_user_dir(void) {
 }
 
 int settings_apply(int argc, char **argv) {
-    (void)argc;
     // libiss-gpu.so uses the initial-exec TLS model: without spare static TLS (~46 KB used) the
     // load fails. The loader reads the tunable only at start, so set it and start again.
     const char *tunables = getenv("GLIBC_TUNABLES");
@@ -318,16 +339,21 @@ int settings_apply(int argc, char **argv) {
     for (int i = 0; i < setting_count; ++i) {
         const Setting *s = &settings_entries[i];
         const char *value = have[i] ? player[i] : s->fallback;
-        if (!*value) continue; // empty: the code's own default
-        const char *mapped = choice_value(s, value);
-        if (!mapped || !check_value(s, value)) {
+        if (settings_set(s->key, value)) {
             fprintf(stderr, "settings: %s = \"%s\" is not valid (%s) - using \"%s\"\n", s->key, value, s->comment, s->fallback);
             ++errors;
-            value = s->fallback;
-            if (!*value) continue;
-            mapped = choice_value(s, value);
+            settings_set(s->key, s->fallback);
         }
-        setenv(s->variable, mapped, 0);
+    }
+    // Until game_dir is set, the folder setup prepared the image from (game_dir.txt next to it).
+    if (!settings_get("game_dir") && argc > 1) {
+        const char *slash = strrchr(argv[1], '/');
+        char recorded[4096];
+        snprintf(recorded, sizeof(recorded), "%.*sgame_dir.txt", slash ? (int)(slash + 1 - argv[1]) : 0, argv[1]);
+        FILE *txt = fopen(recorded, "r");
+        char line[SETTINGS_VALUE_SIZE];
+        if (txt && fgets(line, sizeof(line), txt)) settings_set("game_dir", trim(line));
+        if (txt) fclose(txt);
     }
     default_user_dir();
     return errors ? -1 : 0;

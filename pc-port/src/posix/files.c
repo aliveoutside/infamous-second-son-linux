@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // PS4 read-only app mounts and workspace-only writable runtime data.
 #include "../runtime.h"
+#include "../settings.h"
 #include <dirent.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -36,14 +37,14 @@ static int host_error(void) {
     }
 }
 static void initialize(void) {
-    const char *game=getenv("ISS_GAME_DIR");
+    const char *game=settings_get("game_dir");
     snprintf(app_root,sizeof(app_root),"%s",game?game:".");
     const char *user=getenv("ISS_USER_DIR");
     if(user&&*user)snprintf(user_root,sizeof(user_root),"%s",user);
     else{ssize_t n=readlink("/proc/self/exe",user_root,sizeof(user_root)-8);if(n<0)n=0;user_root[n]=0;
         char *slash=strrchr(user_root,'/');if(slash)*slash=0;strcat(user_root,"/user");}
     mkdir(user_root,0777);
-    const char *save_override=getenv("ISS_SAVE_ROOT");
+    const char *save_override=settings_get("save_dir");
     if(save_override&&*save_override)snprintf(save_root,sizeof(save_root),"%s",save_override);
     else snprintf(save_root,sizeof(save_root),"%s/savedata",user_root);
     const char *names[]={"temp0","download0","data","savedata0"};

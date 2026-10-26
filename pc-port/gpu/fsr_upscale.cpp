@@ -9,9 +9,12 @@
 #include <cstring>
 #include <utility>
 
+#include <dlfcn.h>
+
 #include <vk_mem_alloc.h>
 
 #include "ffx_vk_portable.h"
+#include "settings_value.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 
 namespace iss::fsr {
@@ -98,15 +101,15 @@ struct State {
     Owned down;   // upscaling: the output scaled back to the render size, for the resolve's target
     Owned swapped; // upscaling: the output with red and blue swapped (B8G8R8A8), for the upscale pass
     u32 width{}, height{};         // the render size
-    u32 out_width{}, out_height{}; // the output size: the game's (ISS_FSR_OUTPUT_SIZE) or the render size
+    u32 out_width{}, out_height{}; // the output size: the game's (native/ultrawide.cpp) or the render size
     bool failed{};
     u64 frame{};
     std::chrono::steady_clock::time_point last{};
 };
 State g;
 
-int EnvInt(const char* name, int fallback) {
-    const char* v = std::getenv(name);
+int SettingInt(const char* key, int fallback) {
+    const char* v = iss::Setting(key);
     return v && v[0] ? std::atoi(v) : fallback;
 }
 
@@ -143,9 +146,10 @@ FfxVkPortableImage Convert(const Image& image, FfxVkPortableResourceState state)
 } // namespace
 
 namespace {
-std::atomic<bool> g_enabled{false};
-std::atomic<bool> g_fg_enabled{false};
-std::atomic<int> g_sharpness{std::clamp(EnvInt("ISS_FSR_SHARPNESS", 0), 0, 100)};
+// fsr_aa, frame_generation and fsr_sharpness of settings.toml (src/settings.c), then the F1 menu.
+std::atomic<bool> g_enabled{SettingInt("fsr_aa", 0) == 1};
+std::atomic<bool> g_fg_enabled{SettingInt("frame_generation", 0) == 1};
+std::atomic<int> g_sharpness{std::clamp(SettingInt("fsr_sharpness", 0), 0, 100)};
 std::atomic<bool> g_restart{}; // switched on again: the history is stale
 std::atomic<bool> g_fg_restart{}; // FG or FSR switched: what FG prepared before is stale
 Stats g_stats;
@@ -187,9 +191,10 @@ bool Prepare(const Vulkan::Instance& instance, u32 width, u32 height, Frame& fra
         // fsr_mode below native: the picture is drawn smaller than the game's output
         // (native/ultrawide.cpp) and FSR scales it up to that.
         u32 out_w = width, out_h = height;
-        if (const char* v = std::getenv("ISS_FSR_OUTPUT_SIZE")) {
+        using OutputSize = int (*)(unsigned*, unsigned*);
+        if (const auto size = reinterpret_cast<OutputSize>(dlsym(RTLD_DEFAULT, "iss_output_size"))) {
             u32 w = 0, h = 0;
-            if (std::sscanf(v, "%ux%u", &w, &h) == 2 && w >= width && h >= height) {
+            if (size(&w, &h) && w >= width && h >= height) {
                 out_w = w;
                 out_h = h;
             }

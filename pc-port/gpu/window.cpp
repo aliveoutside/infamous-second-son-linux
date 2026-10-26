@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <stdexcept>
+#include "settings_value.h"
 #include <SDL3/SDL.h>
 #include <cstdio>
 #include <cstdlib>
@@ -19,7 +20,7 @@ namespace iss::menu_ui { bool OnEvent(const SDL_Event& e); }
 namespace Frontend {
 WindowSDL::WindowSDL(s32 w,s32 h,const char *title):width{w},height{h},base_title{title}{
     if(!SDL_InitSubSystem(SDL_INIT_VIDEO))throw std::runtime_error(SDL_GetError());
-    const char* display_mode=std::getenv("ISS_FULLSCREEN");
+    const char* display_mode=iss::Setting("fullscreen");
     const bool fullscreen=display_mode&&display_mode[0]=='1';
     window=SDL_CreateWindow(title,w,h,SDL_WINDOW_VULKAN|SDL_WINDOW_RESIZABLE|
         (fullscreen?SDL_WINDOW_FULLSCREEN:0));

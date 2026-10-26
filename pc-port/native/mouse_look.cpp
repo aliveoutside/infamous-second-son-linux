@@ -21,6 +21,7 @@
 // last move (ISS_MOUSE_FOLLOW_HOLD, seconds, default 5; 0 leaves auto-follow alone). Found in
 // github.com/axylpup/shadPS4 (src/core/mouse_aim.cpp), checked against this eboot.
 #include "mouse_look.h"
+#include "../src/settings.h"
 #include "ultrawide.h"
 #include "../src/runtime.h"
 #include <chrono>
@@ -76,11 +77,11 @@ void ISS_SYSV Integrate(unsigned char *camera,unsigned char *settings,unsigned c
 
 namespace iss::native {
 int InstallMouseLook(unsigned char *image,std::uint64_t size){
-    const char *option=std::getenv("ISS_MOUSE_AIM");
+    const char *option=settings_get("mouse_aim");
     if(option&&option[0]=='0')return 0;
     for(const Region &r:kRegions)
         if(size<=r.at+r.size||CodeHash(image+r.at,r.size)!=r.hash){std::fputs("MOUSE_LOOK disabled: eboot function identity mismatch\n",stderr);return 0;}
-    const char *sens=std::getenv("ISS_MOUSE_SENS");
+    const char *sens=settings_get("mouse_sensitivity");
     const float percent=sens?float(std::atof(sens)):100.f;
     scale=kRadiansPerCount*(percent>0?percent:100.f)/100.f;
     game=image;original=reinterpret_cast<IntegrateFn>(image+kIntegrate);

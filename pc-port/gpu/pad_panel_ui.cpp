@@ -5,6 +5,7 @@
 // sides, click and swipes of PhonePad Desktop, and the mouse as touchpad (F6). SPRAY: the spray
 // can of the graffiti missions (F7), and its speed. Both: the on-screen hints switch (`hints`).
 #include <SDL3/SDL.h>
+#include "settings_value.h"
 #include <imgui.h>
 #include <algorithm>
 #include <cstdio>
@@ -41,7 +42,7 @@ struct State {
     uint32_t buttons = 0; // mouse buttons and triggers down at the last frame, for the first press
     State() {
         out.swipe = out.mode = out.hints = -1; out.sensitivity = 1;
-        if (const char* h = std::getenv("ISS_HINTS")) hints = !std::strcmp(h, "always") ? 1 : !std::strcmp(h, "off") ? 2 : 0;
+        if (const char* h = iss::Setting("hints")) hints = !std::strcmp(h, "always") ? 1 : !std::strcmp(h, "off") ? 2 : 0;
     }
 };
 State& S() { static State s; return s; }

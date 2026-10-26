@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "runtime.h"
+#include "settings.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,7 +39,7 @@ int main(int argc,char **argv){
     if(!monitor){SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI,"0");SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT,"0");
     SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_HIDAPI_PS4,"0",SDL_HINT_OVERRIDE);
     SDL_SetHint(SDL_HINT_JOYSTICK_DIRECTINPUT,"0");SDL_SetHint(SDL_HINT_JOYSTICK_WGI,"0");SDL_SetHint("SDL_XINPUT_ENABLED","0");}
-    if(!monitor)setenv("ISS_PAD_MAP","guide=options",1);
+    if(!monitor)settings_set("pad_map","guide=options");
     Init init=(Init)pad_resolve("hv1luiJrqQM#libScePad#1#libScePad#257");
     Open open=(Open)pad_resolve("xk0AcarP3V4#libScePad#1#libScePad#257");
     Read read=(Read)pad_resolve("YndgXqQVV7c#libScePad#1#libScePad#257");CHECK(init&&open&&read);CHECK(init()==0);

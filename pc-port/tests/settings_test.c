@@ -56,6 +56,15 @@ int main(void) {
     CHECK(settings_valid(dead, "0") && settings_valid(dead, "50") && !settings_valid(dead, "51") && !settings_valid(dead, "-1"));
     CHECK(settings_valid(dead_right, "25") && !settings_valid(dead_right, "abc"));
 
+    // What the code reads (settings_get): a choice's code value, empty is NULL, a bad value is refused.
+    CHECK(settings_get("fsr_aa") == NULL);
+    CHECK(settings_set("fsr_aa", "on") == 0 && !strcmp(settings_get("fsr_aa"), "1"));
+    CHECK(settings_set("fsr_aa", "yes") == -1 && !strcmp(settings_get("fsr_aa"), "1"));
+    CHECK(settings_set("vsync", "mailbox") == 0 && !strcmp(settings_get("vsync"), "Mailbox"));
+    CHECK(settings_set("fov", "110") == 0 && !strcmp(settings_get("fov"), "110"));
+    CHECK(settings_set("fov", "20") == -1 && settings_set("no_such_key", "1") == -1 && !settings_get("no_such_key"));
+    CHECK(settings_set("save_dir", "") == 0 && settings_get("save_dir") == NULL);
+
     strcpy(values[fov], "115");
     strcpy(values[pad], "a=\"q\\uote");
     CHECK(settings_save((const char (*)[SETTINGS_VALUE_SIZE])values) == 0);

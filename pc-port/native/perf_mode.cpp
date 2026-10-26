@@ -14,6 +14,7 @@
 //   office: LOD 0.5, one cascade less, particles at quarter resolution, no high-res blocks, half
 //           the pedestrians.
 #include "perf_mode.h"
+#include "../src/settings.h"
 #include "ultrawide.h"
 #include <cstdio>
 #include <cstdlib>
@@ -23,7 +24,7 @@
 
 namespace iss::native {
 int InstallPerfMode(unsigned char *image, std::uint64_t size) {
-    const char *env = std::getenv("ISS_PERF_MODE");
+    const char *env = settings_get("performance_mode");
     const std::string mode = env ? env : "off";
     const bool low = mode == "low", office = mode == "office";
     if (!low && !office) return 0;

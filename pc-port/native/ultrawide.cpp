@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Custom resolution, ultrawide field of view and HUD edges for the 1.07 eboot (sha256 2d1ca796...).
-// Installed before the guest starts (src/posix/native_hooks.cpp); every patched function is identity-checked.
+// Keys of settings.toml (src/settings.c). Installed before the guest starts (src/posix/native_hooks.cpp); every patched function is identity-checked.
 //
-// ISS_RESOLUTION=WxH: the renderer's output and render size. eboot+0x1eff00 (renderer start) and
+// resolution = WxH: the renderer's output and render size. eboot+0x1eff00 (renderer start) and
 //   eboot+0x1f0be0 (video mode change) write 1920x1080 outside PS4 Pro mode into the renderer
 //   (eboot+0xf1bcd0: output +0/+4, render +0xc/+0x10); every buffer size is derived from them.
 //   The cameras take their aspect from the UI screen size, eboot+0x1d0ccc0/c4 (1920x1080, written
@@ -10,16 +10,17 @@
 //   tan(vfov/2)*aspect). It becomes (1080*W/H)x1080: the vertical field of view is kept and the
 //   view widens (Hor+). The UI is laid out in units of 1/1080 of the height, from the centre of the
 //   screen (projection eboot+0x4a5000, widget anchors eboot+0x564cf0), so it keeps its size.
-// ISS_HUD_ASPECT=a (0 or unset: the full width): the widgets anchored left or right sit at the safe
+// hud_width = a (0 or empty: the full width): the widgets anchored left or right sit at the safe
 //   area margin, eboot+0x1d0ccc8 (x) / +0x1d0cccc (y), computed from the system safe area ratio at
 //   eboot+0x1f045e, +0x1f2add and +0x1f2bdd. SafeArea() computes the margins of a centred a:1
 //   region instead, so the HUD edges stay where a 16:9 (or 21:9) screen would have them. Subtitles
 //   wrap in that region too (eboot+0x501c52: 0.6 of the width between the margins).
-// ISS_FOV=p (percent, 100 = the game's): the cameras' tan(fov/2) times p/100. The camera computes
+// fov = p (percent, 100 = the game's): the cameras' tan(fov/2) times p/100. The camera computes
 //   it with tanf at eboot+0x5805b9 (SetFov), +0x580f81 (update) and +0x5810e7; the constructor's
 //   default tan(0.5) is at eboot+0x5804e7 and eboot+0xae4464. The calls go through a jump in the
 //   alignment padding after SetFov (eboot+0x580641, 15 NOP bytes) to ScaledTan.
 #include "../src/runtime.h"
+#include "../src/settings.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -33,6 +34,7 @@
 #define ISS_SYSV __attribute__((sysv_abi))
 #endif
 namespace {
+unsigned g_output_w,g_output_h; // the game's output size when the render size is smaller, else 0
 struct Region{std::uint64_t at,size,hash;};
 // Whole functions (and the padding used for the jump), FNV-1a 64 of the loaded bytes.
 constexpr Region kResolution[]={{0x1eff00,0x5d5,0xb20ecde85db657ccULL},{0x1f0be0,0x5ab,0xa0d7e80835318d45ULL},
@@ -125,9 +127,9 @@ bool ParseResolution(const char *text,std::uint32_t &width,std::uint32_t &height
 }
 
 int InstallResolution(unsigned char *image,std::uint64_t size){
-    const char *option=std::getenv("ISS_RESOLUTION");
+    const char *option=settings_get("resolution");
     // fsr_mode: the render size is the output size divided by this.
-    const char *mode_option=std::getenv("ISS_FSR_MODE");
+    const char *mode_option=settings_get("fsr_mode");
     const double mode_scale=mode_option&&*mode_option?std::atof(mode_option):1.0;
     const bool scaled=mode_scale>1.0&&mode_scale<=4.0;
     if((!option||!*option)&&!scaled)return 0;
@@ -135,7 +137,7 @@ int InstallResolution(unsigned char *image,std::uint64_t size){
     if(option&&*option&&!ParseResolution(option,width,height)){std::fprintf(stderr,"ULTRAWIDE rejected: ISS_RESOLUTION=%s (expected WxH)\n",option);return -1;}
     if(width==1920&&height==1080&&!scaled)return 0;
     if(!Matches(image,size,kResolution,std::size(kResolution))){std::fputs("ULTRAWIDE rejected: eboot function identity mismatch\n",stderr);return -1;}
-    if(const char *hud=std::getenv("ISS_HUD_ASPECT"))hud_aspect=float(std::atof(hud));
+    if(const char *hud=settings_get("hud_width"))hud_aspect=float(std::atof(hud));
     if(!(hud_aspect>=0.5f&&hud_aspect<=8.f))hud_aspect=0;
     // The UI screen: 1080 high, as wide as the picture's aspect (even, the game halves it).
     const std::uint32_t ui_w=std::uint32_t(std::lround(1080.0*width/height))&~1u,ui_h=1080;
@@ -181,10 +183,8 @@ int InstallResolution(unsigned char *image,std::uint64_t size){
     }
     if(!ok)return -1;
     if(render_w!=width||render_h!=height){
-        // For FSR 3 (gpu/fsr_upscale.cpp): the size it scales the render size up to.
-        char output[32];
-        std::snprintf(output,sizeof(output),"%ux%u",width,height);
-        setenv("ISS_FSR_OUTPUT_SIZE",output,1);
+        // For FSR 3 (gpu/fsr_upscale.cpp, iss_output_size): the size it scales the render size up to.
+        g_output_w=width;g_output_h=height;
     }
     std::fprintf(stderr,"ULTRAWIDE resolution=%ux%u output=%ux%u render=%ux%u ui=%ux%u hud_aspect=%.4f tiles=%llu\n",
                  requested_w,requested_h,width,height,render_w,render_h,ui_w,ui_h,double(hud_aspect),
@@ -193,10 +193,10 @@ int InstallResolution(unsigned char *image,std::uint64_t size){
 }
 
 int InstallFov(unsigned char *image,std::uint64_t size){
-    const char *option=std::getenv("ISS_FOV");
+    const char *option=settings_get("fov");
     if(!option||!*option)return 0;
     const double percent=std::atof(option);
-    if(!(percent>=50&&percent<=200)){std::fprintf(stderr,"ULTRAWIDE rejected: ISS_FOV=%s (50 to 200)\n",option);return -1;}
+    if(!(percent>=50&&percent<=200)){std::fprintf(stderr,"ULTRAWIDE rejected: fov=%s (50 to 200)\n",option);return -1;}
     if(percent==100)return 0;
     if(!Matches(image,size,kFov,std::size(kFov))){std::fputs("ULTRAWIDE rejected: camera function identity mismatch\n",stderr);return -1;}
     fov_scale=float(percent/100);
@@ -227,4 +227,11 @@ int InstallUltrawide(unsigned char *image,std::uint64_t size){
     if(fov<0)return fov;
     return resolution+fov;
 }
+}
+
+// Exported from iss-probe (CMakeLists.txt) and found by libiss-gpu.so with dlsym: the output size FSR
+// scales the render size up to, or 0 when the game renders at its output size.
+extern "C" int iss_output_size(unsigned *width,unsigned *height){
+    *width=g_output_w;*height=g_output_h;
+    return g_output_w!=0;
 }

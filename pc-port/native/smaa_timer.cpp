@@ -3,7 +3,7 @@
 // frame gets SMAA T2x (flag eboot+0xda07f9): on while the GPU frame time, read from two end of pipe
 // timestamps (eboot+0x196ef0, units of 1/30000 s at 800 MHz), stays below 1000 (33.3 ms), back on below
 // 950. Off, the callers (eboot+0x1929c0, +0x195840) draw another anti-aliasing instead: no SMAA passes,
-// so FSR (ISS_FSR) has nothing to run on and frame generation stops, and the projection jitter is no
+// so FSR (fsr_aa) has nothing to run on and frame generation stops, and the projection jitter is no
 // longer set (eboot+0x581a50) and stays at its last half-pixel offset. Here those timestamps follow the
 // command processor and the guest's submissions, not a GPU (pm4_cmds.h GetGpuClock64), and two guest
 // frames inside one measured frame already read 41.7 ms: the picture flipped between the two under load.

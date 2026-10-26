@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // The unified heap (unified_memory.h): flag, range and statistics.
 #include "unified_memory.h"
+#include "settings_value.h"
 #include "common/perf_stats.h"
 #include <array>
 #include <atomic>
@@ -9,7 +10,7 @@
 
 namespace iss::unified {
 const bool enabled = [] {
-    const char* p = std::getenv("ISS_UNIFIED_MEMORY");
+    const char* p = iss::Setting("gpu_memory");
     return p && p[0] == '1';
 }();
 

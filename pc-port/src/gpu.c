@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "runtime.h"
+#include "settings.h"
 #include "pad_panel.h"
 #include <dlfcn.h>
 #include "../gpu/iss_gpu.h"
@@ -25,7 +26,7 @@ static int (*menu_take)(char *,size_t,char *,size_t);
 // The picture is fitted to whatever size the window gets.
 static void window_size(uint32_t *width,uint32_t *height){
     *width=1280;*height=720;
-    const char *resolution=getenv("ISS_RESOLUTION");unsigned w=0,h=0;
+    const char *resolution=settings_get("resolution");unsigned w=0,h=0;
     if(!resolution||sscanf(resolution,"%ux%u",&w,&h)!=2||!w||!h)return;
     const double aspect=(double)w/h;
     double window_w=720*aspect,window_h=720;

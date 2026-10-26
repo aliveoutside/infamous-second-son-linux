@@ -6,6 +6,7 @@
 // src/pad.c, which takes it through iss_gpu_menu_take. DEBUG: real and shown frame rates, what
 // FSR and FG did, the last hitch. While it is up src/pad.c frees the mouse (iss_gpu_menu_shown).
 #include <SDL3/SDL.h>
+#include "settings_value.h"
 #include <imgui.h>
 #include <algorithm>
 #include <cmath>
@@ -32,7 +33,7 @@ constexpr Mode kModes[] = {{"native", "Native", 1.0}, {"quality", "Quality", 1.5
                            {"ultra_performance", "Ultra perf.", 3.0}};
 constexpr int kModeCount = int(sizeof(kModes) / sizeof(kModes[0]));
 int StartMode() {
-    const char* v = std::getenv("ISS_FSR_MODE");
+    const char* v = iss::Setting("fsr_mode");
     const double scale = v && *v ? std::atof(v) : 1.0;
     for (int i = 0; i < kModeCount; ++i)
         if (std::fabs(kModes[i].scale - scale) < 0.01) return i;

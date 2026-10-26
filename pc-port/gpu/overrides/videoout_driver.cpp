@@ -248,7 +248,7 @@ void VideoOutDriver::Flip(const Request& req, u64 vblank_count, bool present) {
     // Update HDR status before presenting.
     presenter->SetHDR(req.port->is_hdr);
 
-    // Present the frame (ISS_FG: later, the generated one is shown first).
+    // Present the frame (frame_generation: later, the generated one is shown first).
     if (present) {
         presenter->Present(req.frame);
     }
@@ -378,7 +378,7 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
     };
 
     constexpr s32 forced_flip_rate = -1; // the guest's own rate
-    // BB_FPS_LIMIT=n (launcher "FPS limit", 0 = off): a flip is taken only once 1/n s passed since
+    // fps_limit = n (launcher "FPS limit", 0 = off): a flip is taken only once 1/n s passed since
     // the last one (half a vblank of tolerance, so jitter does not cost a whole tick); the guest
     // waits for its queued flip, which paces the game itself.
     const u32 frame_limit = EmulatorSettings.GetFrameLimit();
@@ -389,7 +389,7 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
     auto last_flip = std::chrono::steady_clock::time_point{};
     s32 seen_flip_rate = -1;
     bool was_paused = false;
-    // ISS_FG: a flip with a generated frame shows it at once and the real one half a frame later
+    // frame_generation: a flip with a generated frame shows it at once and the real one half a frame later
     // (the average time between real flips), at the exact time: a vblank tick is too coarse.
     Request parked{};
     auto parked_due = std::chrono::steady_clock::time_point{};

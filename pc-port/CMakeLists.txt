@@ -53,8 +53,11 @@ function(iss_runtime_target name main)
   target_include_directories(${name} PRIVATE src "${CMAKE_BINARY_DIR}/generated")
   add_dependencies(${name} iss-api-names)
   target_link_libraries(${name} PRIVATE PkgConfig::SDL3 Threads::Threads ${CMAKE_DL_LIBS} m)
-  # The guest is a SysV x86-64 program; keep the host's executable position independent but
-  # export nothing: the GPU library gets its callbacks through iss_gpu.h.
+  # The guest is a SysV x86-64 program; keep the host's executable position independent and
+  # export only the settings (src/settings.h), which libiss-gpu.so reads while it loads, before
+  # iss_gpu.h's callbacks, and FSR's output size (native/ultrawide.cpp): the rest goes through those.
+  target_link_options(${name} PRIVATE -Wl,--export-dynamic-symbol=settings_get
+    -Wl,--export-dynamic-symbol=settings_set -Wl,--export-dynamic-symbol=iss_output_size)
 endfunction()
 
 find_package(Threads REQUIRED)
