@@ -44,7 +44,7 @@ bool ParseFetchShader(const Shader::Info& info, FetchShaderData& out_fetch_data)
     if (!info.has_fetch_shader) {
         return false;
     }
-    // Recipe translation (ISS_AOT_RECIPES): the game builds fetch shaders at run time; the
+    // Recipe translation: the game builds fetch shaders at run time; the
     // recipe keeps what parsing it gave.
     if (Shader::Info::aot_fetch) {
         out_fetch_data = *static_cast<const FetchShaderData*>(Shader::Info::aot_fetch);

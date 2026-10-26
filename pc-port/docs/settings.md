@@ -23,7 +23,7 @@ defaults back.
 | `gpu_memory` | `video` | `video`, `in_place` (much slower on NVIDIA) |
 | `shaders` | `wait` | `wait`, `parallel` (more compiler threads), `skip` (draws of compiling pipelines skipped) |
 | `shader_precompile` | `off` | `on`: compute shaders compiled ahead of time in the background, `off` |
-| `native_passes` | `on` | The engine threads record whole render passes into Vulkan (`ISS_NATIVE_PASSES` and the profile of the original launcher), so the command processor thread, the limit in busy city views, translates far fewer draws. Needs a restart. Set `off` if the driver crashes (NVIDIA 595 under Linux did in iss_pc's tests); the pause menu hung the GPU once on a Windows build, see `ISS_NATIVE_PASSES_BLEND_DENY` |
+| `native_passes` | `on` | The engine threads record whole render passes into Vulkan (`ISS_NATIVE_PASSES`), so the command processor thread, the limit in busy city views, translates far fewer draws. Needs a restart. Set `off` if the driver crashes (NVIDIA 595 under Linux did in iss_pc's tests) |
 | `performance_mode` | `off` | The game's own lower quality settings (eboot 1.07 only, bytes checked first): `low` (LOD 0.7, one sun-shadow cascade less, half-resolution particles, 2 high-res texture blocks), `office` (LOD 0.5, quarter-resolution particles, no high-res blocks, half the pedestrians). Measured by axylpup: +13% / +19% in the heaviest city view |
 | `mouse_aim` | `on` | Mouse look and aim from the start (left button fires, right aims); F4 toggles in game |
 | `mouse_sensitivity` | `100` | Mouse look speed, 10 to 1000 percent (100: 0.046° per mouse count, see [mouse-and-keyboard.md](mouse-and-keyboard.md)) |
@@ -46,14 +46,18 @@ is `build/user` when it exists, else `~/.local/share/iss-pc`.
 
 ## For developers
 
-The runtime and the renderer still read their internal options from environment variables
-(`ISS_*`, `BB_*`, `SHADPS4_*`). Players never need them: `src/settings.c` fills them in at start,
-in this order:
+Every option is a key of this file. `src/settings.c` holds the table (name, variable, default,
+check); it fills the process environment before the runtime or `libiss-gpu.so` reads anything, and
+the launcher reads the same table. A new key needs its row above and a case in
+`tests/settings_test.c`.
 
-1. a variable already set in the environment (`ISS_GPU_PROFILE=1 scripts/linux/play.sh`);
-2. `settings.toml`, including raw variables under `[developer]`;
-3. the tested defaults in `src/settings.c` (`tuned_defaults`).
+The renderer's tuning constants are compiled in rather than exposed: the values that were measured
+once (barrier pooling, the write fault windows, the staging keeps, the pipeline and draw paths,
+the VRAM budget) are what plays. There is no `[developer]` section any more; an old
+`settings.toml` that still has one loads (its keys are ignored) and loses it at the next save.
 
-`ISS_SETTINGS=<file>` uses another settings file. The program also sets
+Three environment variables are left, each for one run rather than for a player:
+`ISS_SETTINGS=<file>` (another settings file), `ISS_USER_DIR=<folder>` (another data folder) and
+`SHADPS4_FRAME_CSV=frames.csv` (per-frame timings). The program also sets
 `GLIBC_TUNABLES=glibc.rtld.optional_static_tls=65536` itself and restarts once, so no wrapper
 script is needed.

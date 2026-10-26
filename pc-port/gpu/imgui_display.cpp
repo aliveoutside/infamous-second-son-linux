@@ -14,7 +14,6 @@
 #include "video_core/renderdoc.h"
 #include "core/debug_state.h"
 #include "overlay.h"
-#include "visual_capture.h"
 
 namespace iss::save_ui {
 void LoadFonts(ImGuiIO& io);
@@ -51,30 +50,8 @@ void OnSurfaceFormatChange(vk::Format f){ImGui::Vulkan::OnSurfaceFormatChange(f)
 void Shutdown(vk::Device d){d.waitIdle();TextureManager::StopWorker();ImGui::Vulkan::Shutdown();ImGui::DestroyContext();}
 ImGuiID NewFrame(bool reused){
     static unsigned frames=0;++frames;
-    if(frames==120){const char *p=std::getenv("ISS_CAPTURE_OVERLAY");if(p&&p[0]=='1')VideoCore::RequestScreenshot(VideoCore::ScreenshotRequest::WithOverlays);}
     static uint64_t capture_tick=0;const uint64_t tick=SDL_GetTicks();
-    static const bool capture=[] {const char *p=std::getenv("ISS_CAPTURE_FRAMES");return p&&p[0]=='1';}();
-    if(frames==1||frames==30||frames==120||tick-capture_tick>=15000){capture_tick=tick;std::fprintf(stdout,"GPU_PRESENT frame=%u reused=%d tick_ms=%llu\n",frames,int(reused),(unsigned long long)tick);std::fflush(stdout);if(capture&&!iss::visual_capture::Enabled())VideoCore::RequestScreenshot(VideoCore::ScreenshotRequest::GameOnly);}
-    if(iss::visual_capture::Enabled())iss::visual_capture::OnFrame(SDL_GetTicksNS(),frames,reused);
-    {
-        // ISS_SHOT_AT=s1,s2,... (scripted runs): the game's own frame (no other window, the game
-        // in the background or not) captured at these seconds of the session.
-        static std::vector<uint64_t> shots=[]{
-            std::vector<uint64_t> v;const char *p=std::getenv("ISS_SHOT_AT");
-            while(p&&*p){v.push_back(uint64_t(std::strtoull(p,nullptr,10))*1000);const char *c=std::strchr(p,',');p=c?c+1:nullptr;}
-            return v;}();
-        static size_t next_shot=0;
-        if(next_shot<shots.size()&&tick>=shots[next_shot]){++next_shot;VideoCore::RequestScreenshot(VideoCore::ScreenshotRequest::GameOnly);}
-        // ISS_SHOT_FLIPS=n1,n2,...: at these guest flips instead (the same game frame in an A/B,
-        // whatever the startup took).
-        static std::vector<uint64_t> flip_shots=[]{
-            std::vector<uint64_t> v;const char *p=std::getenv("ISS_SHOT_FLIPS");
-            while(p&&*p){v.push_back(uint64_t(std::strtoull(p,nullptr,10)));const char *c=std::strchr(p,',');p=c?c+1:nullptr;}
-            return v;}();
-        static size_t next_flip_shot=0;
-        if(next_flip_shot<flip_shots.size()&&DebugState.flip_count.load(std::memory_order_relaxed)>=flip_shots[next_flip_shot]){
-            ++next_flip_shot;VideoCore::RequestScreenshot(VideoCore::ScreenshotRequest::GameOnly);}
-    }
+    if(frames==1||frames==30||frames==120||tick-capture_tick>=15000){capture_tick=tick;std::fprintf(stdout,"GPU_PRESENT frame=%u reused=%d tick_ms=%llu\n",frames,int(reused),(unsigned long long)tick);std::fflush(stdout);}
     auto& io=ImGui::GetIO();uint64_t now=SDL_GetPerformanceCounter();
     io.DeltaTime=std::max(0.000001f,float(double(now-last_tick)/double(SDL_GetPerformanceFrequency())));last_tick=now;
     io.DisplaySize={(float)window->GetWidth(),(float)window->GetHeight()};ImGui::NewFrame();

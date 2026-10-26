@@ -15,12 +15,7 @@ struct OuterRange {
     u32 generation{}, groups{};
     std::optional<DirectCapture> capture;
     static u32 MaxGroups() {
-        static const u32 count = [] {
-            const char* p = std::getenv("ISS_NATIVE_SHADOW_OUTER_MAX_GROUPS");
-            const int n = p ? std::atoi(p) : 16;
-            return u32(std::clamp(n, 1, 256));
-        }();
-        return count;
+        return 16;
     }
     bool Begin(u64 context) {
         dcb = reinterpret_cast<CommandBuffer*>(context + 8);

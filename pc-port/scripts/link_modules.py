@@ -163,7 +163,7 @@ def link(game, out):
     if modules[0]['sha256'] != EXPECTED_EBOOT:
         raise ValueError('unsupported eboot identity')
     raw, report, rows = build_linked(modules)
-    if os.environ.get('ISS_SSE4A_FIX') == '1' or (os.environ.get('ISS_SSE4A_FIX') != '0' and not has_sse4a()):
+    if not has_sse4a():
         from sse4a_fix import patch_linked_image
         raw, report['sse4a_extrq_rewritten'] = patch_linked_image(raw)
     out.mkdir(parents=True, exist_ok=True)

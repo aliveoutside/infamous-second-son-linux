@@ -23,7 +23,7 @@ namespace iss::asc_family {
 u32 family = ~0u;
 u32 graphics = 0;
 bool readback = false;
-/// ISS_READBACK_FAMILY (default on, without asc_queue): the readback queue alone on a queue of a
+/// The readback queue alone on a queue of a
 /// compute-only family. ~0 otherwise.
 u32 readback_family = ~0u;
 thread_local u32 pool_family = ~0u;
@@ -31,10 +31,10 @@ thread_local u32 pool_family = ~0u;
 
 namespace Vulkan {
 
-/// GPU black box (gpu_blackbox.h, ISS_GPU_BLACKBOX unless =0): VK_AMD_buffer_marker enabled.
+/// GPU black box (gpu_blackbox.h): VK_AMD_buffer_marker enabled.
 bool g_iss_amd_buffer_marker = false;
 
-/// ISS_NATIVE_RECORDER: VK_KHR_maintenance7 enabled (renderings mixing inline and secondary
+/// VK_KHR_maintenance7 enabled (renderings mixing inline and secondary
 /// command buffers).
 bool g_iss_maintenance7 = false;
 
@@ -288,10 +288,10 @@ bool Instance::CreateDevice() {
     // Optional
     maintenance_5 = add_extension(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
     maintenance_8 = add_extension(VK_KHR_MAINTENANCE_8_EXTENSION_NAME);
-    // ISS_NATIVE_RECORDER: secondary command buffers recorded by the engine threads run inside
+    // Secondary command buffers recorded by the engine threads run inside
     // renderings that also hold commands recorded inline.
     // Not enabled: renderings mixing inline and secondary contents crashed the AMD driver;
-    // ISS_NATIVE_RECORDER executes its secondaries in renderings of their own.
+    // The native recorder executes its secondaries in renderings of their own.
     g_iss_maintenance7 = false;
     attachment_feedback_loop = add_extension(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME);
     if (attachment_feedback_loop) {
@@ -335,9 +335,7 @@ bool Instance::CreateDevice() {
     provoking_vertex = add_extension(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME);
     shader_stencil_export = add_extension(VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME);
     image_load_store_lod = add_extension(VK_AMD_SHADER_IMAGE_LOAD_STORE_LOD_EXTENSION_NAME);
-    if (const char* p = std::getenv("ISS_GPU_BLACKBOX"); !(p && p[0] == '0')) {
-        g_iss_amd_buffer_marker = add_extension(VK_AMD_BUFFER_MARKER_EXTENSION_NAME);
-    }
+    g_iss_amd_buffer_marker = add_extension(VK_AMD_BUFFER_MARKER_EXTENSION_NAME);
     amd_gcn_shader = add_extension(VK_AMD_GCN_SHADER_EXTENSION_NAME);
     amd_shader_trinary_minmax = add_extension(VK_AMD_SHADER_TRINARY_MINMAX_EXTENSION_NAME);
     nv_framebuffer_mixed_samples = add_extension(VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME);
@@ -427,42 +425,12 @@ bool Instance::CreateDevice() {
         .queueCount = std::min<u32>(family_queues, 3u),
         .pQueuePriorities = queue_priorities.data(),
     };
-    // ISS (asc_queue): the queues of the graphics family share the graphics engine; a queue of
-    // a compute-only family runs on the asynchronous compute engines, alongside the rendering,
-    // as the PS4 runs the guest's compute rings. Used when ISS_ASYNC_COMPUTE=1 unless
-    // ISS_ASC_FAMILY=0.
-    const auto env_on = [](const char* name, bool fallback) {
-        const char* p = std::getenv(name);
-        return p ? p[0] == '1' : fallback;
-    };
-    if ((env_on("ISS_ASYNC_COMPUTE", false) || env_on("ISS_ASC_NATIVE_QUEUE", false)) &&
-        env_on("ISS_ASC_FAMILY", true)) {
-        for (std::size_t i = 0; i < family_properties.size(); i++) {
-            const auto flags = family_properties[i].queueFlags;
-            if ((flags & vk::QueueFlagBits::eCompute) && !(flags & vk::QueueFlagBits::eGraphics) &&
-                family_properties[i].queueCount > 0) {
-                iss::asc_family::family = static_cast<u32>(i);
-                iss::asc_family::graphics = queue_family_index;
-                // A second queue of the family copies the readbacks: on a queue of the graphics
-                // family a copy waits behind the rendering already submitted (they share the
-                // graphics engine), even when it only needs compute results.
-                iss::asc_family::readback = family_properties[i].queueCount >= 2 &&
-                                            env_on("ISS_ASC_READBACK_FAMILY", true);
-                queue_infos[num_queue_infos++] = vk::DeviceQueueCreateInfo{
-                    .queueFamilyIndex = static_cast<u32>(i),
-                    .queueCount = iss::asc_family::readback ? 2u : 1u,
-                    .pQueuePriorities = queue_priorities.data(),
-                };
-                break;
-            }
-        }
-    }
-    // ISS_READBACK_FAMILY (default on): without asc_queue, the readback copies still go to a
-    // queue of a compute-only family. A second queue of the graphics family shares the graphics
-    // engine with the rendering: a copy of data the GPU finished long ago waited ~1.5-2.6 ms for
-    // the rendering submitted before it (the guest's main thread waited ~2.5 ms a frame on such
-    // copies, measured 2026-10-17). Buffers are then shared concurrently by both families.
-    if (iss::asc_family::family == ~0u && env_on("ISS_READBACK_FAMILY", true)) {
+    // The readback copies go to a queue of a compute-only family. A second queue of the graphics
+    // family would share the graphics engine with the rendering: a copy of data the GPU finished
+    // long ago waited ~1.5-2.6 ms for the rendering submitted before it (the guest's main thread
+    // waited ~2.5 ms a frame on such copies, measured 2026-10-17). Buffers are then shared
+    // concurrently by both families.
+    if (iss::asc_family::family == ~0u) {
         for (std::size_t i = 0; i < family_properties.size(); i++) {
             const auto flags = family_properties[i].queueFlags;
             if ((flags & vk::QueueFlagBits::eCompute) && !(flags & vk::QueueFlagBits::eGraphics) &&
@@ -479,20 +447,10 @@ bool Instance::CreateDevice() {
         }
     }
 
+    constexpr bool request_indirect_first_instance = false; // no indirect batch rebases an instance
     const auto vk11_features = feature_chain.get<vk::PhysicalDeviceVulkan11Features>();
     vk12_features = feature_chain.get<vk::PhysicalDeviceVulkan12Features>();
     vk13_features = feature_chain.get<vk::PhysicalDeviceVulkan13Features>();
-    // An indirect batch that rebases gl_InstanceIndex needs a nonzero firstInstance.
-    // Keep the logical-device feature unchanged unless that separate path is opted in.
-    const char* native_instanced_batch = std::getenv("ISS_NATIVE_INSTANCED_BATCH");
-    const char* native_instanced_feature = std::getenv("ISS_NATIVE_INSTANCED_FEATURE");
-    const bool request_indirect_first_instance =
-        (native_instanced_batch && native_instanced_batch[0] == '1') ||
-        (native_instanced_feature && native_instanced_feature[0] == '1');
-    if (request_indirect_first_instance && !features.drawIndirectFirstInstance) {
-        LOG_WARNING(Render_Vulkan,
-                    "Native instanced batch unavailable: drawIndirectFirstInstance unsupported");
-    }
     vk::StructureChain device_chain = {
         vk::DeviceCreateInfo{
             .queueCreateInfoCount = num_queue_infos,
@@ -952,10 +910,7 @@ bool Instance::IsFormatSupported(const vk::Format format,
 
 ImageFormatCache::Result Instance::GetImageFormatProperties(
     const vk::PhysicalDeviceImageFormatInfo2& info) const {
-    static const bool disabled = [] {
-        const char* value = std::getenv("SHADPS4_DISABLE_IMAGE_QUERY_CACHE");
-        return value != nullptr && value[0] == '1';
-    }();
+    constexpr bool disabled = false;
     const auto query = [&](const auto& input) {
         const auto result = physical_device.getImageFormatProperties2(input);
         if (result.result == vk::Result::eErrorFormatNotSupported) {

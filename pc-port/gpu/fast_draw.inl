@@ -16,13 +16,10 @@
 // descriptors and fetch formats are compared after refreshing its flattened user data.
 
 
-// ISS_DRAW_CENSUS=1: draws counted by render pass shape (size, color attachments, depth, pixel
+// Draws counted by render pass shape (size, color attachments, depth, pixel
 // stage) and by the path they took (0 plain fast, 1 lean, 2 rebind, 3 shader switch, 4 full).
 static bool DrawCensusEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_DRAW_CENSUS");
-        return value && value[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 struct DrawCensusEntry {
@@ -32,7 +29,7 @@ struct DrawCensusEntry {
 static std::unordered_map<u64, DrawCensusEntry> g_draw_census;
 static u64 g_draw_census_total;
 
-// ISS_ENGINE_MARKERS (native/engine_draw.cpp): the engine objects of the next draw, from the
+// The engine objects of the next draw, from the
 // NOP markers its draw routines write. Statistics: how often a draw's (technique, material)
 // and (technique, material, geometry) already appeared in this frame, by draw path.
 struct EngineDrawIdentity {
@@ -57,10 +54,7 @@ void EngineMarker(const u32* payload) {
     const u32 kind = payload[0] & 0xFF;
     u64 v[4];
     std::memcpy(v, payload + 1, sizeof(v));
-    static const bool technique_census = [] {
-        const char* value = std::getenv("ISS_ENGINE_TECHNIQUE_CENSUS");
-        return value && value[0] == '1';
-    }();
+    static const bool technique_census = false;
     if (technique_census && v[0]) {
         static std::unordered_map<u64, u64> last_vtable;
         const u64 vtable = *reinterpret_cast<const u64*>(v[0]) - IssImageBase();
@@ -90,10 +84,7 @@ static u64 EngineKey(u64 a, u64 b, u64 c) {
     return (a * 0x9E3779B97F4A7C15ull) ^ (b * 0xC2B2AE3D27D4EB4Full) ^ (c * 0x165667B19E3779F9ull);
 }
 static bool EngineStatsEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_ENGINE_STATS");
-        return value && value[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 static void NoteEngineDraw(u32 path) {
@@ -150,12 +141,9 @@ static void NoteEngineDraw(u32 path) {
                      (unsigned long long)s.material_seen[p], (unsigned long long)s.full_seen[p]);
     }
 }
-// ISS_ENGINE_FAST=1: fast draws follow the engine's draws (see FastDrawState::engine_key).
+// Fast draws follow the engine's draws (see FastDrawState::engine_key).
 static bool EngineFastEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_ENGINE_FAST");
-        return value && value[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 static u64 CurrentEngineKey() {
@@ -166,14 +154,11 @@ static u64 CurrentEngineKey() {
     return EngineKey(d.technique, d.material, d.kind) | 1;
 }
 
-// ISS_PROGRAM_CENSUS=1: draws of the depth passes (depth attachment, at most one color) by vertex
+// Draws of the depth passes (depth attachment, at most one color) by vertex
 // and pixel program, with their resource shape and what the previous draw had (another program,
 // or the same programs with another pipeline): the families a native depth path could take.
 static bool ProgramCensusEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_PROGRAM_CENSUS");
-        return value && value[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 struct ProgramCensusEntry {
@@ -189,10 +174,7 @@ static u64 g_program_census_total;
 static void NoteProgramCensus(const RenderState& state, u32 path, const GraphicsPipeline* pipeline) {
     static const GraphicsPipeline* previous{};
     static u64 previous_programs{};
-    static const bool gbuffer = [] {
-        const char* p = std::getenv("ISS_PROGRAM_CENSUS_GBUFFER");
-        return p && p[0] == '1';
-    }();
+    static const bool gbuffer = false;
     if (!state.depth_stencil_attachment.image_view ||
         (gbuffer ? state.num_color_attachments != 5 : state.num_color_attachments > 1)) {
         previous = pipeline;
@@ -259,19 +241,16 @@ static void NoteProgramCensus(const RenderState& state, u32 path, const Graphics
     }
 }
 
-// ISS_PASS_COST=1: command processor time by render pass shape (the ISS_DRAW_CENSUS key). The
+// Command processor time by render pass shape (the draw census key). The
 // command processor reads the time stamp counter before each graphics packet (PassCostTick);
 // the time since the previous draw (state packets, waits, the draw itself) goes to the pass of
 // the draw that ends it: "entry" when that draw starts another pass than the draw before it,
 // "inside" when it continues the same pass. Packets that write or wait on memory are counted
 // the same way. A gap longer than PassCostStallCycles (a suspended coroutine, the idle loop) is
 // set apart as a stall. Draws are also counted by the engine marker before them
-// (ISS_ENGINE_MARKERS) and the vtable of its technique: which engine routines fill each pass.
+// and the vtable of its technique: which engine routines fill each pass.
 static bool PassCostEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_PASS_COST");
-        return value && value[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 // 11: the idle time before a command buffer, 12: its setup (native passes wait for their
@@ -469,7 +448,7 @@ static void PassCostTick(u32 packet_class) {
     }
 }
 
-// ISS_NATIVE_MAP_CENSUS=1: one bounded, ordered CP-side inventory of graphics target spans.
+// One bounded, ordered CP-side inventory of graphics target spans.
 // Frames 1200..1202 are sampled after warmup. Addresses are guest addresses, not Vulkan handles.
 struct NativeMapSpan {
     u64 frame{}, first{}, draws{}, technique_vtable{}, vs_hash{}, ps_hash{};
@@ -480,10 +459,7 @@ struct NativeMapSpan {
     u32 width{}, height{}, layers{}, colors{};
 };
 static bool NativeMapCensusEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_NATIVE_MAP_CENSUS");
-        return value && value[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 static void NoteNativeMapDraw(const RenderState& state, const GraphicsPipeline* pipeline,
@@ -617,14 +593,11 @@ static void NoteDrawCensus(const RenderState& state, u32 path, const GraphicsPip
 }
 
 static bool FastDrawEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_FAST_DRAW");
-        return value && value[0] == '1';
-    }();
+    static const bool enabled = true;
     return enabled;
 }
 
-// Rebind (ISS_FAST_REBIND=1): the engine's mesh loop (EBOOT 0x1A2030 -> 0x1A1960) changes,
+// Rebind: the engine's mesh loop (EBOOT 0x1A2030 -> 0x1A1960) changes,
 // between meshes of one material, only the fetch V# list, the per object constant buffer of the
 // vertex stage and the index range. A fast draw whose vertex stage buffers only moved (same
 // kind, other address/size) resolves the descriptors again (stage memo: the pixel stage hits)
@@ -715,10 +688,10 @@ static constexpr std::array<FastDynReg, 4> kFastDynRegs{{
 
 // Changed registers outside kFastDynRegs, by absolute dword offset. Free: only feed Vulkan
 // dynamic state (scissors, viewport depth ranges, blend constants, stencil operations, polygon
-// offset, depth bounds, line width), kept on the plain paths with ISS_FAST_DYN_EXT=1. Target:
+// offset, depth bounds, line width), kept on the plain paths. Target:
 // decide the attachments, their clears or sample counts (PrepareRenderState, BeginRendering),
 // only the full path derives them. Other: the pipeline key, push constants or descriptors,
-// all derived again by the switch path (ISS_FAST_STATE_SWITCH=1).
+// all derived again by the switch path.
 enum class FastRegClass : u8 { Other = 0, Free = 1, Target = 2 };
 struct FastRegTable {
     static constexpr u32 First = AmdGpu::Regs::ContextRegWordOffset;
@@ -777,18 +750,12 @@ static FastRegClass ClassifyFastReg(u32 reg) {
 }
 
 static bool FastDynExtEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_FAST_DYN_EXT");
-        return value && value[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 
 static bool FastStateSwitchEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_FAST_STATE_SWITCH");
-        return value && value[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 
@@ -856,24 +823,18 @@ static void FastSnapshotDynRegs(const AmdGpu::Regs& regs, std::array<u32, 4>& sn
 }
 
 static bool FastRebindEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_FAST_REBIND");
-        return value && value[0] == '1';
-    }();
+    static const bool enabled = true;
     return enabled;
 }
 
-// Lean rebind (ISS_FAST_LEAN=1): what the engine changes between meshes of one material is the
+// Lean rebind: what the engine changes between meshes of one material is the
 // per object constant buffer of the vertex stage (and its flattened user data copy). Instead of
 // resolving every descriptor of both stages again, the descriptors of the previous draw stay in
 // set_writes/buffer_infos (no BindResources since), only the vertex stage buffers that moved are
 // resolved, patched in place and pushed alone (push descriptors update incrementally while the
 // layout stays bound), with their push constant offsets.
 static bool FastLeanEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_FAST_LEAN");
-        return value && value[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 
@@ -953,7 +914,7 @@ int Rasterizer::TryLeanRebind(const GraphicsPipeline* pipeline, Shader::Info& vs
     auto& f = fast_draw;
     num_written = 0;
     if (!f.lean_ok || !f.writes_known || vs.uses_dma || g_num_traced_ranges != 0 ||
-        iss::hazard_probe::Enabled() || (!verify_push && f.bind_seq != bind_resources_seq)) {
+        (!verify_push && f.bind_seq != bind_resources_seq)) {
         return -1;
     }
     if (ps && (verify_push || !f.lean_ps_ok || ps->uses_dma)) {
@@ -1358,26 +1319,23 @@ void Rasterizer::FinishFastDraw() {
     f.valid = true;
 }
 
-// ISS_FAST_DRAW_REGS=1: which context/config/uconfig register dwords changed before the draws
+// Which context/config/uconfig register dwords changed before the draws
 // that were not fast because of a context change.
 static std::unordered_map<u32, u64> g_fast_draw_changed_regs;
 static u64 g_fast_draw_changed_overflow;
 
-// Shader switch (ISS_FAST_SWITCH=1): the engine's mesh loop changes material (programs) between
+// Shader switch: the engine's mesh loop changes material (programs) between
 // runs of meshes while the render targets and the context registers stay. The new pipeline is
 // looked up and its descriptors resolved as DrawRecord does, but the render pass, the targets
 // (PrepareRenderState/BeginRendering) of the previous draw are kept when the new pipeline
 // renders to the same attachments (mrt mask and sample counts, the only key fields
 // BeginRendering reads).
 static bool FastSwitchEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_FAST_SWITCH");
-        return value && value[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 
-// ISS_DRAW_CENSUS: on a shader switch, whether the new programs (vertex program without user
+// On a shader switch, whether the new programs (vertex program without user
 // data, pixel program address) were one of the last 16 pipelines drawn in this render pass
 // (no context change since): what a per pipeline state cache would hit.
 struct SwitchRevisit {
@@ -1431,12 +1389,9 @@ static void NoteSwitchRevisit(const AmdGpu::Regs& regs, u64 context_changes, u64
     }
 }
 
-// ISS_SWITCH_CYCLES=1: where a shader switch spends its cycles.
+// Where a shader switch spends its cycles.
 struct SwitchCycles {
-    bool enabled = [] {
-        const char* value = std::getenv("ISS_SWITCH_CYCLES");
-        return value && value[0] == '1';
-    }();
+    bool enabled = false;
     std::array<u64, 8> cycles{};
     u64 count{}, last{};
     void Start() { last = __rdtsc(); }
@@ -1473,12 +1428,9 @@ bool Rasterizer::FastSwitchDraw(bool is_indexed, u32 index_offset) {
     const GraphicsPipeline* pipeline =
         worker ? pipe_pipeline : LookupNativeGraphicsPipeline();
     if (sc.enabled) sc.Mark(0);
-    // ISS_SWITCH_DIFF=1: a switch that lands on the previous draw's pipeline, by what changed in
+    // A switch that lands on the previous draw's pipeline, by what changed in
     // the program registers (address, settings, user data of each stage) and the pixel shader.
-    static const bool switch_diff = [] {
-        const char* value = std::getenv("ISS_SWITCH_DIFF");
-        return value && value[0] == '1';
-    }();
+    static const bool switch_diff = false;
     if (switch_diff && !worker && pipeline) {
         static std::array<u64, 10> diff_counts{};
         static u64 diff_total{};
@@ -1570,9 +1522,7 @@ bool Rasterizer::FastSwitchDraw(bool is_indexed, u32 index_offset) {
         ++stats.switch_fails;
         return false;
     };
-    if (!pipeline || (!pipeline->IsReady() && SkipUnreadyDraws()) ||
-        g_dump.frames_left != 0 ||
-        iss::command_trace::enabled) {
+    if (!pipeline || (!pipeline->IsReady() && SkipUnreadyDraws()) || g_dump.frames_left != 0) {
         return fail();
     }
     const auto& key = pipeline->GetGraphicsKey();
@@ -1649,7 +1599,6 @@ bool Rasterizer::FastSwitchDraw(bool is_indexed, u32 index_offset) {
         cmdbuf.draw(regs.num_indices, regs.num_instances.NumInstances(), vertex_offset,
                     instance_offset);
     }
-    iss::feedback_join::Recorded();
     DebugState.IncDrawCall();
     if (sc.enabled) sc.Mark(4);
     // The following draws compare with this one, as after DrawRecord.
@@ -1668,21 +1617,12 @@ bool Rasterizer::FastSwitchDraw(bool is_indexed, u32 index_offset) {
 }
 
 static bool ProgramAliasEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_FAST_PROGRAM_ALIAS");
-        const bool on = value && value[0] == '1';
-        std::fprintf(stderr, "PORT_TUNING fast_program_alias=%d\n", on ? 1 : 0);
-        return on;
-    }();
-    return enabled;
+    return false;
 }
 static u64 g_program_alias{}, g_program_alias_rejects{}, g_program_alias_mismatches{};
 
 static bool FastCacheEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_FAST_CACHE");
-        return value && value[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 
@@ -1693,7 +1633,7 @@ bool Rasterizer::TryReenterPipeline(const AmdGpu::Regs& regs, u64 engine_key) {
         return false;
     }
     // The departing state is kept (one entry per programs, and engine material with
-    // ISS_ENGINE_FAST), the target is looked for first.
+    // engine fast draws), the target is looked for first.
     u32 slot = static_cast<u32>(fast_cache.size());
     int target = -1;
     for (u32 i = 0; i < fast_cache.size(); ++i) {
@@ -1782,17 +1722,14 @@ bool Rasterizer::TryReenterPipeline(const AmdGpu::Regs& regs, u64 engine_key) {
 bool Rasterizer::TryFastDraw(bool is_indexed, u32 index_offset) {
     auto& f = fast_draw;
     auto& stats = fast_draw_stats;
-    // A draw pipe worker (ISS_DRAW_PIPE_FAST) takes the draw's changed registers and pipeline
+    // A draw pipe workertakes the draw's changed registers and pipeline
     // from its packet; the command processor's own lookup state is never written there.
     const bool worker = OnDrawWorker();
     if (!worker) {
         fast_lookup_set = false;
     }
     ++stats.checks;
-    static const bool note_regs = [] {
-        const char* value = std::getenv("ISS_FAST_DRAW_REGS");
-        return value && value[0] == '1';
-    }();
+    static const bool note_regs = false;
     // The register dwords changed since the previous draw: taken, then cleared.
     const u32* changed = worker ? pipe_changed_regs.data() : liverpool->changed_regs.data();
     const u32 num_changed = worker ? pipe_num_changed_regs : liverpool->num_changed_regs;
@@ -1936,7 +1873,7 @@ bool Rasterizer::TryFastDraw(bool is_indexed, u32 index_offset) {
             }
         }
     }
-    // ISS_FAST_PROGRAM_ALIAS=1: the engine keeps copies of the same shader at several addresses
+    // The engine keeps copies of the same shader at several addresses
     // (measured: half of the shader switches landed on the previous draw's pipeline, most with
     // only the program addresses changed). Programs with the hash, settings and pixel stage user
     // data of the previous draw's resolve to its pipeline in the full lookup (keyed by the hash,
@@ -2119,10 +2056,7 @@ bool Rasterizer::TryFastDraw(bool is_indexed, u32 index_offset) {
         }
     }
 
-    static const bool verify = [] {
-        const char* value = std::getenv("ISS_FAST_DRAW_VERIFY");
-        return value && value[0] == '1';
-    }();
+    static const bool verify = false;
     if (verify) {
         // Run the full lookups this draw would take and compare their results with the state
         // the previous draw left: pipeline, descriptors, constants, render pass, no barrier.
@@ -2161,65 +2095,6 @@ bool Rasterizer::TryFastDraw(bool is_indexed, u32 index_offset) {
                     } else {
                         what = "pushed_writes";
                     }
-                } else if (false) {
-                    what = "descriptors";
-                    // Detail: the first write whose kept descriptor differs.
-                    const auto& kept = binds.descriptors[0];
-                    const u64 stream = reinterpret_cast<u64>(
-                        static_cast<VkBuffer>(buffer_cache.GetStreamBuffer().Handle()));
-                    if (kept.num_writes != set_writes.size() || kept.layout != full->GetLayout()) {
-                        std::fprintf(stderr, "FAST_DRAW_DESC shape kept=%u now=%zu layout=%d\n",
-                                     kept.num_writes, set_writes.size(),
-                                     int(kept.layout == full->GetLayout()));
-                    } else {
-                        u32 info_index = 0;
-                        bool printed = false;
-                        bool real = false;
-                        for (u32 w = 0; w < set_writes.size(); ++w) {
-                            const auto& write = set_writes[w];
-                            for (u32 i = 0; i < write.descriptorCount; ++i, ++info_index) {
-                                u64 a, b, c;
-                                if (write.pBufferInfo) {
-                                    a = reinterpret_cast<u64>(
-                                        static_cast<VkBuffer>(write.pBufferInfo[i].buffer));
-                                    b = write.pBufferInfo[i].offset;
-                                    c = write.pBufferInfo[i].range;
-                                } else {
-                                    a = reinterpret_cast<u64>(
-                                        static_cast<VkSampler>(write.pImageInfo[i].sampler));
-                                    b = reinterpret_cast<u64>(
-                                        static_cast<VkImageView>(write.pImageInfo[i].imageView));
-                                    c = static_cast<u64>(write.pImageInfo[i].imageLayout);
-                                }
-                                const auto& k = kept.infos[info_index];
-                                // Another stream copy of the same range (same command buffer
-                                // and upload epoch, unchanged descriptor): the same bytes.
-                                const bool stream_copy = k.a == stream && a == stream && k.c == c;
-                                if ((k.a != a || k.b != b || k.c != c) && !stream_copy) {
-                                    real = true;
-                                }
-                                if ((k.a != a || k.b != b || k.c != c) && !stream_copy &&
-                                    !printed) {
-                                    std::fprintf(stderr,
-                                                 "FAST_DRAW_DESC write=%u binding=%u type=%d "
-                                                 "kept=[%llx %llx %llx] now=[%llx %llx %llx] "
-                                                 "kept_stream=%d now_stream=%d\n",
-                                                 w, write.dstBinding, int(write.descriptorType),
-                                                 (unsigned long long)k.a, (unsigned long long)k.b,
-                                                 (unsigned long long)k.c, (unsigned long long)a,
-                                                 (unsigned long long)b, (unsigned long long)c,
-                                                 int(k.a == stream), int(a == stream));
-                                    printed = true;
-                                }
-                            }
-                        }
-                        if (!real) {
-                            what = nullptr;
-                            ++stats.stream_equiv;
-                        }
-                    }
-                } else if (!rebind && bound_buffers.size() != f.bound_buffers.size()) {
-                    what = "bound_buffers";
                 }
             }
             ResetBindings(false);
@@ -2297,8 +2172,7 @@ bool Rasterizer::TryFastDraw(bool is_indexed, u32 index_offset) {
                 cmdbuf.draw(regs.num_indices, regs.num_instances.NumInstances(), vertex_offset,
                             instance_offset);
             }
-            iss::feedback_join::Recorded();
-            DebugState.IncDrawCall();
+                DebugState.IncDrawCall();
             // As the plain fast draw: targets released, the reads of the kept buffers recorded
             // again only after a barrier flush; the moved buffers' reads always.
             for (const auto image_id : bound_images) {
@@ -2409,7 +2283,6 @@ bool Rasterizer::TryFastDraw(bool is_indexed, u32 index_offset) {
         cmdbuf.draw(regs.num_indices, regs.num_instances.NumInstances(), vertex_offset,
                     instance_offset);
     }
-    iss::feedback_join::Recorded();
     DebugState.IncDrawCall();
 
     if (rebind) {

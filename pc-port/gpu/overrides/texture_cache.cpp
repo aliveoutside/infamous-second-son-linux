@@ -74,14 +74,8 @@ TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler&
       buffer_cache{buffer_cache_}, tracker{tracker_}, blit_helper{instance, scheduler},
       tile_manager{instance, scheduler, runtime, buffer_cache.GetStreamBuffer()},
       readback_linear_images{EmulatorSettings.IsReadbackLinearImagesEnabled()},
-      texture_lookup_memo_enabled{[] {
-          const char* value = std::getenv("ISS_TEXTURE_LOOKUP_MEMO");
-          return value && value[0] == '1';
-      }()},
-      texture_lookup_stats_enabled{[] {
-          const char* value = std::getenv("ISS_TEXTURE_LOOKUP_MEMO_STATS");
-          return value && value[0] == '1';
-      }()} {
+      texture_lookup_memo_enabled{false},
+      texture_lookup_stats_enabled{false} {
 
     u32 max_samplers = instance.GetMaxSamplerAllocationCount();
     trigger_gc_samplers = max_samplers * 3 / 4;
@@ -118,22 +112,17 @@ TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler&
     // every frame it deleted the textures not drawn for 16 frames (~250 a second, anything
     // behind the camera), and turning around created and uploaded them again (the +12 ms
     // spikes of 2026-10-17). Smaller cards keep a trigger below their budget.
-    // ISS_GC_TRIGGER_MB sets it.
+    // A trigger below that is not raised again.
     const s64 relaxed = std::min<s64>(device_local_memory * 6 / 10, device_local_memory - 3_GB);
     trigger_gc_memory = std::max<u64>(trigger_gc_memory, u64(std::max<s64>(relaxed, 0)));
-    if (const char* p = std::getenv("ISS_GC_TRIGGER_MB"))
-        trigger_gc_memory = u64(std::strtoull(p, nullptr, 10)) << 20;
     base_trigger_gc_memory = trigger_gc_memory;
     base_pressure_gc_memory = pressure_gc_memory;
     base_critical_gc_memory = critical_gc_memory;
     card_budget_memory = u64(device_local_memory);
-    // ISS_GC_BUDGET_MB: the launcher's VRAM budget (3500 by default). Only the first renderer
-    // read it: renderer v2 aimed at the driver's budget, critical at 5 GB on 8 GB cards, and
-    // ran out of VRAM (2026-10-21, RX 6600 / RTX 5050 / RTX 5060).
-    if (const char* p = std::getenv("ISS_GC_BUDGET_MB"); p && *p) {
-        if (std::strcmp(p, "auto") == 0) auto_gc_budget = true;
-        else forced_gc_budget = u64(std::strtoull(p, nullptr, 10)) << 20;
-    }
+    // The launcher's VRAM budget. Only the first renderer read it: renderer v2 aimed at the
+    // driver's budget, critical at 5 GB on 8 GB cards, and ran out of VRAM (2026-10-21,
+    // RX 6600 / RTX 5050 / RTX 5060).
+    forced_gc_budget = 3500ull << 20;
     RefreshGcLimits();
     std::fprintf(stderr, "TEXTURE_GC budget=%lld MB forced=%llu MB image_budget=%d device_guard=%llu MB trigger=%llu MB pressure=%llu MB critical=%llu MB\n",
                  (long long)(device_local_memory >> 20), (unsigned long long)(forced_gc_budget >> 20),
@@ -143,16 +132,13 @@ TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler&
                  (unsigned long long)(critical_gc_memory >> 20));
 }
 
-// ISS_GC_IMAGE_BUDGET (default on, =0 the old rule): the launcher's VRAM budget (ISS_GC_BUDGET_MB)
-// bounds the texture cache, as its name says, instead of the whole device's usage. Since #497 the
+// The launcher's VRAM budget bounds the texture cache, as its name says, instead of the whole
+// device's usage. Since #497 the
 // rest of renderer v2 (arena, staging, driver) holds ~2.3 GB on its own: compared with the device's
 // usage, a 3500 MB budget kept the collector deleting textures all the time (RTX 2060, 2026-10-22).
-// The device stays guarded: above card - ISS_VRAM_HEADROOM_MB (95% of larger cards) it runs critical.
+// The device stays guarded: above 95% of a larger card it runs critical.
 bool TextureCache::ImageBudgetMode() const {
-    static const bool enabled = [] {
-        const char* p = std::getenv("ISS_GC_IMAGE_BUDGET");
-        return !p || p[0] != '0';
-    }();
+    static const bool enabled = true;
     return enabled && (forced_gc_budget != 0 || auto_gc_budget);
 }
 
@@ -174,18 +160,15 @@ void TextureCache::RefreshGcLimits() {
     // discrete cards keep a headroom free whatever the budget says.
     device_guard_memory = card / 100 * 95;
     if (!instance.IsIntegrated() && card <= u64(SMALL_CARD_MEMORY)) {
-        // ISS_VRAM_HEADROOM_MB (default 768): 1.5 GB dated from the arena jumping by gigabytes
-        // (#497 ended that: 12 MB at most in a walk through the city); with it the automatic budget
-        // left 1.8 GB of a 6 GB card unused while the collector deleted 16k textures (2026-10-22).
-        static const u64 headroom = [] {
-            const char* p = std::getenv("ISS_VRAM_HEADROOM_MB");
-            return u64(p ? std::strtoull(p, nullptr, 10) : 768) << 20;
-        }();
+        // 1.5 GB dated from the arena jumping by gigabytes (#497 ended that: 12 MB at most in a
+        // walk through the city); with it the automatic budget left 1.8 GB of a 6 GB card unused
+        // while the collector deleted 16k textures (2026-10-22).
+        constexpr u64 headroom = 768ull << 20;
         device_guard_memory = std::max<u64>(card > headroom ? card - headroom : 0,
                                             card / 2);
     }
     u64 budget = forced_gc_budget ? std::min(forced_gc_budget, card) : 0;
-    // ISS_GC_BUDGET_MB=auto: the textures get what the device guard leaves after everything else
+    // The textures get what the device guard leaves after everything else
     // (arena, staging, swapchain, the driver), measured now: any card, other programs' VRAM and
     // the arena growing in new areas included. 512 MB at least.
     if (auto_gc_budget && instance.CanReportMemoryUsage()) {
@@ -411,18 +394,14 @@ void TextureCache::InvalidateMemory(VAddr addr, size_t size) {
             MarkAsMaybeDirty(image_id, image);
         }
     });
-    // ISS_TEX_FAULT_STREAK_KB (default 256, 0 off): a guest thread writing on through image
+    // A guest thread writing on through image
     // pages it faults on one after the other gets the images of the next window marked maybe
     // dirty now (hashed, untracked: re-uploaded at their next use only if their bytes changed),
     // as their faults would do one by one. Every ~2 s the game copies ~11 MB over a pool of
     // small textures at 0x2093xxxxx-0x209Fxxxxx: ~2850 faults, one per image, a 45 ms frame
     // (the "mini frame skips", 2026-10-17).
-    static const u64 streak_bytes = [] {
-        const char* setting = std::getenv("ISS_TEX_FAULT_STREAK_KB");
-        const u64 kb = setting ? std::strtoull(setting, nullptr, 10) : 256;
-        return std::min<u64>(kb, 4096) * 1024;
-    }();
-    if (size <= 8 && streak_bytes != 0) {
+    constexpr u64 streak_bytes = 256_KB;
+    if (size <= 8) {
         thread_local u64 last_page = 0, next_page = 0, streak = 0;
         const u64 page = addr >> 12; // 4 KB pages
         if (page == last_page + 1 || (next_page != 0 && page == next_page)) ++streak;
@@ -1392,12 +1371,9 @@ void TextureCache::RefreshImage(Image& image) {
 
     scheduler.EndRendering();
 
-    // ISS_BIG_UPLOAD_LOG=1 (diagnosis): every upload of an image of 4 MB or more, with why it was
+    // Every upload of an image of 4 MB or more, with why it was
     // dirty (the ~17 MB uploads of the city's slow frames, play-porte-s 2026-10-18).
-    static const bool big_upload_log = [] {
-        const char* p = std::getenv("ISS_BIG_UPLOAD_LOG");
-        return p && p[0] == '1';
-    }();
+    static const bool big_upload_log = false;
     const bool log_big = big_upload_log && image.info.guest_size >= (4u << 20);
     const u64 t0 = log_big ? Common::Perf::NowNs() : 0;
     Common::Perf::Add(Common::Perf::ImageUploadBytes, image.info.guest_size);
@@ -1687,17 +1663,14 @@ void TextureCache::GarbageCollectImages() {
         ticks_to_destroy = std::min(ticks_to_destroy, gc_tick);
         num_deletions = aggresive ? 40 : pressured ? 20 : 10;
     };
-    // ISS_GC_RECENT_USE (default on): an image bound since the oldest gc tick the collector may
+    // An image bound since the oldest gc tick the collector may
     // delete is in use, whatever its LRU position says. The draw paths that skip FindImage (the
     // texture lookup and stage memos, native passes, material templates, native items) set
     // tick_accessed_last but never touched the LRU: under memory pressure the collector deleted
     // textures every frame used, and the guest created and uploaded them again (bursts of 5-30
     // new images a frame, +12 ms frame time spikes while moving, 2026-10-17). Such an image is
     // moved to the LRU's end instead, in the aggressive pass too.
-    static const bool recent_use = [] {
-        const char* p = std::getenv("ISS_GC_RECENT_USE");
-        return !p || p[0] != '0';
-    }();
+    static const bool recent_use = true;
     // A pass stops after looking at 256 images.
     u32 visited = 0;
     const auto clean_up = [&](ImageId image_id) {

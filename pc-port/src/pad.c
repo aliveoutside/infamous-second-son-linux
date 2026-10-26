@@ -73,11 +73,9 @@ static uint8_t pad_map[SRC_COUNT]={T_CROSS,T_CIRCLE,T_SQUARE,T_TRIANGLE,T_L1,T_R
     T_TOUCH_RIGHT,T_OPTIONS,T_NONE,T_UP,T_DOWN,T_LEFT,T_RIGHT};
 static const uint8_t playstation_map[SRC_COUNT]={T_CROSS,T_CIRCLE,T_SQUARE,T_TRIANGLE,T_L1,T_R1,T_L2,T_R2,T_L3,T_R3,T_NONE,
     T_OPTIONS,T_PS,T_NONE,T_UP,T_DOWN,T_LEFT,T_RIGHT};
-// The keyboard's touchpad shortcuts (ISS_TOUCH_KEYS="touch_left=Space,swipe_up=1,..." with SDL key
-// names). Tab stays a second key for the left side. touchpad_hold: the mouse is the touchpad while the key is held.
+// The keyboard's touchpad shortcuts, by SDL key name. Tab stays a second key for the left side.
+// The mouse is the touchpad while that key is held.
 enum {K_TOUCH_LEFT,K_TOUCH_RIGHT,K_TOUCH_BOTH,K_TOUCH_CENTER,K_SWIPE_UP,K_SWIPE_DOWN,K_SWIPE_LEFT,K_SWIPE_RIGHT,K_MOUSE,K_SPRAY,K_PANEL,K_AIM,K_HOLD,K_COUNT};
-static const char *const touch_key_names[K_COUNT]={"touch_left","touch_right","touch_both","touch_center","swipe_up",
-    "swipe_down","swipe_left","swipe_right","mouse_touchpad","spray","panel","aim","touchpad_hold"};
 static SDL_Scancode touch_keys[K_COUNT]={SDL_SCANCODE_Z,SDL_SCANCODE_X,SDL_SCANCODE_F8,SDL_SCANCODE_T,SDL_SCANCODE_1,
     SDL_SCANCODE_2,SDL_SCANCODE_3,SDL_SCANCODE_4,SDL_SCANCODE_F6,SDL_SCANCODE_F7,SDL_SCANCODE_F5,SDL_SCANCODE_F4,SDL_SCANCODE_LALT};
 static int pad_swipe=-1,source_was[SRC_COUNT];
@@ -101,14 +99,6 @@ static void load_controls(void){
     while(s&&*s){char item[64];size_t n=strcspn(s,",");if(n>=sizeof(item))n=sizeof(item)-1;memcpy(item,s,n);item[n]=0;s+=n;if(*s==',')++s;
         char *v=strchr(item,'=');if(!v)continue;*v++=0;
         for(int i=0;i<SRC_COUNT;++i)if(!strcmp(item,source_names[i]))for(int t=0;t<T_COUNT;++t)if(!strcmp(v,targets[t].name))pad_map[i]=(uint8_t)t;}
-    s=getenv("ISS_TOUCH_KEYS");
-    while(s&&*s){char item[64];size_t n=strcspn(s,",");if(n>=sizeof(item))n=sizeof(item)-1;memcpy(item,s,n);item[n]=0;s+=n;if(*s==',')++s;
-        char *v=strchr(item,'=');if(!v)continue;*v++=0;
-        for(int k=0;k<K_COUNT;++k)if(!strcmp(item,touch_key_names[k])){const SDL_Scancode code=SDL_GetScancodeFromName(v);
-            if(code!=SDL_SCANCODE_UNKNOWN)touch_keys[k]=code;else fprintf(stderr,"PAD_MAP unknown key '%s' for %s\n",v,item);}}
-    setenv("ISS_TOUCHPAD_HOLD_KEY",SDL_GetScancodeName(touch_keys[K_HOLD]),1); // named in the on-screen hint
-    if(getenv("ISS_PAD_MAP")||getenv("ISS_TOUCH_KEYS")){fprintf(stderr,"PAD_MAP");for(int i=0;i<SRC_COUNT;++i)fprintf(stderr," %s=%s",source_names[i],targets[pad_map[i]].name);
-        fprintf(stderr," keys");for(int k=0;k<K_COUNT;++k)fprintf(stderr," %s=%s",touch_key_names[k],SDL_GetScancodeName(touch_keys[k]));fputc('\n',stderr);}
 }
 static void apply_map(const uint8_t map[SRC_COUNT],const int pressed[SRC_COUNT],uint8_t lt,uint8_t rt,PadData *out,int contacts[2],uint16_t xy[2][2]){
     for(int i=0;i<SRC_COUNT;++i){const int t=map[i],down=pressed[i];
@@ -182,13 +172,12 @@ static int mouse_button(SDL_MouseButtonFlags mask){return (SDL_GetMouseState(NUL
 // screen; the mouse turns it, the left button sprays (R2), the right button shakes it and the
 // middle button recenters it, Shift aims finely. F4: the mouse is the right stick (look and aim),
 // the left button fires (R2), the right button aims (L2), the middle button is R3 (mouse_sensitivity). The window title names the mode. The keys can be
-// changed with ISS_TOUCH_KEYS (above).
+// changed by rebinding the shortcuts (above).
 // A graffiti stencil is on screen while it reads GYRO_Y_AXIS, GYRO_RETICLE_POS or the SprayShake button (native/graffiti.cpp, the game's thread):
 // without a controller's gyro the mouse and the right stick are then the can, as F7, until it stops.
 static volatile uint64_t graffiti_ns;
 void pad_graffiti_seen(void){graffiti_ns=SDL_GetTicksNS();}
 static int hold_active,mouse_mode,mode_keys[4],mouse_anchored,mouse_touch,spray_wait_release;
-static int cmd_spray_toggle,cmd_spray_center;static double cmd_shake_until,cmd_aim_until,cmd_paint_until;static float cmd_aim_dx,cmd_aim_dy; // ISS_PAD_CMD_FILE spray (paint: R2 held)
 static SDL_Window *game_window;
 static float mouse_anchor_x,mouse_anchor_y;
 static float spray[2]; // the can's aim: yaw (right +), pitch (up +), radians; 0 0 recenters
@@ -205,14 +194,14 @@ static void quat_rotate(const float q[4],const float v[3],float out[3]){ // q v 
 // One read of the spray can: the mouse moved (dx, dy) pixels in dt seconds. The game's aim
 // (eboot+0x24b790, GYRO_RETICLE_POS) is the asin of the light bar's direction: the screen's width is
 // +-0.35 rad of yaw and its height +-0.25 rad of pitch about a centre that follows past the edges.
-// The can is kept as yaw and pitch, ISS_SPRAY_SENS times 0.0008 rad per pixel, within +-0.7 and
+// The can is kept as yaw and pitch, 0.0008 rad per mouse count times the spray sensitivity,
+// within +-0.7 and
 // +-0.5 rad (the screen once more, for the centre's drift): turned freely, the mouse rolled it far
 // past what a hand does, and the aim went in arcs and would not go below the middle. The orientation
 // is pitch about the world's horizontal, then yaw about its vertical; the gyro gets the rate in the
 // controller's own axes and the accelerometer gravity (in G), plus a 6 Hz shake along the can while asked.
 void pad_spray_step(float aim[2],float dx,float dy,float dt,int shake,double seconds,float q[4],float angular[3],float accel[3]){
-    static float sens=-1;if(sens<0){const char *s=getenv("ISS_SPRAY_SENS");sens=s?(float)atof(s):1;if(!(sens>0))sens=1;}
-    const float yaw=fminf(fmaxf(aim[0]+.0008f*sens*dx,-.7f),.7f),pitch=fminf(fmaxf(aim[1]-.0008f*sens*dy,-.5f),.5f);
+    const float yaw=fminf(fmaxf(aim[0]+.0008f*dx,-.7f),.7f),pitch=fminf(fmaxf(aim[1]-.0008f*dy,-.5f),.5f);
     const float dyaw=yaw-aim[0],dpitch=pitch-aim[1];aim[0]=yaw;aim[1]=pitch;
     const float qy[4]={0,-sinf(yaw*.5f),0,cosf(yaw*.5f)},qx[4]={sinf(pitch*.5f),0,0,cosf(pitch*.5f)};float t[4];
     quat_mul(qy,qx,t);quat_mul(t,spray_pose,q);
@@ -393,28 +382,22 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
         static int menu_back=-1;const int menu=gpu_menu_shown();
         if(menu&&menu_back<0&&game_window){menu_back=mouse_mode;if(mouse_mode)set_mouse_mode(0,game_window);}
         if(!menu&&menu_back>=0){if(menu_back&&game_window)set_mouse_mode(menu_back,game_window);menu_back=-1;}}
-    // Scripted spray (ISS_PAD_CMD_FILE: spray, center, shake:s, paint:s, aimleft/aimright/aimup/aimdown:s): the can
-    // mode toggled, shaken and turned as the mouse would.
-    if(cmd_spray_toggle){cmd_spray_toggle=0;toggle_mouse_mode(2,game_window);spray_wait_release=0;}
-    if(cmd_spray_center){cmd_spray_center=0;spray[0]=spray[1]=0;}
     static int graffiti_back=-1;
     const uint64_t seen=graffiti_ns;const int stencil=seen&&SDL_GetTicksNS()-seen<500000000u&&!(sdl_pad&&sdl_gyro);
     if(stencil&&graffiti_back<0&&mouse_mode!=1){graffiti_back=mouse_mode;if(mouse_mode!=2)set_mouse_mode(2,game_window);}
     if(!stencil&&graffiti_back>=0){if(mouse_mode==2&&graffiti_back!=2)set_mouse_mode(graffiti_back,game_window);graffiti_back=-1;}
-    const double cmd_now=(double)out->timestamp/1e6;
-    if(mouse_mode==2&&cmd_now<cmd_aim_until){mouse_dx+=cmd_aim_dx;mouse_dy+=cmd_aim_dy;}
     if(mouse_mode==2){
         const float dt=spray_tick?(float)(out->timestamp-spray_tick)/1e6f:0;spray_tick=out->timestamp;
         // Shift: fine aim (a third of the speed); the window's sensitivity scales both.
         const float scale=panel.sensitivity*(focused&&shift_held()?.35f:1.f);
-        if(!focused&&cmd_now>=cmd_aim_until)mouse_dx=mouse_dy=0;
+        if(!focused)mouse_dx=mouse_dy=0;
         if(spray_wait_release){if(!mouse_left&&!mouse_right)spray_wait_release=0;mouse_left=mouse_right=0;}
         // The right stick turns the can too (full deflection: 1000 pixels a second, squared for fine
         // aim, past a 15% dead zone) and L2 shakes it; neither reaches the game while it is the can.
         for(int i=0;i<2;++i){const float v=((i?out->ry:out->rx)-127.5f)/127.5f,m=fabsf(v)<.15f?0:(fabsf(v)-.15f)/.85f;
             (i?&mouse_dy:&mouse_dx)[0]+=(v<0?-1:1)*m*m*1000.f*(dt>0.1f?0.1f:dt);}
         const int stick_shake=out->l2>30;out->rx=out->ry=128;out->l2=0;
-        pad_spray_step(spray,mouse_dx*scale,mouse_dy*scale,dt>0.1f?0.1f:dt,(focused&&mouse_right)||stick_shake||cmd_now<cmd_shake_until,(double)out->timestamp/1e6,out->orientation,out->angular,out->acceleration);
+        pad_spray_step(spray,mouse_dx*scale,mouse_dy*scale,dt>0.1f?0.1f:dt,(focused&&mouse_right)||stick_shake,(double)out->timestamp/1e6,out->orientation,out->angular,out->acceleration);
         if(focused&&mouse_left){out->r2=255;}
     }
 
@@ -428,83 +411,12 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
         if(focused){if(mouse_left)out->r2=255;if(mouse_right)out->l2=255;if(mouse_button(SDL_BUTTON_MMASK))out->buttons|=4;}
     }
 
-    // ISS_PAD_REAL=0 (scripted runs): the real controller and keyboard are ignored, only the pad
-    // script drives the game (a hand on the controller changed the route of A/B runs).
-    static int real_pad=-1;if(real_pad<0){const char *s=getenv("ISS_PAD_REAL");real_pad=!s||s[0]!='0';}
-    if(!real_pad){out->buttons=0;out->lx=out->ly=out->rx=out->ry=128;out->l2=out->r2=0;contacts[0]=contacts[1]=0;swipe_direction=-1;}
     if(swipe_direction>=0){float t=(float)(out->timestamp-swipe_started)/450000.0f;out->buttons&=~UINT32_C(0x100000);
         if(t>=1){swipe_direction=-1;contacts[0]=contacts[1]=0;}else{
             float x=.5f,y=.5f;if(swipe_direction==0)y=.85f-.7f*t;if(swipe_direction==1)y=.15f+.7f*t;
             if(swipe_direction==2)x=.85f-.7f*t;if(swipe_direction==3)x=.15f+.7f*t;
             contacts[0]=1;contacts[1]=0;xy[0][0]=touch_coord(x,1919);xy[0][1]=touch_coord(y,941);out->buttons&=~UINT32_C(0x100000);}
     }
-    // ISS_PAD_SCRIPT=run (benchmarks): after ISS_PAD_SCRIPT_DELAY seconds of process time the
-    // character runs forward, turning the camera for 2 s of every 12 and jumping every 3 s, so a
-    // run measures the city while moving (streaming, changing shadow cascades) repeatably.
-    static int script=-1;static double script_delay;
-    if(script<0){const char *s=getenv("ISS_PAD_SCRIPT"),*d=getenv("ISS_PAD_SCRIPT_DELAY");
-        script=!s?0:!strcmp(s,"run")?1:!strcmp(s,"pause")?2:!strcmp(s,"pausecycle")?3:!strcmp(s,"turn")?4:0;script_delay=d?atof(d):55.0;
-        if(script)fprintf(stderr,"PAD_SCRIPT %s delay=%.0fs\n",script==1?"run":script==2?"pause":script==3?"pausecycle":"turn",script_delay);}
-    // ISS_PAD_SCRIPT=turn (A/B of what is drawn): after the delay the character stays where it is
-    // and the camera turns right slowly, so two runs see the same views at the same seconds.
-    if(script==4){double t=(double)out->timestamp/1e6-script_delay;if(t>=0)out->rx=168;}
-    if(script==1){double t=(double)out->timestamp/1e6-script_delay;
-        if(t>=0){out->ly=0;if(fmod(t,12.0)<2.0)out->rx=200;if(fmod(t,3.0)<0.3)out->buttons|=0x4000;}}
-    // ISS_PAD_SCRIPT=pause: after the delay OPTIONS is pressed once (0.3 s) and the game stays in
-    // its pause menu (where the GPU hung for the user).
-    if(script==2){double t=(double)out->timestamp/1e6-script_delay;
-        if(t>=0&&t<0.3)out->buttons|=0x0008;}
-    // ISS_PAD_SCRIPT=pausecycle: OPTIONS at the delay (pause), CIRCLE 20 s later (back to the game;
-    // OPTIONS does not close the menu) and OPTIONS 40 s later (pause again, it stays).
-    if(script==3){double t=(double)out->timestamp/1e6-script_delay;
-        if((t>=0&&t<0.3)||(t>=40&&t<40.3))out->buttons|=0x0008;
-        if(t>=20&&t<20.3)out->buttons|=0x2000;}
-    // ISS_PAD_SEQ (menu tests): "t:button[:seconds],..." with t in seconds of process time and the
-    // buttons options cross circle square triangle up down left right l1 r1 l2 r2 l3 r3 touch, or
-    // the left stick lup ldown lleft lright (0.2 s by default). Each press is logged once.
-    static int seq_loaded;static struct{double t,dur;uint32_t mask;int stick,logged;char name[12];}seq[96];static int seq_count;
-    static const struct{const char *n;uint32_t m;int stick;}names[]={{"options",8,0},{"cross",0x4000,0},{"circle",0x2000,0},
-            {"square",0x8000,0},{"triangle",0x1000,0},{"up",0x10,0},{"down",0x40,0},{"left",0x80,0},{"right",0x20,0},
-            {"l1",0x400,0},{"r1",0x800,0},{"l2",0x100,0},{"r2",0x200,0},{"l3",2,0},{"r3",4,0},{"touch",0x100000,0},
-            {"lup",0,1},{"ldown",0,2},{"lleft",0,3},{"lright",0,4}};
-    if(!seq_loaded){seq_loaded=1;const char *s=getenv("ISS_PAD_SEQ");
-        while(s&&*s&&seq_count<96){char item[48];size_t n=strcspn(s,",");if(n>=sizeof(item))n=sizeof(item)-1;memcpy(item,s,n);item[n]=0;s+=n;if(*s==',')++s;
-            char *a=strchr(item,':');if(!a)continue;*a++=0;char *b=strchr(a,':');if(b)*b++=0;
-            for(unsigned i=0;i<sizeof(names)/sizeof(names[0]);++i)if(!strcmp(a,names[i].n)){
-                seq[seq_count].t=atof(item);seq[seq_count].dur=b?atof(b):0.2;seq[seq_count].mask=names[i].m;seq[seq_count].stick=names[i].stick;
-                strncpy(seq[seq_count].name,a,sizeof(seq[0].name)-1);++seq_count;break;}}
-        if(seq_count)fprintf(stderr,"PAD_SEQ %d presses\n",seq_count);}
-    // ISS_PAD_CMD_FILE (scripted menu walks): the same "button[:seconds]" items, read from this file
-    // when it appears (checked every 100 ms) and pressed one after the other from then on, 0.25 s
-    // apart; the file is deleted once read. "wait:s" only waits.
-    {static const char *cmd_path;static int cmd_init;static uint64_t cmd_checked;static double cmd_next;
-        if(!cmd_init){cmd_init=1;cmd_path=getenv("ISS_PAD_CMD_FILE");}
-        const double now=(double)out->timestamp/1e6;
-        if(cmd_path&&out->timestamp-cmd_checked>=100000){cmd_checked=out->timestamp;
-            FILE *f=fopen(cmd_path,"rb");char text[512]={0};
-            if(f){size_t n=fread(text,1,sizeof(text)-1,f);text[n]=0;fclose(f);unlink(cmd_path);
-                if(cmd_next<now)cmd_next=now;
-                const char *s=text;
-                while(*s){char item[48];size_t k=strcspn(s,",\r\n");if(k>=sizeof(item))k=sizeof(item)-1;memcpy(item,s,k);item[k]=0;s+=k;while(*s==','||*s=='\r'||*s=='\n')++s;
-                    char *b=strchr(item,':');if(b)*b++=0;const double dur=b?atof(b):0.2;
-                    if(!strcmp(item,"wait")){cmd_next+=dur;continue;}
-                    if(!strcmp(item,"spray")){cmd_spray_toggle=1;continue;}
-                    if(!strcmp(item,"center")){cmd_spray_center=1;continue;}
-                    if(!strcmp(item,"paint")){cmd_paint_until=cmd_next+dur;continue;} // R2 held while the next items run
-                    if(!strcmp(item,"shake")){cmd_shake_until=cmd_next+dur;cmd_next+=dur+0.25;continue;}
-                    if(!strncmp(item,"aim",3)){const float step=4.f;cmd_aim_dx=!strcmp(item,"aimleft")?-step:!strcmp(item,"aimright")?step:0;
-                        cmd_aim_dy=!strcmp(item,"aimup")?-step:!strcmp(item,"aimdown")?step:0;cmd_aim_until=cmd_next+dur;cmd_next+=dur+0.25;continue;}
-                    for(unsigned i=0;i<sizeof(names)/sizeof(names[0]);++i)if(!strcmp(item,names[i].n)){
-                        if(seq_count==96){int kept=0;for(int j=0;j<seq_count;++j)if(seq[j].t+seq[j].dur>=now)seq[kept++]=seq[j];seq_count=kept;}
-                        if(seq_count<96){seq[seq_count].t=cmd_next;seq[seq_count].dur=dur;seq[seq_count].mask=names[i].m;seq[seq_count].stick=names[i].stick;
-                            seq[seq_count].logged=0;memset(seq[seq_count].name,0,sizeof(seq[0].name));strncpy(seq[seq_count].name,item,sizeof(seq[0].name)-1);++seq_count;cmd_next+=dur+0.25;}
-                        break;}}
-                fprintf(stderr,"PAD_CMD %s",text);if(text[0]&&text[strlen(text)-1]!='\n')fputc('\n',stderr);}}}
-    for(int i=0;i<seq_count;++i){double t=(double)out->timestamp/1e6;if(t<seq[i].t||t>=seq[i].t+seq[i].dur)continue;
-        out->buttons|=seq[i].mask;if(seq[i].mask==0x100)out->l2=255;if(seq[i].mask==0x200)out->r2=255;if(seq[i].stick==1)out->ly=0;if(seq[i].stick==2)out->ly=255;if(seq[i].stick==3)out->lx=0;if(seq[i].stick==4)out->lx=255;
-        if(seq[i].mask==0x100000&&!contacts[0]&&!contacts[1]){contacts[0]=1;xy[0][0]=960;xy[0][1]=471;}
-        if(!seq[i].logged){seq[i].logged=1;fprintf(stderr,"PAD_SEQ %s at %.2f s\n",seq[i].name,t);}}
-    if((double)out->timestamp/1e6<cmd_paint_until)out->r2=255;
     if(out->l2>30)out->buttons|=0x100;if(out->r2>30)out->buttons|=0x200;
     memcpy(live.contacts,contacts,sizeof(contacts));memcpy(live.xy,xy,sizeof(xy));live.click=(out->buttons&0x100000)!=0;pad_panel_report(&live);
     if((contacts[0]||contacts[1])&&!was_touch[0]&&!was_touch[1])touch_start=out->timestamp;

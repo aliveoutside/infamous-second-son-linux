@@ -67,9 +67,7 @@ uintptr_t gpu_resolve(const char *identity);
 int gpu_handle_fault(void *ucontext, void *address);
 int gpu_readback(uint64_t address,uint64_t size);
 int gpu_invalidate(uint64_t address,uint64_t size);
-int gpu_feedback_identity_available(void);
 void gpu_file_opened(const char *guest_path);
-void gpu_feedback_identity(uint64_t owner_object,uint64_t shader_object,uint64_t record_address);
 int native_install_hooks(unsigned char *image,uint64_t size);
 const char *runtime_api_name(const char *identity);
 // content.c: the player's game data, loaded by content_load() before the guest starts.

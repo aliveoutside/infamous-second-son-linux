@@ -7,8 +7,7 @@
 #include <cstdlib>
 namespace iss::readback {
 inline bool PageProvenanceEnabled() {
-    static const bool enabled=[] {const char* p=std::getenv("ISS_NATIVE_READBACK_PAGES");return p&&p[0]=='1';}();
-    return enabled;
+    return false;
 }
 // Caller owns synchronization. Keep BOTH queue dependencies: disjoint writes in
 // one page need not supersede each other. Missing history never means completed.

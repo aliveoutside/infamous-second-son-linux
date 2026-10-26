@@ -38,7 +38,7 @@ enum class Qualifier : u8 {
     Sample,
 };
 
-/// ISS_DYNAMIC_STRIDE (set once at startup, before any translation): compute shaders read the
+/// Compute shaders read the
 /// stride of their buffers from the bound V# instead of compiling it in, and their
 /// specialization leaves the stride out (specialization.h).
 inline bool dynamic_buffer_stride{};
@@ -81,9 +81,9 @@ struct Info : InfoPersistent {
         std::span<const u32> flattened{};
     };
     static inline thread_local const SrtReplay* srt_replay{};
-    /// Set on the ahead-of-time translation threads (vk_pipeline_cache.cpp, ISS_AOT_COMPUTE).
+    /// Set on the ahead-of-time translation threads (vk_pipeline_cache.cpp).
     static inline thread_local bool aot_translation{};
-    /// Recipe translation (ISS_AOT_RECIPES): the V#/T#/S# words a recipe's specialization
+    /// Recipe translation: the V#/T#/S# words a recipe's specialization
     /// implies, written over the null flattened buffer (offset, value), and the fetch shader
     /// data of the recipe (a Gcn::FetchShaderData, frontend/fetch_shader.cpp override).
     static inline thread_local const std::vector<std::pair<u32, u32>>* aot_flat_writes{};
@@ -198,7 +198,7 @@ struct Info : InfoPersistent {
     template <typename T>
     T ReadUdReg(u32 ptr_index, u32 dword_offset) const noexcept {
         T data;
-        // A snapshot without captured reads (ISS_NATIVE_RECORDER) reads guest memory directly.
+        // A snapshot without captured readsreads guest memory directly.
         if(const auto* snap=Snapshot(); snap && snap->reads) {
             if constexpr(sizeof(T)==sizeof(AmdGpu::Buffer)) {
                 for(u32 i=0;i<snap->num_reads;++i) {

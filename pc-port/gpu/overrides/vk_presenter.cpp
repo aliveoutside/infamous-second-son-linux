@@ -6,9 +6,7 @@
 #include "common/io_file.h"
 #include "common/path_util.h"
 #include "common/perf_stats.h"
-#include "common/causal_frame_trace.h"
 #include "fsr_upscale.h"
-#include "runtime_timeline.h"
 #include "common/singleton.h"
 #include "core/debug_state.h"
 #include "core/devtools/layer.h"
@@ -694,16 +692,13 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     };
 
     draw_scheduler.EndRendering();
-    // ISS_PRESENT_STREAM=1 (OFF by default: the first try, porte-y 2026-10-18, gave a black
+    // Present stream (off: the first try, porte-y 2026-10-18, gave a black
     // screen; not debugged yet): with threaded recording the present commands (the
     // barrier and the post process pass: push descriptors and constants, no state kept) go to the
     // recording thread in order with the frame, like every other command. Taking the command
     // buffer here waited for that thread to record the whole frame first: ~14% of the command
     // processor in the city, the next frame started only then. FG records here: the old way.
-    static const bool present_stream = [] {
-        const char* value = std::getenv("ISS_PRESENT_STREAM");
-        return value && value[0] == '1';
-    }();
+    static const bool present_stream = false;
     const bool streamed = present_stream && !iss::fsr::FgEnabled() &&
                           !draw_scheduler.DirectCommandBuffer();
     vk::CommandBuffer cmdbuf{};
@@ -725,27 +720,6 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     const vk::Extent2D image_size = {image.info.size.width, image.info.size.height};
     expected_ratio = static_cast<float>(image_size.width) / static_cast<float>(image_size.height);
 
-    // Explicit guest-output ordinals, independent of wall-clock preload duration.
-    // Opt-in test capture only; unchanged dimensions and full original render output.
-    static const std::vector<u64> native_visual_frames = [] {
-        std::vector<u64> frames;
-        const char* text = std::getenv("ISS_NATIVE_VISUAL_FRAMES");
-        while (text && *text && frames.size() < 32) {
-            char* end = nullptr;
-            const auto value = std::strtoull(text, &end, 10);
-            if (end == text || !value) break;
-            frames.push_back(value);
-            if (*end != ',') break;
-            text = end + 1;
-        }
-        return frames;
-    }();
-    static u64 native_visual_ordinal{};
-    const u64 native_visual_frame = native_visual_frames.empty() ? 0 : ++native_visual_ordinal;
-    const bool native_visual_capture = native_visual_frame &&
-        std::ranges::find(native_visual_frames, native_visual_frame) != native_visual_frames.end();
-    if (native_visual_capture)
-        VideoCore::RequestScreenshot(VideoCore::ScreenshotRequest::GameOnly);
     const u32 capture_game_only_count = VideoCore::ConsumeGameOnlyScreenshotRequests();
     std::optional<ScreenshotReadback> pending_screenshot;
 
@@ -757,11 +731,6 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
             instance, ScreenshotKind::GameOnly,
             BuildScreenshotPaths(ScreenshotKind::GameOnly, capture_game_only_count),
             image_size.width, image_size.height, view_info.format, hdr_encoded);
-        if (native_visual_capture) {
-            for (const auto& path : readback.paths)
-                std::fprintf(stderr, "NATIVE_VISUAL_CAPTURE frame=%llu path=%s\n",
-                    static_cast<unsigned long long>(native_visual_frame), path.string().c_str());
-        }
         const vk::BufferImageCopy copy_region = {
             .bufferOffset = 0,
             .bufferRowLength = 0,
@@ -928,15 +897,6 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
 }
 
 void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame) {
-    const u64 trace_start=iss::timeline::enabled?Common::Perf::NowNs():0;
-    iss::timeline::Emit("present_begin",reinterpret_cast<u64>(frame),frame->ready_tick,
-        is_reusing_frame,is_game_frame,reinterpret_cast<u64>(&present_scheduler));
-    static const bool causal_enabled = [] {
-        const char* path = std::getenv("ISS_CAUSAL_FRAME_CSV");
-        return path && *path;
-    }();
-    const bool causal_trace = causal_enabled && !is_reusing_frame && is_game_frame;
-    const u64 causal_start = causal_trace ? Common::Perf::NowNs() : 0;
     // Free the frame for reuse
     const auto free_frame = [&] {
         if (!is_reusing_frame) {
@@ -962,10 +922,6 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         }
     }
 
-    const u64 causal_acquired = causal_trace ? Common::Perf::NowNs() : 0;
-    const u64 trace_acquired=trace_start?Common::Perf::NowNs():0;
-    if(trace_start)iss::timeline::Emit("present_acquired",reinterpret_cast<u64>(frame),
-        frame->ready_tick,0,0,0,0,trace_acquired-trace_start);
     // Reset fence for queue submission. Do it here instead of GetRenderFrame() because we may
     // skip frame because of slow swapchain recreation. If a frame skip occurs, we skip signal
     // the frame's present fence and future GetRenderFrame() call will hang waiting for this frame.
@@ -1171,13 +1127,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
                  vk::PipelineStageFlagBits::eColorAttachmentOutput);
     info.AddSignal(swapchain.GetPresentReadySemaphore());
     info.AddSignal(frame->present_done);
-    const u64 causal_flush_start = causal_trace ? Common::Perf::NowNs() : 0;
-    const u64 trace_flush=trace_start?Common::Perf::NowNs():0;
     scheduler.Flush(info);
-    const u64 causal_flushed = causal_trace ? Common::Perf::NowNs() : 0;
-    const u64 trace_flushed=trace_start?Common::Perf::NowNs():0;
-    if(trace_start)iss::timeline::Emit("present_flushed",reinterpret_cast<u64>(frame),
-        frame->ready_tick,reinterpret_cast<u64>(&scheduler),0,0,0,trace_flushed-trace_flush);
 
     // Present to swapchain.
     {
@@ -1187,39 +1137,17 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         }
     }
 
-    if(trace_start)iss::timeline::Emit("present_end",reinterpret_cast<u64>(frame),frame->ready_tick,
-        is_reusing_frame,is_game_frame,trace_acquired-trace_start,
-        trace_flush-trace_acquired,Common::Perf::NowNs()-trace_flushed);
     free_frame();
     if (!is_reusing_frame) {
         iss::fsr::GetStats().presents.fetch_add(1, std::memory_order_relaxed);
     }
     if (!is_reusing_frame && is_game_frame) {
-        if (causal_trace) {
-            Common::Perf::CausalFrame::Observe(
-                Common::Perf::GuestFrameCounter().load(std::memory_order_relaxed),
-                causal_start, causal_acquired, causal_flush_start, causal_flushed,
-                Common::Perf::NowNs());
-        }
         DebugState.IncFlipFrameNum();
         Common::Perf::OnFlip(DebugState.GetDrawCallsAvg(), DebugState.GetDispatchesAvg());
-        // ISS_FRAME_TS=path (diagnosis): the clock of each frames.csv row (Perf::NowNs, the
-        // profilers' clock), to put a slow frame next to the samples taken during it.
-        static std::FILE* frame_ts = [] {
-            const char* path = std::getenv("ISS_FRAME_TS");
-            std::FILE* f = path && *path ? std::fopen(path, "wb") : nullptr;
-            if (f) std::setvbuf(f, nullptr, _IOFBF, 1 << 16);
-            return f;
-        }();
-        if (frame_ts) {
-            std::fprintf(frame_ts, "%llu\n", (unsigned long long)Common::Perf::NowNs());
-        }
-        Core::PerfSampler::PollTuning();
     }
 }
 
 Frame* Presenter::GetRenderFrame() {
-    const u64 trace_start=iss::timeline::enabled?Common::Perf::NowNs():0;
     // Wait for free presentation frames
     Frame* frame;
     {
@@ -1233,7 +1161,6 @@ Frame* Presenter::GetRenderFrame() {
     }
 
     const vk::Device device = instance.GetDevice();
-    const u64 trace_dequeued=trace_start?Common::Perf::NowNs():0;
     vk::Result result{};
 
     const auto wait = [&]() {
@@ -1258,9 +1185,6 @@ Frame* Presenter::GetRenderFrame() {
         frame->is_hdr != swapchain.GetHDR()) {
         RecreateFrame(frame, expected_frame_width, expected_frame_height);
     }
-
-    if(trace_start)iss::timeline::Emit("render_frame_available",reinterpret_cast<u64>(frame),frame->ready_tick,
-        trace_dequeued-trace_start,0,0,0,Common::Perf::NowNs()-trace_dequeued);
 
     return frame;
 }

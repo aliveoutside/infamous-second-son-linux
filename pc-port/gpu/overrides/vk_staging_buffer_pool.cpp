@@ -33,29 +33,22 @@ u64 RoundAllocationSize(u64 size) {
     return Common::AlignUp(size, step);
 }
 
-// ISS_STAGING_CLASSES (default on, =0 off): dedicated staging buffers in power of two sizes, a
+// Dedicated staging buffers in power of two sizes, a
 // request taking any free one up to twice its size, kept LARGE_KEEP_FRAMES once idle within
 // LARGE_KEEP_BYTES per memory type. The streaming uploads (16-256 MB, every size) found no
 // cached buffer of their size and created one each time (vmaCreateBuffer of fresh dedicated
 // memory: 9% of the command processor while running through the city, tex-chasing-run2
 // 2026-10-18), the idle ones being freed again after 2 s.
 static bool StagingClasses() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_STAGING_CLASSES");
-        return !value || value[0] != '0';
-    }();
+    static const bool enabled = true;
     return enabled;
 }
 [[maybe_unused]] constexpr u64 LARGE_KEEP_FRAMES = 3600;
-// ISS_STAGING_LARGE_KEEP_MB (default 2048): idle large buffers kept per memory type. At 1 GB the
+// Idle large buffers kept per memory type. At 1 GB the
 // city went over it (1062 MB), trimmed 8 buffers and allocated again: 32 dedicated allocations,
 // 150 ms of the command processor in a 140 s run (cpprof3 2026-10-18).
 static u64 LargeKeepBytes() {
-    static const u64 bytes = [] {
-        const char* value = std::getenv("ISS_STAGING_LARGE_KEEP_MB");
-        return (value ? u64(std::strtoull(value, nullptr, 10)) : u64(2048)) << 20;
-    }();
-    return bytes;
+    return u64(2048) << 20;
 }
 static std::atomic<u64> g_large_hits{}, g_large_allocs{}, g_large_alloc_bytes{}, g_large_alloc_ns{},
     g_large_trimmed{};
@@ -71,17 +64,13 @@ static void NoteLargeAlloc() {
                  int(StagingClasses()));
 }
 
-// ISS_STAGING_RING_KEEP (default 8, 0 = the old trimming): the blocks of a ring kept however long
+// The blocks of a ring kept however long
 // they stay idle, and the others kept RING_KEEP_IDLE_FRAMES. A streaming burst needs a few extra
 // 16 MB blocks; freed after 4 s idle, the next burst created them again (dedicated vmaCreateBuffer
 // on the command processor: 9% of its time inside the city's 40-70 ms hitches, cpprof2
 // 2026-10-18).
 static size_t RingKeepBlocks() {
-    static const size_t keep = [] {
-        const char* value = std::getenv("ISS_STAGING_RING_KEEP");
-        return value ? size_t(std::strtoul(value, nullptr, 10)) : size_t(8);
-    }();
-    return keep;
+    return 8;
 }
 constexpr u64 RING_KEEP_IDLE_FRAMES = 4500;
 

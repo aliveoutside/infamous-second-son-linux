@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Included in namespace Vulkan, after native_passes_rasterizer.inl.
 //
-// ISS_NATIVE_COMPUTE (default on with ISS_NATIVE_PASSES_SUBMIT=1; =0 turns it off): the engine's
+// The engine's
 // graphics queue dispatches recorded into Vulkan at the submission, as native_passes.h does for
 // draws.
 //  - Pool threads (native_passes.cpp RecordDispatch): consecutive DISPATCH_DIRECT packets with
@@ -27,10 +27,7 @@ namespace np = iss::native_passes;
 using NativePasses::g;
 
 static bool Enabled() {
-    static const bool enabled = [] {
-        const char* p = std::getenv("ISS_NATIVE_COMPUTE");
-        return !p || p[0] != '0';
-    }();
+    static const bool enabled = true;
     return enabled;
 }
 
@@ -56,13 +53,10 @@ static AmdGpu::ComputeProgram LaneProgram(const AmdGpu::Regs& regs) {
 }
 
 enum Special : u8 { Guest, Flat, Gds };
-// ISS_NATIVE_COMPUTE_GDS (default on, =0 off): dispatches reading or writing the GDS (the particle
+// Dispatches reading or writing the GDS (the particle
 // rings' counters) recorded too, the GDS buffer as one range of its own (no guest address).
 static bool GdsEnabled() {
-    static const bool enabled = [] {
-        const char* p = std::getenv("ISS_NATIVE_COMPUTE_GDS");
-        return !p || p[0] != '0';
-    }();
+    static const bool enabled = true;
     return enabled;
 }
 constexpr VAddr GdsAddress = 0xFFFF000000000000ull;
@@ -223,7 +217,7 @@ constexpr const char* reject_names[RejectCount] = {"env", "regs", "pipeline", "s
                                                    "textures", "arena", "write", "alias", "flat",
                                                    "rotate", "image", "read"};
 
-// ISS_NATIVE_COMPUTE_ROTATE=1 (diagnosis): which template's segments make a scene wrong. From 40 s
+// Which template's segments make a scene wrong. From 40 s
 // of process time, windows of 6 s: 0 every segment native, 1..8 the segments with template k-1
 // (learn order) left to the command processor, 9 all of them; from 100 s native again.
 static double ProcessSeconds() {
@@ -232,10 +226,7 @@ static double ProcessSeconds() {
     return t.tv_sec + t.tv_nsec / 1e9 - created;
 }
 static int RotateWindow(double& seconds) {
-    static const bool on = [] {
-        const char* p = std::getenv("ISS_NATIVE_COMPUTE_ROTATE");
-        return p && p[0] == '1';
-    }();
+    static const bool on = false;
     if (!on) return -1;
     seconds = ProcessSeconds();
     if (seconds < 40.0 || seconds >= 100.0) return -1;
@@ -316,7 +307,7 @@ static np::DrawResult Record(np::Segment& s, void* regs_ptr, u64 key, const u32*
         }
         if (!shape) {
             // A program the command processor may not have translated yet: the speculative
-            // translator starts on it now (ISS_SPEC_COMPUTE), before the command processor
+            // translator starts on it now, before the command processor
             // reaches the dispatch (937 new compute programs translated on it in a cold run,
             // cold2 2026-10-18).
             if (g.pipeline_cache) g.pipeline_cache->RequestComputeSpecTranslation(cs);
@@ -423,23 +414,16 @@ static np::DrawResult Record(np::Segment& s, void* regs_ptr, u64 key, const u32*
     }
 
     // Ordered after the segment's earlier dispatches it depends on.
-    // ISS_NATIVE_COMPUTE_GDS_ATOMIC=1: GDS against GDS is no hazard. The GDS is one range for the
+    // GDS against GDS is no hazard. The GDS is one range for the
     // whole buffer, so every pair of particle dispatches (append counters, atomic) got a barrier:
     // ~60 of a segment's 64 dispatches, each a GPU drain (~5 us), ~2/3 of the forest's GPU frame
     // (gprof-visitors 2026-10-18). The game puts no wait between them (the PS4 overlaps them).
-    static const bool gds_atomic = [] {
-        const char* p = std::getenv("ISS_NATIVE_COMPUTE_GDS_ATOMIC");
-        return p && p[0] == '1';
-    }();
+    static const bool gds_atomic = false;
     bool hazard = false;
     for (const auto& a : mine)
         for (const auto& b : r.pending) {
             const bool h = (a.written || b.written) && !(gds_atomic && a.gds && b.gds) && Overlap(a, b);
-            // ISS_NATIVE_COMPUTE_HAZARD_LOG=1 (diagnosis): which ranges order the dispatches.
-            static const bool hazard_log = [] {
-                const char* p = std::getenv("ISS_NATIVE_COMPUTE_HAZARD_LOG");
-                return p && p[0] == '1';
-            }();
+            static const bool hazard_log = false;
             if (h && !hazard && hazard_log) {
                 static std::atomic<u32> logged{0};
                 if (logged.fetch_add(1, std::memory_order_relaxed) < 300)
@@ -454,20 +438,15 @@ static np::DrawResult Record(np::Segment& s, void* regs_ptr, u64 key, const u32*
             }
             hazard |= h;
         }
-    // ISS_NATIVE_COMPUTE_PS4_ORDER (default on, =0: a barrier wherever two dispatches' buffer
-    // ranges overlap): the dispatches of a segment run as on the PS4, with no barrier between them.
+    // The dispatches of a segment run as on the PS4, with no barrier between them (a barrier
+    // would go wherever two dispatches' buffer ranges overlap).
     // A segment only spans dispatches with register writes between them: the game asks for no
     // wait there (a wait, an event, a fence, a DMA ends the segment, and the next segment is ordered
     // after it). The particle stages all bind one 12 MB pool, so the overlap rule put a barrier
     // before ~3 of 4 dispatches: The Visitors' particle compute 436 -> 80 ms of GPU a second,
     // 58.2 -> 82.5 FPS uncapped, fire and smoke the same (nb-off/nb-on, nb2 renderer captures,
     // 2026-10-18 night).
-    static const bool ps4_order = [] {
-        const char* p = std::getenv("ISS_NATIVE_COMPUTE_PS4_ORDER");
-        const char* old = std::getenv("ISS_NATIVE_COMPUTE_NO_BARRIERS");
-        return !(p && p[0] == '0') || (old && old[0] == '1');
-    }();
-    if (ps4_order) hazard = false;
+    hazard = false; // the PS4 order: no barrier between the dispatches
     if (hazard) {
         r.pending.clear();
         ++r.barriers;
@@ -563,8 +542,6 @@ static void Report() {
 } // namespace NativeCompute
 
 bool Rasterizer::NativeComputeExecute(iss::native_passes::Segment& s, u64& tick, bool asc) {
-    // ISS_CP_PATH_CYCLES: reported as rec_submit (the native recorder's phase, unused here).
-    const iss::cp_path::Scope cp_path_scope{iss::cp_path::RecSubmit};
     using namespace NativeCompute;
     auto& c = stats;
     if ((++c.report & 1023) == 1) Report();
@@ -576,10 +553,9 @@ bool Rasterizer::NativeComputeExecute(iss::native_passes::Segment& s, u64& tick,
     // An asynchronous compute queue's segment runs where its full path dispatches do: in the
     // graphics scheduler's command buffer (asc_queue routing off, no compute record context).
     if (cp_split_enabled || draw_pipe_state || OnDrawWorker() || (DrawQueue() != 0 && !asc) ||
-        (asc && OnComputeRecordQueue()) || ComputeBindingsActive() || iss::command_trace::enabled || IsDumping() ||
+        (asc && OnComputeRecordQueue()) || ComputeBindingsActive() || IsDumping() ||
         host_markers_enabled || guest_markers_enabled || GpuCrashDiag::Enabled() ||
-        EmulatorSettings.IsPatchShaders() || buffer_cache.HasComputeQueue() ||
-        iss::hazard_probe::Enabled())
+        EmulatorSettings.IsPatchShaders() || buffer_cache.HasComputeQueue())
         return reject(RejectEnv);
     auto* r = static_cast<Rec*>(s.compute_recording);
     if (!r || r->templates.empty() || r->generation != s.generation) return reject(RejectEnv);
@@ -635,7 +611,6 @@ bool Rasterizer::NativeComputeExecute(iss::native_passes::Segment& s, u64& tick,
             return reject(RejectFlat);
         }
     }
-    iss::cp_path::Switch(iss::cp_path::CsTextures);
     for (const auto& t : r->templates) {
         if (!t->pipeline->IsReady()) return reject(RejectPipeline);
         if (t->has_samplers && texture_cache.SamplersGeneration() != t->samplers_generation)
@@ -681,19 +656,15 @@ bool Rasterizer::NativeComputeExecute(iss::native_passes::Segment& s, u64& tick,
                 return reject(RejectImage);
             }
         }
-    iss::cp_path::Switch(iss::cp_path::CsReads);
     // Reads in an arena: still there and not written by the CPU since (the full path would
     // upload them first).
     const bool arenas_same =
         !r->arena_gen_mixed && buffer_cache.ArenaBindingGeneration() == r->arena_gen;
-    // ISS_NATIVE_COMPUTE_UPLOAD (default on, =0 off): a read the CPU wrote since is uploaded below
+    // A read the CPU wrote since is uploaded below
     // as the full path's binding would (ObtainBuffer), the segment staying native when the data
     // lands where it was recorded. Rejecting them sent 63% of Parting's compute segments to the
     // full path (scenes-porte-n 2026-10-17: arena=15473 against 9103 run).
-    static const bool upload_reads = [] {
-        const char* p = std::getenv("ISS_NATIVE_COMPUTE_UPLOAD");
-        return !p || p[0] != '0';
-    }();
+    static const bool upload_reads = true;
     boost::container::small_vector<const Range*, 8> dirty_reads;
     for (const auto& a : r->ranges) {
         if (!a.arena || a.written) continue;
@@ -724,7 +695,7 @@ bool Rasterizer::NativeComputeExecute(iss::native_passes::Segment& s, u64& tick,
                     return reject(RejectAlias);
         }
 
-    // ISS_ASC_NATIVE_QUEUE: a compute ring's segment of buffers only (no image, no CPU data to
+    // A compute ring's segment of buffers only (no image, no CPU data to
     // upload for its reads, no GDS) runs on the compute queue, concurrently with the rendering.
     bool on_compute = asc && AscQueueEnabled();
     if (on_compute) {
@@ -745,10 +716,7 @@ bool Rasterizer::NativeComputeExecute(iss::native_passes::Segment& s, u64& tick,
 
     // The reads too: where the full path binds them now (a stream copy of CPU data, another arena:
     // the full path).
-    static const bool read_check = [] {
-        const char* p = std::getenv("ISS_NATIVE_COMPUTE_READ_CHECK");
-        return p && p[0] == '1';
-    }();
+    static const bool read_check = false;
     for (const auto& a : r->ranges) {
         if (a.written || !read_check || a.gds) continue;
         const u64 size = memory->ClampRangeSize(a.address, a.size);
@@ -800,7 +768,6 @@ bool Rasterizer::NativeComputeExecute(iss::native_passes::Segment& s, u64& tick,
         }
         ++c.reads_uploaded;
     }
-    iss::cp_path::Switch(iss::cp_path::CsWrites);
     // A write resolving to CPU data uploaded first (on the graphics queue): the compute queue
     // waits for that upload.
     const u64 uploads_before = on_compute ? Common::Perf::Total(Common::Perf::BufferUploads) : 0;
@@ -838,7 +805,6 @@ bool Rasterizer::NativeComputeExecute(iss::native_passes::Segment& s, u64& tick,
                          s.draw_packets.size(), r->templates.size(), r->barriers, text.c_str());
         }
     }
-    iss::cp_path::Switch(iss::cp_path::CsBarriers);
     if (!on_compute) {
         const u64 now = scheduler.CurrentTick();
         for (const auto& t : r->templates)
@@ -857,7 +823,6 @@ bool Rasterizer::NativeComputeExecute(iss::native_passes::Segment& s, u64& tick,
         if (needs_barrier) runtime.FlushBarriers();
         needs_barrier = false;
     }
-    iss::cp_path::Switch(iss::cp_path::CsRecord);
     const auto record = [&](auto& rec, bool mark) {
         vk::Pipeline bound{};
         for (const auto& d : r->replays) {
@@ -911,7 +876,7 @@ bool Rasterizer::NativeComputeExecute(iss::native_passes::Segment& s, u64& tick,
         record(cmd, false);
     } else {
         // The prepared dispatches, into the command processor's command buffer.
-        // ISS_GPU_PROFILE=2: timed as one "shader" per kind of segment (a5c... compute rings,
+        // Timed as one "shader" per kind of segment (a5c... compute rings,
         // 6fc... graphics queue), in the Perf GPU compute report.
         Sched().ProfileDispatchBegin(asc ? 0xA5C0000000000000ull | r->barriers
                                          : 0x6FC0000000000000ull | r->barriers);
@@ -919,7 +884,6 @@ bool Rasterizer::NativeComputeExecute(iss::native_passes::Segment& s, u64& tick,
         record(rec, GpuCrashDiag::Enabled() || GpuCrashDiag::Blackbox());
         Sched().ProfileDispatchEnd();
     }
-    iss::cp_path::Switch(iss::cp_path::CsAccess);
     if (!on_compute) {
         // The compute pipeline and push descriptors the command processor's bind cache assumed.
         scheduler.GetDynamicState().Invalidate();

@@ -3,9 +3,7 @@
 // No actual game draw is skipped or duplicated; auxiliary draws write only private images.
 namespace NativeVisual {
 static bool Enabled() {
-    static const bool enabled = iss::native_item::Flag("ISS_NATIVE_VISUAL_PROBE") &&
-        iss::native_item::Flag("ISS_NATIVE_VERIFY") && iss::native_item::Flag("ISS_HYBRID_BENCH_HIDDEN");
-    return enabled;
+    return false;
 }
 struct FrameWatch { u64 frame{}, draws{}, previous{}; };
 static FrameWatch& Watch() { static thread_local FrameWatch watch; return watch; }
@@ -178,8 +176,8 @@ void Rasterizer::ProbeNativeVisual(const GraphicsPipeline* pipeline, RenderState
     const auto state = Shared();
     if (state->pending.load(std::memory_order_acquire) || state->failed.load() ||
         state->qualified.load() >= 3 || state->attempts.load() >= 32) return;
-    const auto* output = std::getenv("ISS_NATIVE_VISUAL_PROBE_DIR");
-    if (!output || !*output) return;
+    const char* output = nullptr;
+    if (!output) return;
     static u64 rejected{};
     const auto reject = [&](const char* why) {
         if (++rejected <= 16 || (rejected & 4095) == 0)

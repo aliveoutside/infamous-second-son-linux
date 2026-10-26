@@ -21,7 +21,7 @@ namespace iss::asc_family {
 /// compute scheduler's command pool belongs to that family. Set once at device creation.
 extern u32 family;
 extern u32 graphics; ///< The graphics family (sharing list with family).
-/// ISS_READBACK_FAMILY: the readback queue's compute-only family (~0 when none or with family).
+/// The readback queue's compute-only family (~0 when none or with family).
 extern u32 readback_family;
 /// Family of the command pool being created (set around the compute scheduler's creation).
 }
@@ -99,7 +99,7 @@ void UniqueBuffer::Create(vk::BufferCreateInfo& buffer_ci, MemoryType mem_type,
                           VmaAllocationInfo* out_alloc_info) {
     // ISS (asc_queue on a compute-only family): every buffer may be used by both queues without
     // ownership transfers. Images stay exclusive (the compute queue never uses images).
-    // ISS_READBACK_FAMILY: the readback queue copies them from a compute-only family too.
+    // The readback queue copies them from a compute-only family too.
     const u32 other = iss::asc_family::family != ~0u ? iss::asc_family::family
                                                       : iss::asc_family::readback_family;
     std::array<u32, 2> families{iss::asc_family::graphics, other};
@@ -173,10 +173,7 @@ Buffer::Buffer(const Vulkan::Instance& instance, VAddr cpu_addr_, u64 size_bytes
             mapped_data = std::span<u8>{std::bit_cast<u8*>(alloc_info.pMappedData), size_bytes};
         }
         is_coherent = property_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        static const bool report_stream_memory = [] {
-            const char* value = std::getenv("ISS_NATIVE_MEMORY_REPORT");
-            return value && value[0] == '1';
-        }();
+        static const bool report_stream_memory = false;
         if (report_stream_memory && mem_type == MemoryType::Stream && debug_name.empty()) {
             const auto& memory_properties = instance.GetMemoryProperties();
             const u32 memory_type = alloc_info.memoryType;

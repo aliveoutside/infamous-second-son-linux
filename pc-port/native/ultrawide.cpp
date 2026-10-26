@@ -126,19 +126,14 @@ bool ParseResolution(const char *text,std::uint32_t &width,std::uint32_t &height
 
 int InstallResolution(unsigned char *image,std::uint64_t size){
     const char *option=std::getenv("ISS_RESOLUTION");
-    // ISS_RENDER_SIZE=WxH (experiment): the 3D picture drawn at this size, the output (post
-    // passes, HUD) at ISS_RESOLUTION or 1920x1080. The game does this on a PS4 Pro (3200x1800
-    // into 3840x2160, the video mode change below).
-    const char *render_option=std::getenv("ISS_RENDER_SIZE");
-    // ISS_FSR_MODE (fsr_mode): the render size is the output size divided by this.
+    // fsr_mode: the render size is the output size divided by this.
     const char *mode_option=std::getenv("ISS_FSR_MODE");
     const double mode_scale=mode_option&&*mode_option?std::atof(mode_option):1.0;
-    const bool scaled=mode_scale>1.0&&mode_scale<=4.0&&(!render_option||!*render_option);
-    if((!option||!*option)&&(!render_option||!*render_option)&&!scaled)return 0;
+    const bool scaled=mode_scale>1.0&&mode_scale<=4.0;
+    if((!option||!*option)&&!scaled)return 0;
     std::uint32_t width=1920,height=1080,render_w=0,render_h=0;
     if(option&&*option&&!ParseResolution(option,width,height)){std::fprintf(stderr,"ULTRAWIDE rejected: ISS_RESOLUTION=%s (expected WxH)\n",option);return -1;}
-    if(render_option&&*render_option&&!ParseResolution(render_option,render_w,render_h)){std::fprintf(stderr,"ULTRAWIDE rejected: ISS_RENDER_SIZE=%s (expected WxH)\n",render_option);return -1;}
-    if(width==1920&&height==1080&&!scaled&&(!render_w||(render_w==1920&&render_h==1080)))return 0;
+    if(width==1920&&height==1080&&!scaled)return 0;
     if(!Matches(image,size,kResolution,std::size(kResolution))){std::fputs("ULTRAWIDE rejected: eboot function identity mismatch\n",stderr);return -1;}
     if(const char *hud=std::getenv("ISS_HUD_ASPECT"))hud_aspect=float(std::atof(hud));
     if(!(hud_aspect>=0.5f&&hud_aspect<=8.f))hud_aspect=0;
@@ -148,11 +143,10 @@ int InstallResolution(unsigned char *image,std::uint64_t size){
     // the light culling shader (cs ce1675e0) into a fixed buffer, until a 0xffff terminator. Past
     // the buffer's end no list is written and the walk never ends: the GPU hung with too many
     // tiles (title screen at 5120x1440 and 5120x1424, a cutscene at 4984x1400; 3840x1080 played
-    // through). The picture is rendered with at most ISS_RENDER_MAX_TILES tiles, the game's own
+    // through). The picture is rendered with at most 256 tiles, the game's own
     // PS4 Pro size (3200x1800: 200x113 = 22600), in the same aspect; the window scales it up.
     const std::uint32_t requested_w=width,requested_h=height;
-    std::uint64_t max_tiles=200*113;
-    if(const char *limit=std::getenv("ISS_RENDER_MAX_TILES"))max_tiles=std::max<std::uint64_t>(40*23,std::strtoull(limit,nullptr,10));
+    constexpr std::uint64_t max_tiles=200*113;
     const auto tile_count=[](std::uint32_t w,std::uint32_t h){return std::uint64_t((w+15)/16)*((h+15)/16);};
     if(tile_count(width,height)>max_tiles){
         const double scale=std::sqrt(double(max_tiles)/double(tile_count(width,height)));

@@ -3,7 +3,7 @@
 //
 // The game maps three direct memory heaps (src/memory.c): A at 0x80000000, B at 0x20000000
 // (512 MB, the per-frame data the CPU writes: command buffers, constants, rings) and C at
-// 0x200000000 (resources). With this flag heap B (ISS_UNIFIED_RANGE=base:size to change it) is
+// 0x200000000 (resources). With this flag heap B is
 // imported host memory (its backing view, which is never protected) bound as one Vulkan buffer
 // (BufferCache::EnableUnified): the GPU reads and writes the guest's own bytes in place.
 // Bindings inside it skip uploads, stream copies, CPU write tracking (page protection) and
@@ -19,7 +19,7 @@
 // - the command processor's own reads (WAIT_REG_MEM, COND_EXEC, semaphores) wait for the GPU
 //   writes recorded into the heap before them (BufferCache::SyncUnifiedRead);
 // - GPU writes are made visible to the host before each deferred fence (a host barrier).
-// Requires the graphics queue only (no ISS_CP_SPLIT, no asc_queue, no draw pipe).
+// Requires the graphics queue only (no split command processor, no asc_queue, no draw pipe).
 #pragma once
 #include <cstdint>
 
@@ -45,7 +45,7 @@ enum Stat : unsigned {
 void Add(Stat stat, std::uint64_t value = 1);
 /// UNIFIED_STATS on stderr every 5 seconds (command processor thread).
 void MaybeReport();
-/// The heap (ISS_UNIFIED_RANGE, default B).
+/// The heap (B).
 std::uint64_t RangeBase();
 std::uint64_t RangeSize();
 } // namespace iss::unified

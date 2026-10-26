@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Included in namespace Vulkan, after native_gbuffer_rasterizer.inl.
 //
-// ISS_NATIVE_PASSES=1 (with ISS_NATIVE_MATERIALS=1): the Vulkan side of native_passes.h.
+// The Vulkan side of native_passes.h.
 //  - Engine threads: each draw of a lane is recorded into its segment's secondary command
 //    buffer from the lane's registers and the material template of the draw's render state
 //    (PassKey: every graphics context and vertex/pixel shader register but the user data, the
@@ -74,14 +74,11 @@ static u64 PassKey(const AmdGpu::Regs& regs) {
     return XXH3_64bits(words.data(), sizeof(words)) | 1;
 }
 
-// ISS_NATIVE_PASSES_DYNAMIC=1: dynamic state (viewports, scissors, depth bounds/bias, stencil
+// Dynamic state (viewports, scissors, depth bounds/bias, stencil
 // reference, blend constants) recorded from each draw's registers and left out of the key.
 // Default (as the 16/10 run "h"): it is part of the key and comes from the template.
 static bool DynamicMode() {
-    static const bool enabled = [] {
-        const char* p = std::getenv("ISS_NATIVE_PASSES_DYNAMIC");
-        return p && p[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 
@@ -283,21 +280,17 @@ struct Rec {
     u32 first_ds{~0u};
     /// DrawClass bits of its draws.
     u32 classes{};
-    /// ISS_NATIVE_PASSES_FLAT_CHECK: hash of the first draw's flattened user data (the descriptors
+    /// Hash of the first draw's flattened user data (the descriptors
     /// and constants its shaders load through the user data pointers) as it was recorded.
     u64 first_flat{};
 };
 
-// ISS_NATIVE_PASSES_FLAT_CHECK (diagnosis 1, 2 also rejects): the command processor walks the
+// The command processor walks the
 // first draw's user data pointers again when it executes a segment and compares with what the
 // segment was recorded with: guest memory the engine filled after the recording reached the draw
 // would be drawn stale (the late map structures since native draws, user 2026-10-18).
 static int FlatCheck() {
-    static const int mode = [] {
-        const char* p = std::getenv("ISS_NATIVE_PASSES_FLAT_CHECK");
-        return p ? std::atoi(p) : 0;
-    }();
-    return mode;
+    return 0;
 }
 static u64 HashWords(u64 h, std::span<const u32> words) {
     for (const u32 w : words) h = (h ^ w) * 0x100000001b3ull;
@@ -311,17 +304,14 @@ static u64 RecordedFlatHash(const GraphicsPipeline& pipeline) {
     return h;
 }
 
-// ISS_NATIVE_PASSES_GUARD_DEPTH (default 1): the command processor attaches the depth/stencil
+// The command processor attaches the depth/stencil
 // target of a whole segment in the layout its first draw selects (Rasterizer::BeginRendering:
 // depth write -> writable, else stencil -> stencil writable, else read only). A later draw that
 // writes depth or stencil would write into a read only layout (undefined; on AMD the depth
 // compression metadata goes stale and later reads of that depth can stall the GPU). Such a draw
 // starts a new segment.
 static bool GuardDepth() {
-    static const bool on = [] {
-        const char* p = std::getenv("ISS_NATIVE_PASSES_GUARD_DEPTH");
-        return !p || p[0] != '0';
-    }();
+    static const bool on = true;
     return on;
 }
 static u32 DepthStencilClass(const AmdGpu::Regs& regs) {
@@ -334,16 +324,12 @@ static u32 DepthStencilClass(const AmdGpu::Regs& regs) {
 static std::atomic<u64> g_depth_mix{};
 static std::atomic<u64> g_auto_draws{}; ///< DRAW_INDEX_AUTO draws recorded
 
-// ISS_NATIVE_PASSES_CLASSES (bits, default 7): which draws the native passes record. 1 color
+// Which draws the native passes record. 1 color
 // without blending (opaque), 2 depth only (shadows), 4 color with blending. The others are left to
 // the command processor. Blended segments hung the GPU a few frames later in a command processor
 // draw (lab bisection 2026-10-17): only those into the pause UI layer, see BlendTargetAllowed.
 static u32 AllowedClasses() {
-    static const u32 bits = [] {
-        const char* p = std::getenv("ISS_NATIVE_PASSES_CLASSES");
-        return p ? u32(std::strtoul(p, nullptr, 0)) : 7u;
-    }();
-    return bits;
+    return 7;
 }
 static u32 DrawClass(const AmdGpu::Regs& regs) {
     bool color = false, blend = false;
@@ -366,65 +352,21 @@ static std::string p_list(const std::vector<u64>& list) {
     }
     return text;
 }
-// ISS_NATIVE_PASSES_BLEND_TARGETS (hex addresses, comma separated; unset: all): blended draws are
+// Blended draws are
 // recorded only when one of their blended color targets is listed (lab bisection by target).
 static bool BlendTargetAllowed(const AmdGpu::Regs& regs) {
-    static const std::vector<u64> list = [] {
-        std::vector<u64> out;
-        if (const char* p = std::getenv("ISS_NATIVE_PASSES_BLEND_TARGETS")) {
-            std::string text = p;
-            size_t at = 0;
-            while (at < text.size()) {
-                const size_t end = text.find(',', at);
-                const std::string item = text.substr(at, end == std::string::npos ? std::string::npos : end - at);
-                if (!item.empty()) out.push_back(std::strtoull(item.c_str(), nullptr, 16));
-                if (end == std::string::npos) break;
-                at = end + 1;
-            }
-        }
-        std::fprintf(stderr, "NATIVE_PASSES blend targets: %s\n", out.empty() ? "all" : p_list(out).c_str());
-        return out;
-    }();
-    // ISS_NATIVE_PASSES_BLEND_DENY (hex addresses; default 203d70000; "0" none): blended draws into
-    // these color targets are left to the command processor. 0x203d70000 is a G-buffer target
-    // that the pause menu reuses as its UI layer (1920x1080, blended, interleaved with command
-    // processor draws): native blended segments there hung the GPU (lab bisection 16:19); native
-    // blended decals (0x291e10000) and transparents (0x294df0000) did not.
-    static const std::vector<u64> deny = [] {
-        std::vector<u64> out;
-        const char* p = std::getenv("ISS_NATIVE_PASSES_BLEND_DENY");
-        std::string text = p ? p : "203d70000";
-        size_t at = 0;
-        while (at < text.size()) {
-            const size_t end = text.find(',', at);
-            const std::string item = text.substr(at, end == std::string::npos ? std::string::npos : end - at);
-            if (const u64 a = std::strtoull(item.c_str(), nullptr, 16)) out.push_back(a);
-            if (end == std::string::npos) break;
-            at = end + 1;
-        }
-        std::fprintf(stderr, "NATIVE_PASSES blend deny: %s\n", out.empty() ? "none" : p_list(out).c_str());
-        return out;
-    }();
+    constexpr u64 Denied = 0x203d70000;
     for (u32 i = 0; i < AmdGpu::NUM_COLOR_BUFFERS; ++i)
         if (regs.color_buffers[i] && regs.color_target_mask.GetMask(i) &&
-            std::find(deny.begin(), deny.end(), regs.color_buffers[i].Address()) != deny.end())
+            regs.color_buffers[i].Address() == Denied)
             return false;
-    if (list.empty()) return true;
-    for (u32 i = 0; i < AmdGpu::NUM_COLOR_BUFFERS; ++i)
-        if (regs.color_buffers[i] && regs.color_target_mask.GetMask(i) && regs.blend_control[i].enable &&
-            std::find(list.begin(), list.end(), regs.color_buffers[i].Address()) != list.end())
-            return true;
-    return false;
+    return true;
 }
 
-// ISS_NATIVE_PASSES_EXEC_CLASSES (bits, default 7): segments with a class outside it are recorded
+// Segments with a class outside it are recorded
 // but left to the command processor at execution (survey of a class without running it).
 static u32 ExecClasses() {
-    static const u32 bits = [] {
-        const char* p = std::getenv("ISS_NATIVE_PASSES_EXEC_CLASSES");
-        return p ? u32(std::strtoul(p, nullptr, 0)) : 7u;
-    }();
-    return bits;
+    return 7;
 }
 // Survey by the segment's classes (index = class bits): segments checked, segments with a texture
 // that is another image over the memory of one of its attachments (aliasing), the same image.
@@ -436,20 +378,14 @@ struct AliasSurvey {
     std::atomic<u32> logged{};
 };
 static AliasSurvey g_alias;
-// ISS_NATIVE_PASSES_NO_DEPTH_TEXTURES=1: segments that sample a depth image are left to the command
+// Segments that sample a depth image are left to the command
 // processor (lab test of the depth layout mismatch the validation layer reports).
 static bool NoDepthTextures() {
-    static const bool on = [] {
-        const char* p = std::getenv("ISS_NATIVE_PASSES_NO_DEPTH_TEXTURES");
-        return p && p[0] == '1';
-    }();
+    static const bool on = false;
     return on;
 }
 static bool GuardFeedback() {
-    static const bool on = [] {
-        const char* p = std::getenv("ISS_NATIVE_PASSES_GUARD_FEEDBACK");
-        return !p || p[0] != '0';
-    }();
+    static const bool on = true;
     return on;
 }
 
@@ -806,26 +742,20 @@ static void DrawDynamicState(const AmdGpu::Regs& regs, const Instance& instance,
     dynamic_state.SetAttachmentFeedbackLoopEnabled(false);
 }
 
-// ISS_NATIVE_PASSES_CLIP (default on in submit mode, where the lane's registers are exact): draws
+// Draws
 // with user clip planes recorded, the planes uploaded from each draw's registers (they were ~1/3
 // of the draws the recorder left to the command processor).
 static bool ClipMode() {
-    static const bool enabled = [] {
-        const char* p = std::getenv("ISS_NATIVE_PASSES_CLIP");
-        return (!p || p[0] != '0') && np::SubmitMode();
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 
-// ISS_NATIVE_PASSES_TEMPLATE_GATE (default on in submit mode): one learn request per template
+// One learn request per template
 // (render state and material) in flight, instead of one per render state key. A street of new
 // materials in one state waited 250 ms per material (~570 draws a frame left to the command
 // processor while moving, the drops in new areas); now each is learned at its first draw.
 static bool TemplateGate() {
-    static const bool enabled = [] {
-        const char* p = std::getenv("ISS_NATIVE_PASSES_TEMPLATE_GATE");
-        return (!p || p[0] != '0') && np::SubmitMode();
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 static std::atomic<u64> g_learn_gated{};
@@ -989,22 +919,19 @@ static np::DrawResult Record(np::Segment& s, void* regs_ptr, u64 key, const u32*
     const auto* pipeline = t->pipeline;
     if (!pipeline->IsReady() || (!pipeline->UsesPushDescriptors() && !NativeMaterial::SetsEnabled()))
         return miss(MissPipeline);
-    // ISS_NATIVE_INDIRECT_CLASSES (default 3): the indexed indirect draws of these classes only
+    // The indexed indirect draws of these classes only
     // (1 opaque, 2 depth only, 4 blended). With the blended ones too the city lost its sunlight
     // and shadows in some frames (a3-indirect4, a3-cls7b 2026-10-18); 1 + 2 or 4 alone were right.
     // The blended ones are ~4% of them (0.19M of 4.36M).
-    static const u32 indirect_classes = [] {
-        const char* p = std::getenv("ISS_NATIVE_INDIRECT_CLASSES");
-        return p ? u32(std::strtoul(p, nullptr, 0)) : 3u;
-    }();
+    static constexpr u32 indirect_classes = 3;
     if (d.indirect && (indirect_classes & DrawClass(regs)) == 0) return miss(MissState);
-    // ISS_NATIVE_PASSES_CLASSES: a class left to the command processor.
+    // A class left to the command processor.
     if (const u32 cls = DrawClass(regs);
         (r.classes |= cls, (AllowedClasses() & cls) == 0 || (cls == 4 && !BlendTargetAllowed(regs)))) {
         g_class_left[cls].fetch_add(1, std::memory_order_relaxed);
         return miss(MissState);
     }
-    // ISS_NATIVE_PASSES_GUARD_DEPTH: every draw of a segment (empty ones too) in the depth/stencil
+    // Every draw of a segment (empty ones too) in the depth/stencil
     // attachment state of its first.
     const u32 ds = DepthStencilClass(regs);
     if (GuardDepth() && r.begun && r.first_ds != ~0u && ds != r.first_ds) {
@@ -1053,12 +980,9 @@ static np::DrawResult Record(np::Segment& s, void* regs_ptr, u64 key, const u32*
             r.reads_unified = true;
             return true;
         }
-        // ISS_NATIVE_PASSES_NO_ARENA=1 (diagnosis): only draws whose buffers are all in the
+        // Only draws whose buffers are all in the
         // imported heap are recorded.
-        static const bool no_arena = [] {
-            const char* p = std::getenv("ISS_NATIVE_PASSES_NO_ARENA");
-            return p && p[0] == '1';
-        }();
+        static const bool no_arena = false;
         if (no_arena) return false;
         // Read first: an arena created or migrated after it changes the generation.
         const u64 arena_gen = cache.ArenaBindingGeneration();
@@ -1259,7 +1183,7 @@ static np::DrawResult Record(np::Segment& s, void* regs_ptr, u64 key, const u32*
                                      entry, BlackboxContext(regs, 2));
     }
     if (d.indirect) {
-        // ISS_NATIVE_INDIRECT: the arguments the GPU wrote (the segment reads them: the command
+        // The arguments the GPU wrote (the segment reads them: the command
         // processor orders it after their writer, NativePassExecute).
         vk::Buffer args_handle;
         u64 args_offset;
@@ -1359,7 +1283,7 @@ struct CpStats {
     u64 executed{}, draws{}, report{}, prefault_batches{}, learned{}, learn_mismatch{}, learn_failed{}, relearn{},
         inherited_merged{};
     std::array<u64, 13> reject{};
-    // ISS_NATIVE_INDIRECT: segments starting at an indexed indirect draw.
+    // Segments starting at an indexed indirect draw.
     u64 indirect_executed{}, indirect_draws{}, synced_reads{};
     u64 flat_checked{}, flat_mismatch{};
     std::array<u64, 13> indirect_reject{};
@@ -1530,7 +1454,6 @@ void Rasterizer::NativePassesSetup() {
 bool Rasterizer::NativePassExecute(iss::native_passes::Segment& s,
                                    const std::function<void(const u32*)>& begin_draw,
                                    const std::function<void()>& end_draw, u64& tick) {
-    const iss::cp_path::Scope cp_path_scope{iss::cp_path::RecorderExecute};
     using namespace NativePasses;
     auto& c = cp_stats;
     if ((++c.report & 1023) == 1) Report();
@@ -1541,10 +1464,10 @@ bool Rasterizer::NativePassExecute(iss::native_passes::Segment& s,
         return false;
     };
     if (cp_split_enabled || draw_pipe_state || OnDrawWorker() || DrawQueue() != 0 ||
-        iss::command_trace::enabled || IsDumping() || host_markers_enabled ||
+        IsDumping() || host_markers_enabled ||
         guest_markers_enabled || GpuCrashDiag::Enabled() || EmulatorSettings.IsPatchShaders() ||
         occlusion.HasOpen() || buffer_cache.HasComputeQueue() ||
-        !instance.IsVertexInputDynamicState() || iss::hazard_probe::Enabled())
+        !instance.IsVertexInputDynamicState())
         return reject(RejectEnv);
     if (auto& m = Misses(); m.pending.load(std::memory_order_acquire)) {
         std::vector<std::pair<VAddr, u32>> ranges;
@@ -1564,25 +1487,17 @@ bool Rasterizer::NativePassExecute(iss::native_passes::Segment& s,
     }
     auto* r = static_cast<Rec*>(s.recording);
     if (!r || r->templates.empty()) return reject(RejectPipeline);
-    iss::cp_path::Switch(iss::cp_path::RecChain);
     auto& regs = DrawRegs();
     // The first draw's registers the lane wrote are these, and every key the segment used was
     // learned with the words it inherits here.
     if (r->keys.empty()) return reject(RejectContext);
-    // ISS_NATIVE_PASSES_FAST_KEYS (default on, =0 off): the state words once for every key below.
-    // Validated with ISS_NATIVE_PASSES_FAST_KEYS_CHECK=1: 19.9 M checks, 0 differences (fk-check,
+    // The state words once for every key below.
+    // Validated against the slow path: 19.9 M checks, 0 differences (fk-check,
     // city, 2026-10-19).
-    static const bool fast_keys = [] {
-        const char* p = std::getenv("ISS_NATIVE_PASSES_FAST_KEYS");
-        return !(p && p[0] == '0');
-    }();
+    static const bool fast_keys = true;
     static thread_local StateWordArray state_words;
     if (fast_keys) StateWords(regs, state_words);
-    // ISS_NATIVE_PASSES_FAST_KEYS_CHECK=1 (diagnosis): both ways, the differences counted.
-    static const bool fast_check = [] {
-        const char* p = std::getenv("ISS_NATIVE_PASSES_FAST_KEYS_CHECK");
-        return p && p[0] == '1';
-    }();
+    static const bool fast_check = false;
     if (fast_keys && fast_check) [[unlikely]] {
         static u64 checks = 0, diffs = 0;
         for (const auto& [key, mask] : r->keys) {
@@ -1630,12 +1545,8 @@ bool Rasterizer::NativePassExecute(iss::native_passes::Segment& s,
         }
     }
     // The user data the first draw read: the words the lane wrote (the engine writes every table
-    // pointer a draw reads, eboot 0x14AD0; the others are leftovers of other programs), all of
-    // them with ISS_NATIVE_PASSES_STRICT_UD=1.
-    static const bool strict_ud = [] {
-        const char* p = std::getenv("ISS_NATIVE_PASSES_STRICT_UD");
-        return p && p[0] == '1';
-    }();
+    // pointer a draw reads, eboot 0x14AD0; the others are leftovers of other programs).
+    static const bool strict_ud = false;
     const auto& first_mask = r->keys.front().second;
     for (u32 k = 0; k < np::UserWords; ++k) {
         const int vs = np::TrackedIndex(np::VsUser0 + k), ps = np::TrackedIndex(np::PsUser0 + k);
@@ -1680,13 +1591,10 @@ bool Rasterizer::NativePassExecute(iss::native_passes::Segment& s,
     // for: ~8% of the command processor) only when one was created or migrated since.
     const bool arenas_same =
         !r->arena_gen_mixed && buffer_cache.ArenaBindingGeneration() == r->arena_gen;
-    // ISS_NATIVE_PASSES_SYNC_READS (default on, =0 off): a read the CPU wrote since is uploaded
+    // A read the CPU wrote since is uploaded
     // where the segment reads it (the indirect draws' arguments the engine writes every frame:
     // 51 682 of their segments rejected in the city, a3-indirect3 2026-10-18).
-    static const bool sync_reads = [] {
-        const char* p = std::getenv("ISS_NATIVE_PASSES_SYNC_READS");
-        return !p || p[0] != '0';
-    }();
+    static const bool sync_reads = true;
     for (const auto& a : r->arena_reads) {
         if (!buffer_cache.IsRegionCpuClean(a.address, a.size)) {
             if (!sync_reads) return reject(RejectArena);
@@ -1703,7 +1611,6 @@ bool Rasterizer::NativePassExecute(iss::native_passes::Segment& s,
     }
 
     // As Draw does before each draw.
-    iss::cp_path::Switch(iss::cp_path::RecTargets);
     DrainDrawPipe(5);
     SubmitFeedbackBatch(scheduler);
     PeriodicSubmit(scheduler);
@@ -1795,7 +1702,7 @@ bool Rasterizer::NativePassExecute(iss::native_passes::Segment& s,
                          db ? texture_cache.GetImage(db).info.size.width : 0u,
                          db ? texture_cache.GetImage(db).info.size.height : 0u, text.c_str());
         }
-        // ISS_NATIVE_PASSES_GUARD_FEEDBACK (default 1): a texture that is one of the segment's
+        // A texture that is one of the segment's
         // attachments, or another image over an attachment's memory, is a feedback loop. The
         // command processor draws it with the feedback layout (attachment_feedback_loop); the
         // segment would transition the texture to its read layout after the attachments were set
@@ -1819,7 +1726,7 @@ bool Rasterizer::NativePassExecute(iss::native_passes::Segment& s,
             ResetBindings(false);
             return reject(RejectTargets);
         }
-        // ISS_NATIVE_PASSES_EXEC_CLASSES: recorded for the survey, drawn by the command processor.
+        // Recorded for the survey, drawn by the command processor.
         if (r->classes & ~ExecClasses()) {
             g_alias.exec_left.fetch_add(1, std::memory_order_relaxed);
             ResetBindings(false);
@@ -1855,7 +1762,6 @@ bool Rasterizer::NativePassExecute(iss::native_passes::Segment& s,
     }
 
     // Accepted: textures to their read layouts, buffer reads ordered after their writers.
-    iss::cp_path::Switch(iss::cp_path::RecBarriers);
     const u64 now = scheduler.CurrentTick();
     for (const auto* cap : r->images) {
         auto& image = texture_cache.GetImage(cap->id);
@@ -1897,7 +1803,6 @@ bool Rasterizer::NativePassExecute(iss::native_passes::Segment& s,
     for (const auto& rd : reads)
         needs_barrier |= Rt().IsBufferAccessed(rd.buffer, rd.offset, rd.size, false);
     if (needs_barrier) runtime.FlushBarriers();
-    iss::cp_path::Switch(iss::cp_path::RecDraws);
     if (r->bb_segment) {
         // GPU black box: the segment as one command of the command processor's queue.
         static thread_local std::vector<VideoCore::ImageId> bb_images;
@@ -1926,7 +1831,6 @@ bool Rasterizer::NativePassExecute(iss::native_passes::Segment& s,
         DebugState.IncDrawCall();
         end_draw();
     }
-    iss::cp_path::Switch(iss::cp_path::RecAccess);
     ResetBindings(false);
     for (const auto& rd : reads)
         Rt().AccessBuffer(rd.buffer, rd.offset, rd.size, vk::PipelineStageFlagBits2::eAllGraphics,
@@ -1946,7 +1850,7 @@ u64 Rasterizer::NativePassLearnKey(u64 engine_key) {
     using namespace NativePasses;
     if (native_pass_learn_mask.size() != np::MaskWords) return 0;
     u64 key = MaskedKey(DrawRegs(), native_pass_learn_mask.data());
-    // ISS_NATIVE_INDIRECT: a learn request at an indexed indirect draw (its key mixes the packet's
+    // A learn request at an indexed indirect draw (its key mixes the packet's
     // base vertex and instance user data locations).
     if (native_pass_learn_indirect)
         key = np::IndirectKey(key, u32(native_pass_learn_indirect >> 16) & 0xFFFF,

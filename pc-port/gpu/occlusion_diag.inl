@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// ISS_OCCLUSION_DIAG=1: what the guest's occlusion queries return, query by query (included by
+// What the guest's occlusion queries return, query by query (included by
 // vk_rasterizer.cpp, command processor thread only). Each query is recorded at its end dump as
 // counted by the GPU (samples read back once its command buffer completes) or emulated (all
 // visible, a huge count) with the reason. Every 5 s OCCLUSION_DIAG reports, per frame, the
@@ -8,10 +8,7 @@
 
 
 namespace occlusion_diag {
-const bool enabled = [] {
-    const char* p = std::getenv("ISS_OCCLUSION_DIAG");
-    return p && p[0] == '1';
-}();
+constexpr bool enabled = false;
 
 enum Reason : u32 { RCounted, ROff, RUnmapped, RTooMany, RUnaligned, RNotCounted, RNum };
 constexpr const char* reason_names[RNum] = {"counted", "off", "unmapped", "too_many_open",

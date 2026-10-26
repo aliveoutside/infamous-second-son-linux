@@ -83,7 +83,6 @@ static void *worker(void *argument) {
 }
 
 int main(void) {
-    setenv("ISS_MAPPING_CACHE","1",1);
     test_sparse_copy();
     CHECK(save_pattern_matches("infamousssUser0","infamousss%"));
     CHECK(save_pattern_matches("infamousssAuto1","INFAMOUSSSAUTO_"));

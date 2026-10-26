@@ -268,7 +268,7 @@ public:
         return samplers_generation.load(std::memory_order_acquire);
     }
 
-    /// Whether the id names a registered image (ISS_NATIVE_MATERIALS: a remembered id may have
+    /// Whether the id names a registered image (a learned material remembers ids, and one may have
     /// been released since; its uid tells whether the slot was reused).
     [[nodiscard]] bool IsImageAllocated(ImageId id) const {
         return id && slot_images.is_allocated(id);
@@ -447,16 +447,13 @@ private:
     // Guard real cache lookup/mutation from the ASC worker when split is active.
     // CPU invalidation and unmap callbacks retain their existing synchronization.
     void AssertNoAscTextureAccess() const {
-        // Only a split command processor (ISS_CP_SPLIT=1) has an ASC worker to guard against.
+        // Only a split command processorhas an ASC worker to guard against.
         if (cp_split_configured) [[unlikely]] {
             AssertNoAscTextureAccessSlow();
         }
     }
     void AssertNoAscTextureAccessSlow() const;
-    const bool cp_split_configured = [] {
-        const char* value = std::getenv("ISS_CP_SPLIT");
-        return value && value[0] == '1';
-    }();
+    const bool cp_split_configured = false;
     /// Iterate over all page indices in a range
     template <typename Func>
     static void ForEachPage(PAddr addr, size_t size, Func&& func) {
@@ -559,9 +556,9 @@ private:
     u64 base_pressure_gc_memory = 0;
     u64 base_critical_gc_memory = 0;
     u64 card_budget_memory = 0;
-    /// ISS_GC_BUDGET_MB (the launcher's VRAM budget), 0 when unset.
+    /// 0 when unset.
     u64 forced_gc_budget = 0;
-    /// ISS_GC_BUDGET_MB=auto: the texture budget follows the device (RefreshGcLimits).
+    /// The texture budget follows the device (RefreshGcLimits).
     bool auto_gc_budget = false;
     /// The texture budget the automatic mode computed last (0 outside it).
     u64 auto_budget_memory = 0;

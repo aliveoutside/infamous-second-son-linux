@@ -25,7 +25,7 @@ namespace {
 enum { B_CLOSE, B_FSR, B_MODE, B_SHARP_DOWN, B_SHARP_UP, B_FG, B_COUNT };
 constexpr int ROWS = 4;
 constexpr float W = 460, TITLE = 30, ROW = 38, H = 444 + (ROWS - 2) * ROW;
-// fsr_mode: settings.toml value, label, the output size divided by (ISS_FSR_MODE).
+// fsr_mode: settings.toml value, label, the output size divided by.
 struct Mode { const char* key; const char* label; double scale; };
 constexpr Mode kModes[] = {{"native", "Native", 1.0}, {"quality", "Quality", 1.5},
                            {"balanced", "Balanced", 1.7}, {"performance", "Performance", 2.0},

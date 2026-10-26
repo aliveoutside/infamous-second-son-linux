@@ -68,10 +68,8 @@ private:
     }
     void Run(std::stop_token stop){
         Common::SetCurrentThreadName("iss:DrawStageB");on_worker=true;u64 at=0;
-        const auto spin_time=std::chrono::microseconds([] {
-            if(const char* p=std::getenv("ISS_DRAW_PIPE_SPIN_US"))return std::clamp(std::atoi(p),0,1000);
-            return std::thread::hardware_concurrency()>=12?200:50;
-        }());
+        const auto spin_time=std::chrono::microseconds(
+            std::thread::hardware_concurrency()>=12?200:50);
         for(;;){
             u64 end=published.load(std::memory_order_acquire);
             if(at==end){

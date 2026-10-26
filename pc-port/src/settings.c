@@ -3,7 +3,7 @@
 //
 // The runtime and libiss-gpu.so read their options from the process environment (getenv). The
 // player never sets any of them: this file fills them in before anything reads them, from
-//   1. the environment itself (developer overrides: ISS_FOO=1 ./iss-probe ...),
+//   1. the environment itself (ISS_USER_DIR, ISS_SETTINGS and ISS_GAME_DIR, which the scripts set),
 //   2. ~/.config/iss-pc/settings.toml (written with the defaults on the first start),
 //   3. the built-in defaults below.
 #include "settings.h"
@@ -15,53 +15,6 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
-
-// The tested play configuration (Linux, burning house and city, 2026-10-21): the approved profile
-// of the old Windows launcher plus the settings measured since. Notes on the measured ones:
-// - ISS_SUBMIT_INTERVAL_US: submit the GPU batch every 0.5 ms while recording, so a guest read
-//   waits ~2 ms instead of ~16 ms.
-// - ISS_ASYNC_COMPUTE/ISS_COMPUTE_FAIRNESS off: with the submit interval, async compute measured
-//   worse on RADV (~50.5 vs ~52.6 FPS, ~300 vs ~220 frames over 33 ms per minute).
-// - ISS_CP_CPU=auto: the command processor thread (the frame-rate limit) gets the fastest core.
-// - BB_VBLANK_HZ=240: the guest flips on the emulated vblank; at 60 Hz a 20 ms frame waited for
-//   33.3 ms. fps_limit below keeps the top.
-// - ISS_GPU_BLACKBOX off: the GPU crash recorder costs ~3% of the command processor.
-// - ISS_GC_TRIGGER_MB: the renderer reads a 752 MB texture budget on an 8 GB RADV card and
-//   collected textures every frame; a fixed trigger, the fallback when the driver reports no usage.
-// - ISS_GC_BUDGET_MB=auto: the texture budget is what the card has left after the arena, staging
-//   and swapchain, measured live (ported from iss_pc), instead of a fixed trigger that the
-//   game's 5 GB of use always exceeded: ~28k textures were deleted and uploaded again per session.
-// - ISS_FAST_DRAW/ISS_FAST_REBIND: draws that repeat the previous draw's state record only the
-//   geometry; city view with ~13k draws per frame 22.7 -> 34.2 FPS, no ISS_FAST_DRAW_VERIFY
-//   mismatches (2026-10-22).
-static const char *const tuned_defaults[][2] = {
-    {"ISS_GPU", "1"}, {"ISS_WINDOW_SIZE", "1920x1080"},
-    {"ISS_SUBMIT_INTERVAL_US", "500"}, {"ISS_CP_CPU", "auto"}, {"BB_VBLANK_HZ", "240"},
-    {"ISS_GPU_BLACKBOX", "0"}, {"ISS_GC_TRIGGER_MB", "3500"}, {"ISS_GC_BUDGET_MB", "auto"},
-    {"ISS_RING_BARRIERS", "1"}, {"ISS_REAL_OCCLUSION", "1"}, {"ISS_CP_SPLIT", "0"},
-    {"ISS_PREWARM_LARGE_UPLOAD", "0"}, {"ISS_MINIMAL_LOGS", "1"}, {"ISS_GPU_PROFILE", "0"},
-    {"ISS_RENDER_REUSE", "1"}, {"ISS_PARALLEL_RENDER", "1"}, {"ISS_DESCRIPTOR_FAST_PATH", "1"},
-    {"ISS_FAULT_WINDOW_KB", "64"}, {"ISS_UPLOAD_WORKER", "1"},
-    {"ISS_FAST_DRAW", "1"}, {"ISS_FAST_REBIND", "1"},
-    {"ISS_TUNING", "async_written_uploads=1,scout=1,scout_fast=1,bind_prefetch=1"},
-    {"ISS_BARRIER_POOL", "1"}, {"ISS_MAPPING_CACHE", "1"}, {"SHADPS4_FAST_STAGE_LOOKUP", "1"},
-    {"ISS_TLS_PATCH", "1"}, {"ISS_THREAD_PRIORITY", "1"}, {"ISS_MAPPING_INDEX", "1"},
-    {"ISS_COMPUTE_PHASES", "0"}, {"ISS_COMMAND_TRACE", "0"}, {"ISS_CAPTURE_FRAMES", "0"},
-    {"ISS_DEEP_PROFILE", "0"}, {"ISS_FEEDBACK_TRACE", "0"}, {"ISS_FEEDBACK_IDENTITY", "0"},
-    {"ISS_G4_FEEDBACK_PROBE", "0"}, {"ISS_READBACK_DIAG", "0"}, {"ISS_TRACE_READBACK", "0"},
-    {"ISS_GPU_HAZARD_DIAG", "0"}, {"ISS_NATIVE_FEEDBACK_PROBE", "0"}, {"ISS_PROBE_HOST_IMPORT", "0"},
-    {"ISS_ASYNC_COMPUTE", "0"}, {"ISS_COMPUTE_FAIRNESS", "0"}, {"ISS_FEEDBACK_EARLY_SUBMIT", "0"},
-    {"ISS_FEEDBACK_PAGE_READBACK", "0"}, {"ISS_NATIVE_REDUCTION", "0"}, {"ISS_PIPELINE_EVENTS", "0"},
-    {"ISS_NATIVE_READBACK_PAGES", "0"}, {"ISS_NATIVE_INSTANCED_BATCH", "0"},
-    {"ISS_FEEDBACK_ARENA", "0"}, {"ISS_FEEDBACK_JOIN", "0"}, {"ISS_SECONDARY_BATCH_PROBE", "0"},
-    {"ISS_NATIVE_MEMORY_REPORT", "0"}, {"ISS_NATIVE_INSTANCED_FEATURE", "0"}, {"ISS_TIMELINE", "0"},
-    {"ISS_NATIVE_CPU_DRAWS", "0"}, {"ISS_CPU_BUNDLE_SPV_VERIFIED", "0"},
-    {"ISS_CLAMP_CACHE_FIRST", "0"}, {"ISS_CPU_BUNDLE_INDEX_ONCE", "0"}, {"ISS_SMALL_READ_MEMO", "0"},
-    {"ISS_DESCRIPTOR_DELTAS", "0"}, {"ISS_TEXTURE_LOOKUP_MEMO", "0"},
-    {"ISS_TEXTURE_LOOKUP_MEMO_STATS", "0"}, {"ISS_PIPELINE_STATE_REUSE", "0"},
-    {"ISS_PIPELINE_STATE_REUSE_VERIFY", "0"}, {"ISS_PIPELINE_STATE_REUSE_STATS", "0"},
-    {"ISS_VISUAL_SEQUENCE", "0"},
-};
 
 // What a player sets (SettingsEntry, settings.h). Each maps to one variable; the values are checked
 // here so a typo is reported at start instead of silently ignored by the code that reads the variable.
@@ -214,13 +167,8 @@ static void config_path(char *out, size_t size, const char *name) {
     else snprintf(out, size, "%s/.config/iss-pc%s%s", getenv("HOME") ? getenv("HOME") : ".", name ? "/" : "", name ? name : "");
 }
 
-static const char developer_header[] =
-    "# Developer overrides: any internal variable, e.g. ISS_GPU_PROFILE = \"1\".\n"
-    "# The same variable set in the environment wins over this file.\n[developer]\n";
-
-// The file with every setting and its comment; values NULL: the defaults. developer: the lines
-// after [developer] to keep (NULL: none).
-static int write_file(const char *path, const char (*values)[SETTINGS_VALUE_SIZE], const char *developer) {
+// The file with every setting and its comment; values NULL: the defaults.
+static int write_file(const char *path, const char (*values)[SETTINGS_VALUE_SIZE]) {
     char dir[4096];
     snprintf(dir, sizeof(dir), "%s", path);
     for (char *p = dir + 1; *p; ++p)
@@ -239,8 +187,6 @@ static int write_file(const char *path, const char (*values)[SETTINGS_VALUE_SIZE
         }
         fputs("\"\n\n", f);
     }
-    fputs(developer_header, f);
-    if (developer) fputs(developer, f);
     if (fclose(f)) { unlink(temporary); return -1; }
     return rename(temporary, path);
 }
@@ -263,12 +209,12 @@ int settings_load(char (*values)[SETTINGS_VALUE_SIZE]) {
     FILE *f = fopen(path, "r");
     if (!f) return -1;
     char line[4096];
-    int developer = 0;
+    int legacy = 0;
     while (fgets(line, sizeof(line), f)) {
         char *s = trim(line), *eq = strchr(s, '=');
         char value[SETTINGS_VALUE_SIZE];
-        if (*s == '[') developer = !strncmp(s, "[developer]", 11);
-        if (developer || !*s || *s == '#' || *s == '[' || !eq) continue;
+        if (*s == '[') legacy = !strncmp(s, "[developer]", 11);
+        if (legacy || !*s || *s == '#' || *s == '[' || !eq) continue;
         *eq = 0;
         const char *key = trim(s);
         if (parse_value(eq + 1, value, sizeof(value))) continue;
@@ -282,27 +228,7 @@ int settings_load(char (*values)[SETTINGS_VALUE_SIZE]) {
 int settings_save(const char (*values)[SETTINGS_VALUE_SIZE]) {
     char path[4096];
     settings_path(path, sizeof(path));
-    // Keep what the player wrote under [developer].
-    char *developer = NULL;
-    size_t length = 0;
-    FILE *f = fopen(path, "r");
-    if (f) {
-        FILE *kept = open_memstream(&developer, &length);
-        char line[4096];
-        int inside = 0;
-        while (fgets(line, sizeof(line), f)) {
-            char copy[sizeof(line)];
-            char *s = trim(strcpy(copy, line));
-            if (*s == '[') { inside = !strncmp(s, "[developer]", 11); continue; }
-            // The header comment is written again by write_file.
-            if (inside && strncmp(s, "# Developer overrides:", 22) && strncmp(s, "# The same variable set", 23)) fputs(line, kept);
-        }
-        fclose(kept);
-        fclose(f);
-    }
-    const int result = write_file(path, values, developer);
-    free(developer);
-    return result;
+    return write_file(path, values);
 }
 
 // ISS_USER_DIR: the folder next to the program when it already has one (old installs keep their
@@ -358,7 +284,7 @@ int settings_apply(int argc, char **argv) {
     settings_path(path, sizeof(path));
     FILE *f = fopen(path, "r");
     if (!f && !(custom && *custom)) {
-        write_file(path, NULL, NULL);
+        write_file(path, NULL);
         fprintf(stderr, "settings: wrote the defaults to %s\n", path);
         f = fopen(path, "r");
     }
@@ -367,12 +293,12 @@ int settings_apply(int argc, char **argv) {
     int have[setting_count] = {0};
     if (f) {
         char line[4096];
-        int number = 0, developer = 0;
+        int number = 0, legacy = 0;
         while (fgets(line, sizeof(line), f)) {
             ++number;
             char *s = trim(line);
             if (!*s || *s == '#') continue;
-            if (*s == '[') { developer = !strncmp(s, "[developer]", 11); continue; }
+            if (*s == '[') { legacy = !strncmp(s, "[developer]", 11); continue; } // old files: skipped
             char *eq = strchr(s, '=');
             char value[SETTINGS_VALUE_SIZE];
             if (!eq) { fprintf(stderr, "settings: %s:%d: expected key = value\n", path, number); ++errors; continue; }
@@ -381,7 +307,7 @@ int settings_apply(int argc, char **argv) {
             if (parse_value(eq + 1, value, sizeof(value))) {
                 fprintf(stderr, "settings: %s:%d: bad value for %s\n", path, number, key); ++errors; continue;
             }
-            if (developer) { setenv(key, value, 0); continue; }
+            if (legacy) continue;
             int found = 0;
             for (int i = 0; i < setting_count; ++i)
                 if (!strcmp(settings_entries[i].key, key)) { snprintf(player[i], sizeof(player[i]), "%s", value); have[i] = found = 1; }
@@ -389,7 +315,6 @@ int settings_apply(int argc, char **argv) {
         }
         fclose(f);
     }
-    int fps_limit = -1;
     for (int i = 0; i < setting_count; ++i) {
         const Setting *s = &settings_entries[i];
         const char *value = have[i] ? player[i] : s->fallback;
@@ -403,35 +328,7 @@ int settings_apply(int argc, char **argv) {
             mapped = choice_value(s, value);
         }
         setenv(s->variable, mapped, 0);
-        if (!strcmp(s->key, "fps_limit")) fps_limit = atoi(getenv(s->variable));
     }
-    // native_passes: the profile the original launcher ran it with (all of it needs the first).
-    if (getenv("ISS_NATIVE_PASSES") && !strcmp(getenv("ISS_NATIVE_PASSES"), "1")) {
-        static const char *const native_profile[][2] = {
-            {"ISS_NATIVE_PASSES_ASYNC_SCAN", "1"}, {"ISS_NATIVE_PASSES_DYNAMIC", "1"},
-            {"ISS_NATIVE_PASSES_SUBMIT", "1"}, {"ISS_NATIVE_MATERIALS", "1"}, {"ISS_NATIVE_ASC_ASYNC", "1"},
-            {"ISS_NATIVE_GBUFFER_SETS", "1"}, {"ISS_NATIVE_INSTANCED_FEATURE", "1"}, {"ISS_SPEC_TRANSLATE", "1"},
-            {"ISS_STAGE_MEMO", "1"}, {"ISS_STAGE_MEMO_LOOSE", "1"}, {"ISS_STAGE_MEMO_TEXEL", "1"},
-        };
-        for (size_t i = 0; i < sizeof(native_profile) / sizeof(native_profile[0]); ++i)
-            setenv(native_profile[i][0], native_profile[i][1], 0);
-    }
-    // shaders: parallel compiles new graphics pipelines on the compiler threads (waited for on
-    // the bind); skip also draws nothing with them until they are ready (full screen passes wait).
-    if (getenv("ISS_ASYNC_SHADERS")) {
-        const int mode = atoi(getenv("ISS_ASYNC_SHADERS"));
-        if (mode >= 1) setenv("ISS_LAZY_PIPELINES", "1", 0);
-        if (mode >= 2) setenv("ISS_ASYNC_SKIP_DRAWS", "1", 0);
-    }
-    // Flips are taken on vblank ticks (240 Hz): a limit that does not divide it snaps to the next
-    // tick (75 ran at 80 FPS, 144 at 120), so the vblank runs at a multiple of the limit.
-    if (fps_limit > 0) {
-        char hz[32];
-        snprintf(hz, sizeof(hz), "%d", fps_limit * ((240 + fps_limit - 1) / fps_limit));
-        setenv("BB_VBLANK_HZ", hz, 0);
-    }
-    for (size_t i = 0; i < sizeof(tuned_defaults) / sizeof(tuned_defaults[0]); ++i)
-        setenv(tuned_defaults[i][0], tuned_defaults[i][1], 0);
     default_user_dir();
     return errors ? -1 : 0;
 }

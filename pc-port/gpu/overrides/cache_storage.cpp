@@ -38,7 +38,7 @@ Storage::CacheWriteQueue write_queue;
 mz_zip_archive zip_ar{};
 bool ar_is_read_only{true};
 
-// ISS_CACHE_PREFETCH (default on, =0 off): the cache folder's files read by many threads at
+// The cache folder's files read by many threads at
 // Open, the preload then reads them from memory. Each file open of the game process takes ~6 ms
 // (antivirus/sync filters on every new file of an unsigned process; Python opens the same ones in
 // 0.2 ms), one after the other on the preload thread: 4200 pipelines took 20-28 s to preload,
@@ -48,10 +48,7 @@ std::mutex prefetch_mutex;
 std::unordered_map<std::string, std::vector<u8>> prefetched;
 
 bool PrefetchEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_CACHE_PREFETCH");
-        return !value || value[0] != '0';
-    }();
+    static const bool enabled = true;
     return enabled;
 }
 

@@ -13,7 +13,7 @@ namespace iss::pipeline_library {
 bool Open(std::span<const u8> profile, const std::filesystem::path& primary);
 bool Read(const std::string& filename, std::vector<u8>& out);
 void ForEachKey(const std::function<void(std::vector<u8>&&)>& callback);
-/// Every recipe file (name, bytes) of the open library (ISS_AOT_RECIPES prepares the stages).
+/// Every recipe file (name, bytes) of the open library (its stages are prepared before use).
 void ForEachFile(const std::function<void(const std::string&, const std::vector<u8>&)>& callback);
 /// The keys ForEachKey will hand out (the loading screen's total).
 size_t NumKeys();

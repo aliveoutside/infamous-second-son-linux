@@ -2,7 +2,7 @@
 // Prepared PS material resources selected by the engine's validated Item identity.
 // Pipeline selection, VS/object data, geometry and recording retain the common renderer.
 static bool NativeVerifyEnabled() {
-    static const bool enabled = iss::native_item::Flag("ISS_NATIVE_VERIFY");
+    static constexpr bool enabled = false;
     return enabled;
 }
 void Rasterizer::NativeVisualPlan::Rebind() {
@@ -32,8 +32,7 @@ bool Rasterizer::NativeVisualPlan::Capture(std::span<const vk::WriteDescriptorSe
     return true;
 }
 bool Rasterizer::NativeVisualCaptureEnabled() const {
-    static const bool enabled = iss::native_item::Flag("ISS_NATIVE_VISUAL_PROBE") &&
-        iss::native_item::Flag("ISS_HYBRID_BENCH_HIDDEN");
+    static constexpr bool enabled = false;
     return enabled && NativeVerifyEnabled() && NativeContext() &&
         Common::Perf::GuestFrameCounter().load(std::memory_order_relaxed) >= 1200;
 }
@@ -101,8 +100,8 @@ void Rasterizer::CompleteNativeVisualPlans(const GraphicsPipeline* pipeline) {
         latch.reference.Capture(reference, push_data);
 }
 bool Rasterizer::NativeContext() const {
-    static const bool legacy_verify = iss::native_item::Flag("ISS_FAST_DRAW_VERIFY");
-    static const bool item_enabled = iss::native_item::Flag("ISS_NATIVE_ITEMS");
+    static constexpr bool legacy_verify = false;
+    static constexpr bool item_enabled = false;
     return item_enabled && iss::native_item::Enabled() && iss::native_item::current &&
            StageMemoContextEligible() && !UseDrawPipe() && !occlusion.HasOpen() &&
            !GpuCrashDiag::Enabled() && !legacy_verify && !StageMemoVerify() && !NativeVisualFailed();

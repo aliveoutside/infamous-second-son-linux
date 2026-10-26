@@ -27,7 +27,7 @@ struct Image {
 /// ISS_FSR=1 at start, then the in-game menu (F1).
 bool Enabled();
 void SetEnabled(bool on);
-/// RCAS sharpening in percent, 0 (off) to 100 (ISS_FSR_SHARPNESS).
+/// RCAS sharpening in percent, 0 (off) to 100.
 int Sharpness();
 void SetSharpness(int percent);
 

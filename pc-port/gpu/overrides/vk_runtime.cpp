@@ -17,33 +17,20 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/texture_cache/blit_helper.h"
 #include "video_core/texture_cache/image.h"
-#include "compute_phase.h"
 
 #include <vulkan/vulkan_format_traits.hpp>
 
 namespace Vulkan {
 
 namespace {
-/// ISS_BARRIER_POOL=1: buffer barrier entries keep their storage across flushes.
+/// Buffer barrier entries keep their storage across flushes.
 bool BarrierPool() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_BARRIER_POOL");
-        const bool on = value && value[0] == '1';
-        std::fprintf(stderr, "PORT_TUNING barrier_pool=%d\n", on ? 1 : 0);
-        return on;
-    }();
-    return enabled;
+    return true;
 }
 } // namespace
 
 bool Runtime::LazyReadList::Lazy() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_LAZY_READ_RANGES");
-        const bool on = value && value[0] == '1';
-        std::fprintf(stderr, "PORT_TUNING lazy_read_ranges=%d\n", on ? 1 : 0);
-        return on;
-    }();
-    return enabled;
+    return false;
 }
 
 void Runtime::LazyReadList::Merge() {
@@ -267,12 +254,9 @@ bool Runtime::Transit(VideoCore::Image* image, vk::ImageLayout dst_layout,
     const auto old_access = image->backing->state.access_mask;
     const bool was_partial = !image->backing->subresource_states.empty();
     image->GetBarriers(image_barriers, dst_layout, dst_access, dst_stage, subres_range);
-    // ISS_BARRIER_LOG=1 (diagnosis): per guest frame, the image transitions that emitted
+    // Per guest frame, the image transitions that emitted
     // barriers, grouped by image shape and layout change; frames with over 1800 are printed.
-    static const bool barrier_log = [] {
-        const char* p = std::getenv("ISS_BARRIER_LOG");
-        return p && p[0] == '1';
-    }();
+    static const bool barrier_log = false;
     if (barrier_log && image_barriers.size() != prev_num_barriers) [[unlikely]] {
         static std::mutex log_mutex;
         static std::unordered_map<std::string, std::pair<u64, u64>> groups;
@@ -316,10 +300,6 @@ bool Runtime::Transit(VideoCore::Image* image, vk::ImageLayout dst_layout,
     }
     if (image_barriers.size() != prev_num_barriers) {
         ++hazard_seq;
-        // Compute phases: a pending image barrier is flushed by the next hazard.
-        if (iss::phase::g_owner.load(std::memory_order_relaxed) == this) {
-            iss::phase::g_foreign.store(true, std::memory_order_relaxed);
-        }
         return true;
     }
     return false;
@@ -355,11 +335,8 @@ void Runtime::UploadImage(VideoCore::Image* dst, const VideoCore::Buffer* src,
     // iss: a texture with several layers or mips goes straight back to the sampled state as a
     // whole. Left in the transfer state, each draw sampling one layer or mip split its state per
     // subresource and moved only its own (the city's 256-layer BC3 arrays the game streams into
-    // every few seconds: ~5000 barriers in that frame, CP 11 -> 24 ms). ISS_UPLOAD_SAMPLED=0 off.
-    static const bool upload_sampled = [] {
-        const char* p = std::getenv("ISS_UPLOAD_SAMPLED");
-        return !p || p[0] != '0';
-    }();
+    // every few seconds: ~5000 barriers in that frame, CP 11 -> 24 ms).
+    static const bool upload_sampled = true;
     // (Images sharing a backing: the uploaded one may not be the one bound as a texture.)
     if (upload_sampled && !dst->usage.storage && !dst->usage.render_target &&
         !dst->usage.depth_target && !dst->binding.is_target && !dst->binding.force_general &&
@@ -830,9 +807,6 @@ void Runtime::SetBackingSamples(VideoCore::Image* image, u32 num_samples, bool c
         constexpr auto dst_access =
             vk::AccessFlagBits2::eColorAttachmentRead | vk::AccessFlagBits2::eColorAttachmentWrite;
         constexpr auto dst_layout = vk::ImageLayout::eColorAttachmentOptimal;
-        if (iss::phase::g_owner.load(std::memory_order_relaxed) == this) {
-            iss::phase::g_foreign.store(true, std::memory_order_relaxed);
-        }
         image_barriers.push_back(vk::ImageMemoryBarrier2{
             .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
             .srcAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite,
@@ -896,11 +870,6 @@ void Runtime::AccessBuffer(const VideoCore::Buffer* handle, u64 offset, u64 size
         return;
     }
     MakeCurrent(handle);
-    if (!iss::phase::g_run_access.load(std::memory_order_relaxed) &&
-        iss::phase::g_owner.load(std::memory_order_relaxed) == this) {
-        // Compute phases: recorded by something else than a dispatch of the open run.
-        iss::phase::g_foreign.store(true, std::memory_order_relaxed);
-    }
 
     const Interval range = {
         .start = offset,
@@ -955,10 +924,6 @@ void Runtime::FlushBarriers() {
     scheduler.EndRendering();
     const auto cmdbuf = scheduler.Recorder();
     cmdbuf.pipelineBarrier2(dep_info);
-    if (iss::phase::g_owner.load(std::memory_order_relaxed) == this) {
-        // Compute phases: nothing recorded since this flush is foreign yet.
-        iss::phase::g_foreign.store(false, std::memory_order_relaxed);
-    }
 
     memory_barrier.srcStageMask = vk::PipelineStageFlagBits2::eNone;
     memory_barrier.srcAccessMask = vk::AccessFlagBits2::eNone;
@@ -967,7 +932,7 @@ void Runtime::FlushBarriers() {
     for (auto& resource : resources) {
         resource.read_ranges.Clear();
         resource.write_ranges.Clear();
-        // Barrier pool (ISS_BARRIER_POOL=1): the entry stays, free, with the storage of its
+        // Barrier pool: the entry stays, free, with the storage of its
         // range lists, instead of being destroyed and allocated again at the next access.
         resource.handle = nullptr;
     }

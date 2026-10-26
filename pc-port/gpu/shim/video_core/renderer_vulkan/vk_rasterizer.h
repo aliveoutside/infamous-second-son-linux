@@ -331,7 +331,7 @@ public:
     std::size_t TryNativeInstancedRun(const GraphicsPipeline* pipeline,
                                       std::span<const u32> following_commands,
                                       std::size_t packet_budget);
-    /// ISS_NATIVE_DEPTH_RUN: a run of the instanced depth family as one indirect draw.
+    /// A run of the instanced depth family as one indirect draw.
     std::size_t TryNativeDepthRun(const GraphicsPipeline* pipeline,
                                   std::span<const u32> following_commands,
                                   std::size_t packet_budget);
@@ -345,7 +345,7 @@ public:
                             u32 ssbo_index, u64 command_offset,
                             const VideoCore::Buffer* vertex_buffer,
                             const VideoCore::Buffer* index_buffer);
-    /// ISS_NATIVE_SHADOW (native_shadow_rasterizer.inl): the draws of an engine shadow batch
+    /// The draws of an engine shadow batch
     /// recorded from the batch. Returns how many of them, in order, were recorded: the command
     /// processor interprets the range and skips those (0 when a render state is still unknown).
     u32 NativeShadowExecute(const iss::native_shadow::Batch& batch);
@@ -360,7 +360,7 @@ public:
     void NativeShadowVerifyNative(const iss::native_shadow::Batch& batch);
     void NativeShadowVerifyFinish(bool complete);
     bool NativeShadowLearning() const { return shadow_learn.batch != nullptr; }
-    /// ISS_NATIVE_GBUFFER (native_gbuffer_rasterizer.inl): the draws of an engine G-buffer range
+    /// The draws of an engine G-buffer range
     /// recorded from the range. Returns how many of them, in order, were recorded; begin_draw and
     /// end_draw bracket each draw (the scout entry of its packet).
     u32 NativeGbufferExecute(const iss::native_gbuffer::Batch& batch,
@@ -371,7 +371,7 @@ public:
     void NativeGbufferVerifyFinish(bool complete);
     void NativeGbufferVerifyNative();
     RenderState NativeGbufferVerifyTargets(const RenderState& render);
-    /// ISS_NATIVE_MATERIALS (native_material_rasterizer.inl): a texture BindTextures resolved for
+    /// A texture BindTextures resolved for
     /// a draw whose material is being learned (an empty id: a null descriptor).
     struct NativeImageCapture {
         VideoCore::ImageId id{};
@@ -397,7 +397,7 @@ public:
     /// native_image_capture set).
     void NativeMaterialLearn(u64 state_key, const GraphicsPipeline* pipeline,
                              const RenderState& render);
-    /// ISS_NATIVE_RECORDER (native_recorder.inl): lets the engine threads record ranges once the
+    /// Lets the engine threads record ranges once the
     /// command processor has started; executes a range's recording when what it assumed holds
     /// (returns its draw count, 0: take the other paths).
     void NativeRecorderSetup();
@@ -412,13 +412,13 @@ public:
     void NativePassLearn(u64 key, const GraphicsPipeline* pipeline, const RenderState& render);
     /// Set by the command processor for the draw of a learn request (its key), 0 otherwise.
     u64 native_pass_learn{};
-    /// ISS_NATIVE_INDIRECT: the learn request is at an indexed indirect draw: 1 << 32 | base vertex
+    /// The learn request is at an indexed indirect draw: 1 << 32 | base vertex
     /// location << 16 | start instance location (0: a direct draw).
     u64 native_pass_learn_indirect{};
-    /// ISS_NATIVE_COMPUTE (native_compute_rasterizer.inl): a compute segment executed at its
+    /// A compute segment executed at its
     /// first dispatch packet; a learn request's key for the dispatch (DispatchRecord learns its
     /// template, or the command processor counts the attempt failed).
-    /// asc: a segment of an asynchronous compute queue (ISS_NATIVE_ASC; recorded at the DingDong).
+    /// asc: a segment of an asynchronous compute queue (recorded at the DingDong).
     bool NativeComputeExecute(iss::native_passes::Segment& segment, u64& tick, bool asc = false);
     void NativeComputeLearn(u64 key, const ComputePipeline* pipeline,
                             const std::vector<NativeImageCapture>& caps);
@@ -548,7 +548,7 @@ public:
     /// imported, or a label outside it): the caller writes it now as before.
     /// The command processor sees the label value at once (PendingUnifiedLabel): its own waits
     /// on it are ordered by the queue. irq: the fence raises an interrupt (submitted at once);
-    /// other fences are submitted at the next submission, at most ISS_UNIFIED_FLUSH_US later.
+    /// other fences are submitted at the next submission, at most half a millisecond later.
     bool DeferUnifiedFence(VAddr dst, u32 bytes, std::optional<u32> value, bool irq,
                            Common::UniqueFunction<void>&& write);
     /// The value of a deferred label at addr not yet written to guest memory.
@@ -560,7 +560,7 @@ public:
         bool compute{}; ///< ISS_ASC_NATIVE_QUEUE: written when the compute queue reaches tick
     };
 
-    // ---- ISS_ASC_NATIVE_QUEUE=1 (vk_rasterizer.cpp, "AscQueue") ----
+    // ---- The asynchronous compute queue (vk_rasterizer.cpp, "AscQueue") ----
     // The asynchronous compute rings' native segments that use the unified heap only run on a
     // queue of a compute-only family (the GPU's asynchronous compute engines), concurrently with
     // the rendering, as on the PS4: the game's thread waits each frame for its particle compute,
@@ -598,7 +598,7 @@ public:
     u64 unified_unsubmitted_tick{}; ///< tick of deferred fences not submitted yet (0 none)
     u64 unified_unsubmitted_ns{};
     /// Submits deferred fences still in the current command buffer: always when the command
-    /// processor is about to idle (idle), otherwise once they waited ISS_UNIFIED_FLUSH_US.
+    /// processor is about to idle (idle), otherwise once they waited half a millisecond.
     void FlushUnifiedFences(bool idle);
     /// Command processor reads of guest memory: waits for the GPU writes recorded into the
     /// unified heap that cover it.
@@ -686,7 +686,7 @@ private:
                        const Shader::PushData* captured_push_data = nullptr,
                        bool skip_compute_hle = false);
 
-    /// Stage binding memo (ISS_STAGE_MEMO=1): what BindBuffers/BindTextures produced for one
+    /// Stage binding memo: what BindBuffers/BindTextures produced for one
     /// stage of a graphics pipeline, replayed for a later draw of the same pipeline whose stage
     /// reads the same V#/T#/S# while nothing that could change those results happened: same
     /// upload epoch and emulator writes, mappings, arenas, published GPU writes, CPU modified
@@ -770,7 +770,7 @@ private:
                            const Shader::PushData& push_data, bool verify);
     void ReportStageMemo();
 
-    /// Fast draw (ISS_FAST_DRAW=1): a direct draw whose state is the one the previous draw left
+    /// Fast draw: a direct draw whose state is the one the previous draw left
     /// in the command buffer, except its geometry (fetch V# list, vertex/instance offsets, index
     /// range). Same context registers, programs, pixel stage user data, vertex stage
     /// descriptors and fetch formats, render targets, command buffer and bound state, and no
@@ -891,8 +891,6 @@ private:
                     .physical_compute = selected.index == 1,
                 });
                 ASSERT_MSG(context->ValidForSerialRecord(), "G4 qid1 record context mismatch");
-                previous_producer_identity = rasterizer.buffer_cache.SetSerialProducerIdentity(
-                    context->owner, context->qid, context->generation);
                 active_record_context = &*context;
                 return;
             }
@@ -911,7 +909,6 @@ private:
                 return;
             }
             if (explicit_context) {
-                rasterizer.buffer_cache.RestoreSerialProducerIdentity(*previous_producer_identity);
                 active_record_context = previous_record_context;
                 rasterizer.on_compute_queue = previous_compute;
                 rasterizer.active_runtime = previous_runtime;
@@ -938,7 +935,6 @@ private:
         RecordContext* previous_record_context{};
         VideoCore::QueueContext* previous_buffer_queue{};
         std::optional<RecordContext> context{};
-        std::optional<VideoCore::BufferCache::SerialProducerIdentity> previous_producer_identity{};
     };
     /// asc_queue: the runtime of the queue the current dispatch, copy or fill is recorded on.
     [[nodiscard]] Runtime& Rt() noexcept {
@@ -1325,7 +1321,7 @@ private:
         bool lean_ok{};
         u32 vs_write_base{};
         u32 vs_binding_base{};
-        /// ISS_ENGINE_FAST: the engine draw (technique, material, kind) this state drew, and
+        /// The engine draw (technique, material, kind) this state drew, and
         /// the pixel stage sharps it resolved (compared instead of the pixel user data, which
         /// the engine copies again for every draw).
         u64 engine_key{};
@@ -1339,13 +1335,13 @@ private:
         std::array<AmdGpu::Sampler, MaxSharps> ps_ssharps{};
     };
     FastDrawState fast_draw{};
-    /// ISS_FAST_CACHE: the states of the pipelines drawn last in this render pass; a shader
+    /// The states of the pipelines drawn last in this render pass; a shader
     /// switch back to one of them restores it instead of looking up and resolving again.
     std::array<FastDrawState, 32> fast_cache{};
     u32 fast_cache_next{};
     bool TryReenterPipeline(const AmdGpu::Regs& regs, u64 engine_key);
     /// Binds a graphics pipeline; one still compiled is bound by the recording thread once
-    /// ready (ISS_LAZY_PIPELINES).
+    /// ready.
     void BindGraphicsPipeline(const GraphicsPipeline* pipeline);
     void BindPipelineLazy(Scheduler& on, vk::PipelineBindPoint bind_point,
                           const Pipeline* pipeline);
@@ -1361,7 +1357,7 @@ private:
     bool FastSwitchDraw(bool is_indexed, u32 index_offset);
     /// The pipeline a failed fast draw already looked up (Draw uses it instead of a second lookup).
     const GraphicsPipeline* fast_lookup{};
-    /// Draw pipe worker (ISS_DRAW_PIPE_FAST): the packet's pipeline and changed registers.
+    /// Draw pipe worker: the packet's pipeline and changed registers.
     const GraphicsPipeline* pipe_pipeline{};
     std::array<u32, 32> pipe_changed_regs{};
     u32 pipe_num_changed_regs{};

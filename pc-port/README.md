@@ -18,12 +18,15 @@ licence.
 
 ## Development
 
-Internal options are environment variables (`ISS_*`, `BB_*`). Set one in the environment or under
-`[developer]` in `settings.toml`, for example `ISS_GPU_PROFILE=1 scripts/linux/play.sh`. The
-tested defaults are in `src/settings.c`.
+Everything a player can change is a key of `settings.toml`, with its default and its check in
+`src/settings.c` ([docs/settings.md](docs/settings.md)). The renderer's tuned constants (barrier
+pooling, the fault windows, the staging keeps, the draw paths, the VRAM budget) are compiled in:
+they were measured once and have no reason to change at run time.
 
-`SHADPS4_FRAME_CSV=frames.csv` writes per-frame timings, and
-`python3 scripts/analyze_performance.py frames.csv` summarises them.
+Three environment variables remain, each for one run rather than for a player: `ISS_SETTINGS`
+(another settings file), `ISS_USER_DIR` (another data folder) and
+`SHADPS4_FRAME_CSV=frames.csv` (per-frame timings, summarised by
+`python3 scripts/analyze_performance.py frames.csv`).
 
 ## Game
 

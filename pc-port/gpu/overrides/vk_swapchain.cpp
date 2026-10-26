@@ -110,7 +110,7 @@ void Swapchain::SetHDR(bool hdr) {
 // display refresh), and the game's compute queued behind it waits too (the label the game thread
 // spins on: the 26 ms vsync misses at 75 Hz). The present thread waits for the image instead (an
 // acquire fence), so the semaphore is already signaled when the submit reaches the queue
-// (ISS_PRESENT_ACQUIRE_FENCE=0 off). The image comes back ~10.5 ms after the acquire returns;
+// The image comes back ~10.5 ms after the acquire returns;
 // city at 75 Hz, frames >25 ms: 17.9 -> 2.7 a minute, p99 21.9 -> 16.8 ms.
 // PRESENT_ACQUIRE lines (every 15 s) give the CPU time spent in each part.
 namespace {
@@ -128,10 +128,7 @@ u64 NowNs() {
 } // namespace
 
 bool Swapchain::AcquireNextImage() {
-    static const bool use_fence = [] {
-        const char* p = std::getenv("ISS_PRESENT_ACQUIRE_FENCE");
-        return !p || p[0] != '0';
-    }();
+    static const bool use_fence = true;
     vk::Device device = instance.GetDevice();
     if (use_fence && !acquire_fence) {
         auto [fence_result, fence] = device.createFence({});

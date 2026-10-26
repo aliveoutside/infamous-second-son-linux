@@ -11,8 +11,7 @@ static uintptr_t (*resolve_import)(const char *);
 static int (*handle_fault)(void *,void *);
 static int (*readback_memory)(uint64_t,uint64_t);
 static int (*invalidate_memory)(uint64_t,uint64_t);
-static void (*publish_feedback_identity)(uint64_t,uint64_t,uint64_t);
-// A pack of the game opened: its shaders go first in the ahead-of-time compiler (ISS_AOT_COMPUTE).
+// A pack of the game opened: its shaders go first in the ahead-of-time compiler.
 static void (*file_opened)(const char *);
 // The save data dialog drawn by libiss-gpu.so over the game (gpu/save_dialog_ui.cpp).
 static int (*dialog_open)(const IssDialog *);
@@ -33,7 +32,6 @@ static void window_size(uint32_t *width,uint32_t *height){
     *width=(uint32_t)window_w&~1u;*height=(uint32_t)window_h&~1u;
 }
 int gpu_start(uint32_t sdk_version,uint64_t image_base){
-    const char *enabled=getenv("ISS_GPU");if(!enabled||strcmp(enabled,"1"))return 0;
     char path[2048];ssize_t length=readlink("/proc/self/exe",path,sizeof(path)-16);if(length<0)return -1;path[length]=0;
     char *slash=strrchr(path,'/');if(!slash)return -1;strcpy(slash,"/libiss-gpu.so");
     void *library=dlopen(path,RTLD_NOW|RTLD_LOCAL);if(!library){fprintf(stderr,"GPU library load failed: %s\n",dlerror());return -1;}
@@ -41,7 +39,6 @@ int gpu_start(uint32_t sdk_version,uint64_t image_base){
     resolve_import=(void *)dlsym(library,"iss_gpu_resolve");handle_fault=(void *)dlsym(library,"iss_gpu_fault");
     readback_memory=(void *)dlsym(library,"iss_gpu_readback");
     invalidate_memory=(void *)dlsym(library,"iss_gpu_invalidate");
-    publish_feedback_identity=(void *)dlsym(library,"iss_gpu_feedback_identity");
     file_opened=(void *)dlsym(library,"iss_gpu_file_opened");
     void (*mapped)(uint64_t,uint64_t,uint8_t *)=(void *)dlsym(library,"iss_gpu_map");
     dialog_open=(void *)dlsym(library,"iss_gpu_dialog_open");dialog_poll=(void *)dlsym(library,"iss_gpu_dialog_poll");
@@ -75,8 +72,4 @@ int gpu_menu_take(char *key,size_t key_size,char *value,size_t value_size){retur
 int gpu_readback(uint64_t address,uint64_t size){return readback_memory?readback_memory(address,size):0;}
 int gpu_invalidate(uint64_t address,uint64_t size){return invalidate_memory?invalidate_memory(address,size):0;}
 void gpu_file_opened(const char *guest_path){if(file_opened)file_opened(guest_path);}
-int gpu_feedback_identity_available(void){return publish_feedback_identity!=NULL;}
-void gpu_feedback_identity(uint64_t owner_object,uint64_t shader_object,uint64_t record_address){
-    if(publish_feedback_identity)publish_feedback_identity(owner_object,shader_object,record_address);
-}
 int gpu_handle_fault(void *ucontext,void *address){return handle_fault?handle_fault(ucontext,address):0;}

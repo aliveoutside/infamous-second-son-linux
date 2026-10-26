@@ -23,24 +23,12 @@ static int32_t GUEST_ABI content_init(const unsigned char *init,unsigned char *b
     memset(boot,0,40);content_initialized=1;return 0;
 }
 // Add-on content: the game's DLC are entitlement-only packages (its costumes and the Cole's Legacy
-// mission ship in the base game; a license unlocks them). ISS_ADDCONT_LABELS="LABEL,LABEL,..." (the
-// labels of the user's .pkg files, content id EP9000-CUSA00004_00-<label>; set it in the environment or
-// under [developer] in settings.toml) are reported owned; any other label has no entitlement. The base game folder is never touched.
+// mission ship in the base game; a license unlocks them). The labels of the user's .pkg files
+// (content id EP9000-CUSA00004_00-<label>) are reported owned; any other label has no
+// entitlement. The base game folder is never touched.
 static int32_t GUEST_ABI content_addon(uint32_t service,const void *label,void *info){
     if(!content_initialized||service||!label||!info)return (int32_t)UINT32_C(0x80d90002);
     char want[17];memcpy(want,label,16);want[16]=0;
-    const char *list=getenv("ISS_ADDCONT_LABELS");
-    for(const char *p=list;p&&*p;){
-        const char *end=strchr(p,',');size_t n=end?(size_t)(end-p):strlen(p);
-        if(n==16&&!memcmp(p,want,16)){
-            // SceAppContentAddcontInfo: the label (17 bytes and padding to 20), then the status.
-            unsigned char *out=info;memset(out,0,24);memcpy(out,want,16);
-            const char *status=getenv("ISS_ADDCONT_STATUS");uint32_t s=status?(uint32_t)atoi(status):4u; // installed
-            memcpy(out+20,&s,4);
-            fprintf(stderr,"ADDCONT %s owned (status %u)\n",want,s);return 0;
-        }
-        p=end?end+1:NULL;
-    }
     fprintf(stderr,"ADDCONT %s not owned\n",want);
     return (int32_t)UINT32_C(0x80d90007); // SCE_APP_CONTENT_ERROR_DRM_NO_ENTITLEMENT
 }

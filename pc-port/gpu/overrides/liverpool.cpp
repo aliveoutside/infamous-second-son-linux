@@ -17,7 +17,6 @@
 #include "common/debug.h"
 #include "common/perf_stats.h"
 #include "common/scope_exit.h"
-#include "runtime_timeline.h"
 #include "common/polyfill_thread.h"
 #include "common/thread.h"
 #include "core/debug_state.h"
@@ -31,7 +30,6 @@
 #include "video_core/buffer_cache/region_definitions.h"
 #include "video_core/renderdoc.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
-#include "compute_phase.h"
 #include "g4_record_ownership.h"
 #include "native_item_identity.h"
 #include "native_shadow.h"
@@ -44,10 +42,7 @@ u32 ExecuteNativeShadowSuffix(Rasterizer&, const iss::native_shadow::Batch&, u32
 }
 
 static bool SkipShadowPrefixEnabled() {
-    static const bool enabled = [] {
-        const char* p = std::getenv("ISS_NATIVE_SHADOW_SKIP_PREFIX");
-        return p && p[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 // State exactly at a recorded DRAW_INDEX_2. Trailing setters stay in the command
@@ -70,14 +65,11 @@ static void CommitShadowDraw(AmdGpu::Regs& regs, const iss::native_shadow::Batch
     regs.draw_initiator = draw.initiator;
 }
 
-// ISS_DRAW_ORIGIN_CENSUS=1 (diagnosis): the draws the command processor interprets, by origin
+// The draws the command processor interprets, by origin
 // (0 outside any engine range, 1 a shadow range, 2 a G-buffer range), those outside by their
 // VS/PS shader hashes (the names of the shader dumps and of the technique join).
 static bool DrawOriginCensusEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_DRAW_ORIGIN_CENSUS");
-        return value && value[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 // The span of the last G-buffer marker whose batch was found (origin 4: a draw outside the
@@ -117,7 +109,7 @@ static void NoteDrawOrigin(const AmdGpu::Regs& regs, u32 origin) {
                  text.c_str());
 }
 
-// ISS_NATIVE_RECORDER chains: the register writes between two chained ranges (only SET_*_REG
+// Chained ranges: the register writes between two of them (only SET_*_REG
 // packets without render target registers, checked by the engine thread that linked them).
 static void ApplyPlainRegisterWrites(AmdGpu::Regs& regs, const u32* p, const u32* end) {
     while (p < end) {
@@ -151,7 +143,7 @@ static void CommitNativeBatch(AmdGpu::Regs& regs, const iss::native_gbuffer::Bat
     regs.draw_initiator = last.initiator;
 }
 
-// ISS_NATIVE_GBUFFER: the registers exactly at a recorded draw of a G-buffer range.
+// The registers exactly at a recorded draw of a G-buffer range.
 static void CommitGbufferDraw(AmdGpu::Regs& regs, const iss::native_gbuffer::Batch& batch, u32 index) {
     namespace ng = iss::native_gbuffer;
     const auto& draw = batch.draws[index];
@@ -177,12 +169,6 @@ void IssEngineMarker(const u32* payload); // vk_rasterizer.cpp, ISS_ENGINE_MARKE
 bool IssPassCostEnabled();                 // vk_rasterizer.cpp, ISS_PASS_COST
 void IssPassCostTick(u32 packet_class);
 extern u64 g_iss_dcb_lo, g_iss_dcb_hi;    // buffer_cache.cpp, ISS_OBTAIN_CENSUS
-
-namespace iss::command_trace {
-extern const bool enabled;
-void Packet(int queue, u32 opcode, const u32* words, size_t count);
-}
-
 
 #include "hybrid_family_profile.inl"
 
@@ -380,10 +366,6 @@ void Liverpool::DecideCpSplit() {
         reason = "rasterizer_unbound";
     } else if (!Common::Perf::GetTuning().asc_queue.load(std::memory_order_acquire)) {
         reason = "async_compute_disabled";
-    } else if (iss::command_trace::enabled) {
-        reason = "legacy_command_trace";
-    } else if (iss::phase::Enabled()) {
-        reason = "compute_phases";
     } else if (!rasterizer->PrepareCpSplit(reason)) {
         if (reason.empty()) reason = "rasterizer_unavailable";
     } else if (!has_fallback_recorder) {
@@ -1392,10 +1374,7 @@ void Liverpool::Process(std::stop_token stoken) {
             current_submission_token = {};
 
             if (task.done()) {
-                iss::timeline::Emit("cp_complete",reinterpret_cast<u64>(this),
-                    submission.token.sequence,submission.token.qid,submission.token.generation,
-                    reinterpret_cast<u64>(task.address()));
-                // Optional with ISS_DRAW_PIPE_LAZY: queued packets own copies of what they read
+                // Optional with the draw pipe: queued packets own copies of what they read
                 // from the task; OnSubmit/Flush/GpuIdle below still drain.
                 if(rasterizer)rasterizer->DrainDrawPipe(2|0x100);
                 task.destroy();
@@ -1645,7 +1624,7 @@ Liverpool::Task Liverpool::ProcessCeUpdate(std::span<const u32> ccb) {
     FIBER_EXIT;
 }
 
-// ISS_SEGMENT_CENSUS=1: how much register state each command buffer segment (a submitted
+// How much register state each command buffer segment (a submitted
 // command buffer or an indirect buffer) inherits from the segments before it: the registers its
 // draws see that it did not write itself. Segments recorded by different guest threads that
 // inherit nothing could be translated in parallel.
@@ -1655,10 +1634,7 @@ struct SegmentCensus {
     u32 draws{};
 };
 static bool SegmentCensusEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_SEGMENT_CENSUS");
-        return value && value[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 static SegmentCensus* g_segment;
@@ -1744,7 +1720,7 @@ static void EndSegment(const SegmentCensus& seg) {
     std::fprintf(stderr, "SEGMENT_CENSUS inherited_keys%s\n", keys.c_str());
 }
 
-// ISS_PASS_COST: the class of a graphics packet (fast_draw.inl PassCostTick): 1 draw,
+// The class of a graphics packet (fast_draw.inl PassCostTick): 1 draw,
 // 2 dispatch, 3.. packets that write or wait on memory, 0 the rest.
 static u32 PassCostClass(PM4ItOpcode opcode) {
     switch (opcode) {
@@ -1771,12 +1747,12 @@ static u32 PassCostClass(PM4ItOpcode opcode) {
     }
 }
 
-// ISS_NATIVE_SHADOW: the engine shadow batch whose range is being interpreted (command processor
+// The engine shadow batch whose range is being interpreted (command processor
 // thread): its first `skip` draws were recorded natively, the others are drawn as usual and
 // teach the rasterizer the pipelines of unknown render states.
 static const iss::native_shadow::Batch* g_shadow_range{};
 static u32 g_shadow_index{}, g_shadow_skip{};
-// ISS_NATIVE_GBUFFER: the G-buffer range being interpreted (its draws from g_gbuffer_index on).
+// The G-buffer range being interpreted (its draws from g_gbuffer_index on).
 static const iss::native_gbuffer::Batch* g_gbuffer_range{};
 static u32 g_gbuffer_index{};
 
@@ -1793,12 +1769,8 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
     const u64 segment_hi = segment_lo + dcb.size_bytes();
     g_iss_dcb_lo = segment_lo;
     g_iss_dcb_hi = segment_hi;
-    iss::timeline::Emit("cp_gfx_begin",reinterpret_cast<u64>(this),thread_context.token.sequence,
-        thread_context.token.qid,thread_context.token.generation,
-        reinterpret_cast<u64>(dcb.data()),dcb.size_bytes());
-
     cblock.Reset();
-    // ISS_NATIVE_RECORDER: the registers this command buffer starts from, for the engine thread
+    // The registers this command buffer starts from, for the engine thread
     // that writes it next frame.
     bool published_technique_start = false;
     if (iss::native_gbuffer::RecorderEnabled()) {
@@ -1838,11 +1810,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
     // not cross into the next 4 KB page, where each page of commands missed the caches).
     const bool prefetch_commands =
         Common::Perf::GetTuning().bind_prefetch.load(std::memory_order_relaxed);
-    static const size_t CommandPrefetchDwords = [] {
-        const char* value = std::getenv("ISS_PM4_PREFETCH_DW");
-        const long dwords = value ? std::strtol(value, nullptr, 10) : 128;
-        return static_cast<size_t>(std::clamp<long>(dwords, 16, 4096));
-    }();
+    static constexpr size_t CommandPrefetchDwords = 128;
     const bool pass_cost = IssPassCostEnabled();
     u32 pass_cost_class = 12; // class of the packet processed since the last tick (12: setup)
     while (!dcb.empty()) {
@@ -1870,7 +1838,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
 
         const auto* header = reinterpret_cast<const PM4Header*>(dcb.data());
         const u32 type = header->type;
-        // ISS_NATIVE_PASSES_JOB_WAIT: the job recording this packet is done before it is read.
+        // The job recording this packet is done before it is read.
         if (native_passes) iss::native_passes::WaitRecordedAt(dcb.data());
 
         switch (type) {
@@ -1893,33 +1861,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
             }
             const bool pipe_deferred = rasterizer && rasterizer->BeforeDrawPipePacket(
                 u32(opcode), reinterpret_cast<const u32*>(header), count + 1);
-            if (iss::command_trace::enabled) {
-                iss::command_trace::Packet(CurrentQueue(), u32(opcode),
-                                          reinterpret_cast<const u32*>(header),
-                                          std::min<size_t>(count + 1, dcb.size()));
-            }
-            // ISS_FULL_PATH_STATS=1 (diagnosis): draw and dispatch packets the command processor
-            // reaches (not jumped over inside a native segment), by opcode, every 600 frames.
+            // (diagnosis): draw and dispatch packets the command processor reaches (not jumped
+            // over inside a native segment), by opcode, every 600 frames.
             {
-                static const bool full_path_stats = [] {
-                    const char* p = std::getenv("ISS_FULL_PATH_STATS");
-                    return p && p[0] == '1';
-                }();
-                if (full_path_stats) {
-                    static std::array<u64, 256> reached{};
-                    static u64 last_frame = 0;
-                    ++reached[u32(opcode) & 0xFF];
-                    const u64 frame = Common::Perf::GuestFrameCounter().load(std::memory_order_relaxed);
-                    if (frame >= last_frame + 600) {
-                        const double frames = double(frame - last_frame);
-                        std::string text;
-                        for (const u32 op : {0x15u, 0x16u, 0x24u, 0x25u, 0x27u, 0x2Du, 0x30u, 0x35u, 0x38u, 0x2Cu})
-                            text += fmt::format(" {:02x}={:.1f}", op, double(reached[op]) / frames);
-                        std::fprintf(stderr, "FULL_PATH_STATS per_frame[%s ]\n", text.c_str());
-                        reached.fill(0);
-                        last_frame = frame;
-                    }
-                }
             }
             switch (opcode) {
             case PM4ItOpcode::Nop: {
@@ -2008,7 +1952,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     }
                     g_census_lo = marker;
                     g_census_hi = batch->end;
-                    // ISS_NATIVE_RECORDER_TECH_START: the registers at this command buffer's
+                    // The registers at this command buffer's
                     // first range, for the engine thread that starts over with its technique.
                     if (!published_technique_start && ng::TechStartEnabled()) {
                         published_technique_start = true;
@@ -2040,7 +1984,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                         regs.draw_initiator = last.initiator;
                         processed_packets += batch->draws.size();
                         rasterizer->NativeGbufferRangeEnd(batch);
-                        // ISS_NATIVE_RECORDER chains: the plain register writes up to each
+                        // Chained ranges: the plain register writes up to each
                         // chained range, its registers, then on after the last.
                         const u32* resume = batch->end;
                         for (const auto* member : rasterizer->native_stretch) {
@@ -2340,7 +2284,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 if (DebugState.DumpingCurrentReg()) {
                     DebugState.PushRegsDump(base_addr, reinterpret_cast<uintptr_t>(header), regs);
                 }
-                // ISS_NATIVE_SHADOW: a draw of the batch range being interpreted.
+                // A draw of the batch range being interpreted.
                 u32 shadow_draw = ~0u;
                 if (g_shadow_range) {
                     const u32 i = g_shadow_index++;
@@ -2352,7 +2296,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                         if (rasterizer) rasterizer->NativeShadowLearnEnd();
                     }
                 }
-                // ISS_NATIVE_GBUFFER: an interpreted draw of the G-buffer range, noted after it
+                // An interpreted draw of the G-buffer range, noted after it
                 // was recorded (the verified reference completes with the range's last draw).
                 const iss::native_gbuffer::Batch* gbuffer_range = nullptr;
                 bool gbuffer_last = false;
@@ -2447,7 +2391,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     const auto yield_limit = Common::Perf::GetTuning().asc_yield_packets.load(std::memory_order_relaxed);
                     // Never consume the packet at which the ordinary loop could yield to ASC,
                     // including when an ASC submission arrives while the group is prepared.
-                    // ISS_NATIVE_DEPTH_RUN: a run may span more packets than the fairness slice
+                    // A run may span more packets than the fairness slice
                     // while no ASC submission waits (the yield then follows the run).
                     const bool open_budget = yield_limit == 0 ||
                         (Vulkan::Rasterizer::NativeDepthRunEnabled() &&
@@ -2646,7 +2590,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 break;
             }
             case PM4ItOpcode::DrawIndexIndirect: {
-                // ISS_NATIVE_INDIRECT: a segment recorded from this draw on, or a learn request.
+                // A segment recorded from this draw on, or a learn request.
                 if (native_passes && iss::native_passes::IndirectEnabled()) {
                     namespace np = iss::native_passes;
                     const u32* first = reinterpret_cast<const u32*>(header);
@@ -2793,7 +2737,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 break;
             }
             case PM4ItOpcode::DispatchDirect: {
-                // ISS_NATIVE_COMPUTE: a compute segment recorded at the submission from this
+                // A compute segment recorded at the submission from this
                 // dispatch on, executed whole and jumped over, or a learn request for it.
                 if (native_passes) {
                     namespace np = iss::native_passes;
@@ -3143,11 +3087,8 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     break;
                 }
                 // iss: a run of memory to memory DMA packets (the texture streamer's ~1500 small
-                // copies in one frame) copied together; ISS_CP_DMA_BATCH=0 off.
-                static const bool dma_batch = [] {
-                    const char* p = std::getenv("ISS_CP_DMA_BATCH");
-                    return !p || p[0] != '0';
-                }();
+                // copies in one frame) copied together.
+                static const bool dma_batch = true;
                 const auto mem_to_mem = [](const PM4DmaData& d) {
                     return (d.src_sel == DmaDataSrc::Memory ||
                             d.src_sel == DmaDataSrc::MemoryUsingL2) &&
@@ -3447,14 +3388,10 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
 template <bool is_indirect>
 Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid, u64 submit_ns) {
     FIBER_ENTER(acb_task_name[vqid]);
-    if constexpr (!is_indirect) iss::timeline::Emit("cp_asc_begin",reinterpret_cast<u64>(this),
-        thread_context.token.sequence,thread_context.token.qid,thread_context.token.generation,
-        reinterpret_cast<u64>(acb.data()),acb.size_bytes(),
-        submit_ns?Common::Perf::NowNs()-submit_ns:0);
     auto& queue = asc_queues[{vqid}];
     Regs& compute_regs = CpSplitActive() ? mapped_queues[vqid + 1].regs : regs;
     if constexpr (!is_indirect) {
-        // ISS_NATIVE_ASC_ASYNC: the pool records this submission's dispatches; the graphics queue
+        // The pool records this submission's dispatches; the graphics queue
         // runs meanwhile.
         if (rasterizer && iss::native_passes::AscEnabled()) {
             while (!iss::native_passes::AscRecorded(acb.data())) {
@@ -3480,7 +3417,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid, u6
 
     auto base_addr = reinterpret_cast<VAddr>(acb.data());
     size_t acb_size = acb.size_bytes();
-    // ISS_PASS_COST: the time before this queue's work (idle), then its packets (compute).
+    // The time before this queue's work (idle), then its packets (compute).
     const bool pass_cost = IssPassCostEnabled();
     u32 pass_cost_class = 11;
     while (!acb.empty()) {
@@ -3557,18 +3494,6 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid, u6
         const bool pipe_deferred = rasterizer && rasterizer->BeforeDrawPipePacket(
             u32(opcode), reinterpret_cast<const u32*>(header), header->type3.NumWords() + 1,
             static_cast<int>(queue.pipe_id));
-        // Compute phases (pc-port): any packet but register writes and direct dispatches ends
-        // the run of dispatches that need no barrier between them.
-        if (opcode != PM4ItOpcode::SetShReg && opcode != PM4ItOpcode::Nop &&
-            opcode != PM4ItOpcode::DispatchDirect) {
-            iss::phase::g_boundary.store(true, std::memory_order_relaxed);
-        }
-        if (iss::command_trace::enabled) {
-            iss::command_trace::Packet(CurrentQueue(), u32(opcode),
-                                      reinterpret_cast<const u32*>(header),
-                                      header->type3.NumWords() + 1);
-        }
-
         const auto* it_body = reinterpret_cast<const u32*>(header) + 1;
         switch (opcode) {
         case PM4ItOpcode::Nop: {
@@ -3770,7 +3695,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid, u6
                 rasterizer->DispatchIndirect(it->indirect_addr, 0, size);
                 break;
             }
-            // ISS_NATIVE_ASC: a compute segment the pool recorded at the DingDong from this
+            // A compute segment the pool recorded at the DingDong from this
             // dispatch on (native_passes.cpp BeforeAscSubmit), executed whole and jumped over, or
             // a learn request for it. Only inside indirect buffers (the ring's read pointer
             // advances packet by packet).
@@ -3809,8 +3734,6 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid, u6
                                 processed_packets += seg->draw_packets.size();
                                 const u32* resume = seg->end;
                                 np::Finish(*seg, true, tick);
-                                // The next full path dispatch is not in a run with these.
-                                iss::phase::g_boundary.store(true, std::memory_order_relaxed);
                                 acb = acb.subspan(resume - acb.data());
                                 continue;
                             }
@@ -3830,38 +3753,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid, u6
                 DebugState.PushRegsDumpCompute(base_addr, reinterpret_cast<uintptr_t>(header),
                                                cs_program);
             }
-            // ISS_ASC_STATS=1 (diagnosis): what the compute rings dispatch, every 5 s.
-            static const bool asc_stats = [] {
-                const char* p = std::getenv("ISS_ASC_STATS");
-                return p && p[0] == '1';
-            }();
-            if (asc_stats) {
-                static std::unordered_map<u64, u64> programs;
-                static u64 total = 0, empty = 0, tiny = 0, groups = 0;
-                static auto last = std::chrono::steady_clock::now();
-                const u64 n = u64(dispatch_direct->dim_x) * dispatch_direct->dim_y * dispatch_direct->dim_z;
-                ++total;
-                empty += n == 0;
-                tiny += n > 0 && n <= 4;
-                groups += n;
-                ++programs[reinterpret_cast<u64>(cs_program.Address<u32*>())];
-                const auto now = std::chrono::steady_clock::now();
-                if (now - last > std::chrono::seconds(5)) {
-                    std::vector<std::pair<u64, u64>> top(programs.begin(), programs.end());
-                    std::sort(top.begin(), top.end(), [](auto& a, auto& b) { return a.second > b.second; });
-                    std::string text;
-                    for (size_t i = 0; i < top.size() && i < 8; ++i)
-                        text += fmt::format(" {:x}:{}", top[i].first, top[i].second);
-                    std::fprintf(stderr, "ASC_STATS dispatches=%llu empty=%llu tiny=%llu groups=%llu programs=%zu initiator_off=%d top[%s ]\n",
-                                 (unsigned long long)total, (unsigned long long)empty,
-                                 (unsigned long long)tiny, (unsigned long long)groups,
-                                 programs.size(), int((cs_program.dispatch_initiator & 1) == 0),
-                                 text.c_str());
-                    total = empty = tiny = groups = 0;
-                    programs.clear();
-                    last = now;
-                }
-            }
+            // (diagnosis): what the compute rings dispatch, every 5 s.
             if (!rasterizer || (cs_program.dispatch_initiator & 1) == 0) {
                 if (rasterizer && rasterizer->native_compute_learn) {
                     rasterizer->NativeComputeLearnFailed(rasterizer->native_compute_learn);
@@ -4009,8 +3901,6 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid, u6
                    selection == DataSelect::PerfCounter) ? sizeof(u64) : 0;
             const PM4CmdReleaseMem packet = *release_mem;
             const VAddr dst = packet.Address<VAddr>();
-            iss::timeline::Emit("asc_release_mem", reinterpret_cast<u64>(this), vqid, dst,
-                                packet.DataDWord(), u32(selection));
             if (CpSplitActive() && direct_write_bytes) {
                 const auto write = [packet,pipe_id=queue.pipe_id] {
                     packet.SignalFence(
@@ -4023,7 +3913,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid, u6
                 RUN_ASC_HOST(vqid,dst,direct_write_bytes,write);
             } else if (rasterizer && direct_write_bytes != 0 &&
                        [&](Common::UniqueFunction<void>&& write) {
-                           // ISS_ASC_NATIVE_QUEUE: on the compute queue when the ring's last work
+                           // On the compute queue when the ring's last work
                            // is there, otherwise on the graphics queue as before.
                            const auto value =
                                selection == DataSelect::Data32Low || selection == DataSelect::Data64
@@ -4353,12 +4243,6 @@ void Liverpool::OnWaitRegMemSatisfied(const PM4CmdWaitRegMem& wait) {
 }
 
 void Liverpool::SubmitDone() noexcept {
-    const auto trace_start=iss::timeline::enabled?Common::Perf::NowNs():0;
-    iss::timeline::Emit("guest_submit_done_begin",reinterpret_cast<u64>(this),
-        Common::Perf::GuestFrameCounter().load(std::memory_order_relaxed));
-    SCOPE_EXIT {if(trace_start)iss::timeline::Emit("guest_submit_done_end",reinterpret_cast<u64>(this),
-        Common::Perf::GuestFrameCounter().load(std::memory_order_relaxed),0,0,0,0,
-        Common::Perf::NowNs()-trace_start);};
     Common::Perf::GuestFrameCounter().fetch_add(1, std::memory_order_relaxed);
     std::unique_lock lk{submit_mutex};
     mapped_queues[GfxQueueId].ccb_buffer_offset = 0;
@@ -4472,9 +4356,6 @@ void Liverpool::SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb) {
         queue.submits.emplace(GpuQueue::Submission{task.handle, {}});
         const bool issued = g4_ledger.Issue(GfxQueueId, queue.submits.back().token);
         ASSERT_MSG(issued, "G4 stage-1 graphics admission failed");
-        const auto& trace_token=queue.submits.back().token;
-        iss::timeline::Emit("guest_queue_submit",reinterpret_cast<u64>(this),trace_token.sequence,
-            trace_token.qid,trace_token.generation,reinterpret_cast<u64>(task.handle.address()),dcb.size_bytes());
         CpCoordination::SubmissionToken coordinated_token{};
         ASSERT_MSG(cp_coordination.Issue(GfxQueueId, coordinated_token) &&
                        coordinated_token == queue.submits.back().token,
@@ -4495,7 +4376,7 @@ bool Liverpool::SubmitAsc(u32 gnm_vqid, std::span<const u32> acb, u64 generation
     const auto vqid = gnm_vqid - 1;
     Common::Perf::Add(Common::Perf::EpochAscSubmits);
     VideoCore::NextUploadEpoch();
-    // ISS_NATIVE_ASC: this submission's dispatches recorded before the command processor gets it.
+    // This submission's dispatches recorded before the command processor gets it.
     if (rasterizer && !CpSplitActive() && iss::native_passes::AscEnabled()) {
         iss::native_passes::BeforeAscSubmit(
             gnm_vqid, acb.data(), u32(acb.size()),
@@ -4510,9 +4391,6 @@ bool Liverpool::SubmitAsc(u32 gnm_vqid, std::span<const u32> acb, u64 generation
             queue.submits.emplace(GpuQueue::Submission{task.handle, {}});
             const bool issued = g4_ledger.Issue(gnm_vqid, queue.submits.back().token);
             ASSERT_MSG(issued, "G4 stage-1 ASC admission failed");
-            const auto& trace_token=queue.submits.back().token;
-            iss::timeline::Emit("guest_queue_submit",reinterpret_cast<u64>(this),trace_token.sequence,
-                trace_token.qid,trace_token.generation,reinterpret_cast<u64>(task.handle.address()),acb.size_bytes());
             CpCoordination::SubmissionToken coordinated_token{};
             ASSERT_MSG(cp_coordination.Issue(gnm_vqid, coordinated_token) &&
                            coordinated_token == queue.submits.back().token,

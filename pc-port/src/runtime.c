@@ -121,7 +121,7 @@ static int GUEST_ABI guest_memcmp(const void *p,const void *s,uint64_t n){return
 static uint64_t GUEST_ABI guest_strlen(const char *p){return strlen(p);}
 static int GUEST_ABI guest_strcmp(const char *p,const char *s){return strcmp(p,s);}
 static int GUEST_ABI guest_strncmp(const char *p,const char *s,uint64_t n){return strncmp(p,s,(size_t)n);}
-static int GUEST_ABI guest_neo_mode(void){const char *mode=getenv("ISS_NEO_MODE");return mode&&atoi(mode)==1;}
+static int GUEST_ABI guest_neo_mode(void){return 0;}
 
 uintptr_t runtime_resolve(const char *identity, int data) {
     if (data) {

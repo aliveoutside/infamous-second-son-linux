@@ -42,7 +42,7 @@ using IntegrateFn=void(ISS_SYSV*)(unsigned char*,unsigned char*,unsigned char*,v
 IntegrateFn original;
 unsigned char *game;
 float scale;
-double followHold=5;
+constexpr double followHold=5;
 std::chrono::steady_clock::time_point lastMove;
 
 // Auto-follow is off from the mouse's last move until followHold seconds later.
@@ -83,8 +83,6 @@ int InstallMouseLook(unsigned char *image,std::uint64_t size){
     const char *sens=std::getenv("ISS_MOUSE_SENS");
     const float percent=sens?float(std::atof(sens)):100.f;
     scale=kRadiansPerCount*(percent>0?percent:100.f)/100.f;
-    const char *hold=std::getenv("ISS_MOUSE_FOLLOW_HOLD");
-    if(hold)followHold=std::atof(hold);
     game=image;original=reinterpret_cast<IntegrateFn>(image+kIntegrate);
     // movabs rax, Integrate; jmp rax (in the padding), and the call to it.
     unsigned char jump[12]={0x48,0xb8};const auto address=reinterpret_cast<std::uintptr_t>(&Integrate);

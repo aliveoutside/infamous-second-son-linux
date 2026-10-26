@@ -19,7 +19,6 @@
 #include "common/debug.h"
 #include "common/perf_stats.h"
 #include "common/thread.h"
-#include "runtime_timeline.h"
 #include "imgui/renderer/texture_manager.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -43,28 +42,6 @@ inline void CpuRelax() {
 #endif
 }
 
-u64 WorkSignalTick(const SubmitInfo& info, vk::Semaphore work_semaphore) {
-    for (u32 i = 0; i < info.num_signal_semas; ++i) {
-        if (info.signal_semas[i] == work_semaphore) return info.signal_ticks[i];
-    }
-    return 0;
-}
-
-void EmitKnownCompletion(u64 owner, u64 known_tick) {
-    if (!iss::timeline::enabled || known_tick == 0) return;
-    // IsFree/Wait can refresh the cached semaphore value elsewhere. Record the
-    // next observation without pretending to know when the GPU finished it.
-    static std::mutex observed_mutex;
-    static std::unordered_map<u64, u64> last_observed;
-    u64 previous{};
-    {
-        std::scoped_lock lock{observed_mutex};
-        auto& last = last_observed[owner];
-        if (known_tick <= last) return;
-        previous = std::exchange(last, known_tick);
-    }
-    iss::timeline::Emit("completion_observed", owner, known_tick, previous);
-}
 } // Anonymous namespace
 
 std::mutex Scheduler::submit_mutex;
@@ -401,16 +378,10 @@ vk::CommandBuffer Scheduler::CommandBuffer() {
 CommandStream& Scheduler::Stream() {
     AssertCpRecordingLane();
     session_used = true;
-    // Batches of commands go to the recording thread while the next ones are recorded.
-    // ISS_RECORDER_BATCH=N: commands per batch (measured: with 256 the recording thread is
-    // asleep for ~150 of ~160 batches a frame, each one a wake up system call here).
-    static const size_t DispatchCommands = [] {
-        const char* value = std::getenv("ISS_RECORDER_BATCH");
-        const size_t n = value ? std::strtoull(value, nullptr, 10) : 0;
-        const size_t batch = n >= 64 && n <= 16384 ? n : 256;
-        std::fprintf(stderr, "PORT_TUNING recorder_batch=%zu\n", batch);
-        return batch;
-    }();
+    // Batches of commands go to the recording thread while the next ones are recorded. With 256
+    // the recording thread is asleep for ~150 of ~160 batches a frame, each one a wake up system
+    // call here.
+    static constexpr size_t DispatchCommands = 256;
     if (stream->NumCommands() >= DispatchCommands) {
         DispatchStream();
     }
@@ -493,13 +464,6 @@ void Scheduler::RecorderThread(std::stop_token stoken) {
             recorder_busy = true;
         }
         const u64 busy_start = Common::Perf::NowNs();
-        const u64 job_tick = job.submit && iss::timeline::enabled
-            ? WorkSignalTick(job.info, work_semaphore.Handle()) : 0;
-        if (job.submit && iss::timeline::enabled) {
-            iss::timeline::Emit("recorder_submit_begin", reinterpret_cast<u64>(this), job_tick,
-                                job.stream ? job.stream->NumCommands() : 0,
-                                work_semaphore.KnownGpuTick());
-        }
         if (job.stream && !job.stream->Empty()) {
             job.stream->Execute(RecorderCommandBuffer());
         }
@@ -512,11 +476,6 @@ void Scheduler::RecorderThread(std::stop_token stoken) {
         }
         const u64 busy_ns = Common::Perf::NowNs() - busy_start;
         Common::Perf::Add(Common::Perf::RecorderBusyNs, busy_ns);
-        if (job.submit && iss::timeline::enabled) {
-            iss::timeline::Emit("recorder_submit_end", reinterpret_cast<u64>(this), job_tick,
-                                work_semaphore.KnownGpuTick(), 0, 0, 0,
-                                busy_ns);
-        }
         {
             std::scoped_lock lk{recorder_mutex};
             if (job.stream) {
@@ -669,8 +628,6 @@ void Scheduler::Wait(u64 tick) {
         Common::Perf::Add(Common::Perf::GpuWaits);
         Common::Perf::Add(Common::Perf::GpuWaitNs, wait_ns);
     }
-    if (iss::timeline::enabled)
-        EmitKnownCompletion(reinterpret_cast<u64>(this), work_semaphore.KnownGpuTick());
 }
 
 bool Scheduler::HasPriorPendingOperations() {
@@ -689,8 +646,6 @@ void Scheduler::PopPendingOperations() {
     }
     std::unique_lock lk(pending_ops_mutex);
     work_semaphore.Refresh();
-    if (iss::timeline::enabled)
-        EmitKnownCompletion(reinterpret_cast<u64>(this), work_semaphore.KnownGpuTick());
     while (!pending_ops.empty() && work_semaphore.IsFree(pending_ops.front().gpu_tick)) {
         pending_ops.front().callback();
         pending_ops.pop();
@@ -732,10 +687,6 @@ void Scheduler::BeginSession() {
     dynamic_state.Invalidate();
     ProfileSessionBegin();
     session_used = false;
-    if (iss::timeline::enabled) {
-        iss::timeline::Emit("session_open", reinterpret_cast<u64>(this), CurrentTick(),
-                            stream_session ? 1 : 0);
-    }
 
 #if TRACY_GPU_ENABLED
     auto* profiler_ctx = instance.GetProfilerContext();
@@ -832,18 +783,11 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
             // CommandBuffer() made the end of the session direct: the recording thread is idle.
             Check(direct_cmdbuf.end());
             recorder_cmdbuf = vk::CommandBuffer{};
-            if (iss::timeline::enabled) {
-                iss::timeline::Emit("session_enqueued", reinterpret_cast<u64>(this),
-                                    signal_value, 1, 1, work_semaphore.KnownGpuTick(),
-                                    session_used ? 1 : 0);
-            }
             std::scoped_lock lk{submit_mutex};
             SubmitToQueue(std::span{&direct_cmdbuf, 1}, info);
         } else {
             std::unique_ptr<CommandStream> next;
             bool wake;
-            const u64 queued_commands = iss::timeline::enabled && stream
-                ? stream->NumCommands() : 0;
             {
                 std::scoped_lock lk{recorder_mutex};
                 if (stream && !stream->Empty()) {
@@ -856,12 +800,6 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
                     .info = info,
                 });
                 recorder_queued.fetch_add(1, std::memory_order_release);
-                if (iss::timeline::enabled) {
-                    // Emit while the queue lock still prevents recorder dequeue.
-                    iss::timeline::Emit("session_enqueued", reinterpret_cast<u64>(this),
-                                        signal_value, 2, queued_commands,
-                                        work_semaphore.KnownGpuTick(), session_used ? 1 : 0);
-                }
                 if (!free_streams.empty()) {
                     next = std::move(free_streams.back());
                     free_streams.pop_back();
@@ -911,11 +849,6 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
 
     const vk::Semaphore timeline = work_semaphore.Handle();
     info.AddSignal(timeline, signal_value);
-    if (iss::timeline::enabled) {
-        iss::timeline::Emit("session_enqueued", reinterpret_cast<u64>(this), signal_value,
-                            0, static_cast<u64>(cmd_buffers.size()),
-                            work_semaphore.KnownGpuTick(), session_used ? 1 : 0);
-    }
 
     SubmitToQueue(cmd_buffers, info);
 
@@ -955,27 +888,8 @@ void Scheduler::SubmitToQueue(std::span<const vk::CommandBuffer> cmd_buffers, Su
     if (queue == instance.GetGraphicsQueue()) {
         ImGui::Core::TextureManager::Submit();
     }
-    const u64 owner = reinterpret_cast<u64>(this);
-    const u64 signal_tick = iss::timeline::enabled
-        ? WorkSignalTick(info, work_semaphore.Handle()) : 0;
-    const u64 known_before = iss::timeline::enabled
-        ? work_semaphore.KnownGpuTick() : 0; // cached, no extra driver poll
-    if (iss::timeline::enabled) {
-        iss::timeline::Emit("vk_queue_submit_begin", owner, signal_tick,
-                            signal_tick, known_before, static_cast<u64>(cmd_buffers.size()),
-                            info.num_wait_semas);
-    }
-    const u64 submit_begin_ns = iss::timeline::enabled ? Common::Perf::NowNs() : 0;
     GpuCrashDiag::NoteSubmit(this, name);
     auto submit_result = queue.submit(submit_info, info.fence);
-    const u64 submit_end_ns = iss::timeline::enabled ? Common::Perf::NowNs() : 0;
-    if (iss::timeline::enabled) {
-        iss::timeline::Emit("vk_queue_submit_end", owner, signal_tick,
-                            submit_result == vk::Result::eSuccess ? signal_tick : 0,
-                            known_before, u32(static_cast<int>(submit_result)),
-                            static_cast<u64>(cmd_buffers.size()),
-                            submit_end_ns - submit_begin_ns);
-    }
     if (submit_result == vk::Result::eErrorDeviceLost) {
         GpuCrashDiag::ReportDeviceLost(instance, "submit");
     }
@@ -1002,8 +916,6 @@ void Scheduler::SubmitToQueue(std::span<const vk::CommandBuffer> cmd_buffers, Su
     }
 
     work_semaphore.Refresh();
-    if (iss::timeline::enabled)
-        EmitKnownCompletion(owner, work_semaphore.KnownGpuTick());
 }
 
 void Scheduler::ProfileSessionBegin() {
@@ -1024,18 +936,13 @@ void Scheduler::ProfileSessionBegin() {
     prof.current = {};
     prof.current.first = prof.allocated;
     prof.open_dispatch = GpuProfile::NoQuery;
-    if (!prof.usable && iss::timeline::enabled && !prof.unavailable_reported) {
+    if (!prof.usable && !prof.unavailable_reported) {
         prof.unavailable_reported = true;
-        iss::timeline::Emit("gpu_profile_unavailable", reinterpret_cast<u64>(this),
-                            CurrentTick(), prof.valid_mask,
-                            static_cast<u64>(prof.period_ns * 1000.0));
+        LOG_INFO(Render_Vulkan, "gpu_profile unavailable, valid bits {} of {} ns",
+                 prof.valid_mask, static_cast<u64>(prof.period_ns * 1000.0));
     }
     u64 number;
     if (!prof.Allocate(number)) {
-        if (iss::timeline::enabled && prof.usable)
-            iss::timeline::Emit("gpu_session_invalid", reinterpret_cast<u64>(this),
-                                CurrentTick(), 16, 0, GpuProfile::NoQuery,
-                                GpuProfile::NoQuery);
         return;
     }
     prof.current.begin = number;
@@ -1071,8 +978,6 @@ void Scheduler::ProfileSessionSubmitted(u64 tick) {
     // Submissions before this one the GPU has not finished yet.
     work_semaphore.Refresh();
     const u64 done = work_semaphore.KnownGpuTick();
-    if (iss::timeline::enabled)
-        EmitKnownCompletion(reinterpret_cast<u64>(this), done);
     prof.current.in_flight = tick > done + 1 ? tick - done - 1 : 0;
     prof.pending.push_back(std::move(prof.current));
     prof.current = {};
@@ -1125,8 +1030,6 @@ void Scheduler::CollectProfile() {
     GpuProfile& prof = *profile;
     const vk::Device device = prof.device;
     work_semaphore.Refresh();
-    if (iss::timeline::enabled)
-        EmitKnownCompletion(reinterpret_cast<u64>(this), work_semaphore.KnownGpuTick());
     while (!prof.pending.empty() && work_semaphore.IsFree(prof.pending.front().tick)) {
         const GpuProfile::Session& session = prof.pending.front();
         prof.results.assign(session.count, 0);
@@ -1150,28 +1053,6 @@ void Scheduler::CollectProfile() {
         const auto to_ns = [&](u64 ticks) {
             return static_cast<u64>(static_cast<double>(ticks) * prof.period_ns);
         };
-        if (iss::timeline::enabled) {
-            u64 invalid_reason = 0;
-            if (!valid) invalid_reason |= 1; // query result unavailable/error
-            if (session.begin == GpuProfile::NoQuery) invalid_reason |= 2;
-            if (session.end == GpuProfile::NoQuery) invalid_reason |= 4;
-            u64 raw_start = 0, raw_end = 0;
-            if (invalid_reason == 0) {
-                raw_start = stamp(session.begin);
-                raw_end = stamp(session.end);
-                if (raw_end < raw_start) invalid_reason |= 8; // wrapped/invalid interval
-            }
-            if (invalid_reason == 0) {
-                // GPU raw ticks are never placed on the host monotonic clock.
-                iss::timeline::Emit("gpu_session_valid", reinterpret_cast<u64>(this),
-                                    session.tick, raw_start, raw_end,
-                                    static_cast<u64>(prof.period_ns * 1000.0), prof.valid_mask);
-            } else {
-                iss::timeline::Emit("gpu_session_invalid", reinterpret_cast<u64>(this),
-                                    session.tick, invalid_reason, session.count,
-                                    session.begin, session.end);
-            }
-        }
         if (valid && session.begin != GpuProfile::NoQuery && session.end != GpuProfile::NoQuery) {
             const u64 start = stamp(session.begin);
             const u64 end = stamp(session.end);
@@ -1322,10 +1203,7 @@ bool DynamicState::BindCache::SkipPush(vk::PipelineLayout layout, vk::ShaderStag
 std::optional<u32> DynamicState::BindCache::SelectDescriptorDeltas(
     vk::PipelineBindPoint bind_point, vk::PipelineLayout layout, u32 set,
     std::span<const vk::WriteDescriptorSet> writes, std::span<u8> selected) noexcept {
-    static const bool enabled = [] {
-        const char* flag = std::getenv("ISS_DESCRIPTOR_DELTAS");
-        return flag && flag[0] == '1';
-    }();
+    static const bool enabled = false;
     if (!enabled) return std::nullopt;
     if (bind_point != vk::PipelineBindPoint::eGraphics &&
         bind_point != vk::PipelineBindPoint::eCompute) return std::nullopt;

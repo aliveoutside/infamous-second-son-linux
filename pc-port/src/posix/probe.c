@@ -67,24 +67,8 @@ static void *low_allocate(size_t size, int mode) {
 }
 
 // Faults of a signal: page tracking of the renderer first, then import traps and guest crashes.
-static uintptr_t step_ring[64];
-static unsigned step_count;
 static void fault(int signal_number, siginfo_t *info, void *context) {
     ucontext_t *uc = context;
-    if (signal_number == SIGTRAP && info->si_code == 2) {
-        const uintptr_t at = (uintptr_t)uc->uc_mcontext.gregs[REG_RIP];
-        static uintptr_t slot, expected, watch_rip, previous;
-        static int armed = -1;
-        if (armed < 0) { armed = getenv("ISS_WATCH_RIP") != NULL; if (armed) watch_rip = strtoull(getenv("ISS_WATCH_RIP"), NULL, 16); }
-        if (armed == 1 && at == watch_rip) { slot = (uintptr_t)uc->uc_mcontext.gregs[REG_RSP]; expected = *(uintptr_t *)slot; }
-        if (slot && *(uintptr_t *)slot != expected) {
-            fprintf(stderr, "WATCH slot %lx changed %lx -> %lx after rip %lx (now %lx)\n", slot, expected, *(uintptr_t *)slot, previous, at);
-            expected = *(uintptr_t *)slot;
-        }
-        previous = at;
-        step_ring[step_count++ & 63] = at;
-        return;
-    }
     uintptr_t rip = (uintptr_t)uc->uc_mcontext.gregs[REG_RIP];
     if (signal_number == SIGSEGV && gpu_handle_fault(context, info->si_addr)) return;
     uintptr_t address = rip, accessed = 0;
@@ -129,35 +113,6 @@ static void fault(int signal_number, siginfo_t *info, void *context) {
     printf("\"rdi\":\"0x%llx\",\"rsi\":\"0x%llx\"}\n",
            (unsigned long long)uc->uc_mcontext.gregs[REG_RDI], (unsigned long long)uc->uc_mcontext.gregs[REG_RSI]);
     fflush(stdout);
-    if (step_count) {
-        fprintf(stderr, "LAST STEPS of %u:", step_count);
-        for (unsigned k = step_count > 64 ? step_count - 64 : 0; k < step_count; ++k) fprintf(stderr, " %lx", (unsigned long)step_ring[k & 63]);
-        fprintf(stderr, "\n");
-    }
-    if (getenv("ISS_FAULT_DUMP")) {
-        fprintf(stderr, "FAULT si_addr=%p code=%d\n", info->si_addr, info->si_code);
-        if (address < (uintptr_t)image || address - (uintptr_t)image >= image_size) {
-            // A host library: its unwind tables reach through the signal frame.
-            void *frames[48];
-            backtrace_symbols_fd(frames, backtrace(frames, 48), 2);
-        }
-        for (int r = 0; r < 23; ++r) fprintf(stderr, "  greg[%d]=%llx\n", r, (unsigned long long)uc->uc_mcontext.gregs[r]);
-        for (int q = 0; q < 16 && sp > 4096; ++q) fprintf(stderr, "  [rsp+%d]=%llx\n", q * 8, (unsigned long long)((uint64_t *)sp)[q]);
-        if (caller > 0x10000000 && caller < 0xf0000000) {
-            fprintf(stderr, "CODE before caller:");
-            for (int b = -48; b < 8; ++b) fprintf(stderr, " %02x", ((unsigned char *)caller)[b]);
-            fprintf(stderr, "\n");
-        }
-        if (getenv("ISS_DUMP_ADDR")) {
-            unsigned char *at = (unsigned char *)strtoull(getenv("ISS_DUMP_ADDR"), NULL, 16);
-            fprintf(stderr, "DUMP %p:", at);
-            for (int b = 0; b < 96; ++b) fprintf(stderr, " %02x", at[b]);
-            fprintf(stderr, "\n");
-        }
-        FILE *maps = fopen("/proc/self/maps", "r");
-        char line[256];
-        while (maps && fgets(line, sizeof(line), maps)) fputs(line, stderr);
-    }
     // A fatal diagnostic trap cannot unwind concurrent guest/GPU workers safely.
     _exit(exit_code);
 }
@@ -317,7 +272,6 @@ int main(int argc, char **argv) {
             printf("Starting native module %llu at +0x%llx\n", (unsigned long long)m, (unsigned long long)modules[m].init);
             fflush(stdout);
             typedef int (GUEST_ABI *ModuleInit)(uint64_t, void *, void *);
-            if (getenv("ISS_STEP_TRACE")) __asm__ volatile("pushfq; orq $0x100, (%%rsp); popfq" ::: "memory", "cc");
             int result = ((ModuleInit)(image + modules[m].init))(0, NULL, NULL);
             printf("Native module %llu initializer returned %d\n", (unsigned long long)m, result);
             if (result) fail("module initializer failed");
@@ -325,12 +279,6 @@ int main(int argc, char **argv) {
     }
     phase = "guest_entry";
     active_module = UINT64_MAX;
-    if(linked&&getenv("ISS_CHECK_SAVE_NAMES")){
-        // Read-only diagnostic of this identity-gated eboot, verified in Ghidra.
-        typedef int (GUEST_ABI *SlotIndex)(const char *);
-        SlotIndex slot_index=(SlotIndex)(image+0x1e50a0);
-        printf("SAVE_NATIVE_INDEX auto0=%d auto1=%d user0=%d\n",slot_index("infamousssAuto0"),slot_index("infamousssAuto1"),slot_index("infamousssUser0"));
-    }
     struct { uint64_t count; const char *args[2]; } guest_args = {1, {"/app0/eboot.bin", NULL}};
     puts("Entering original x86-64 eboot; unresolved imports remain diagnostic traps.");
     fflush(stdout);

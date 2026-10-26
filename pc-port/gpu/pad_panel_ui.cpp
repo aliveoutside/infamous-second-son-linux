@@ -41,7 +41,6 @@ struct State {
     uint32_t buttons = 0; // mouse buttons and triggers down at the last frame, for the first press
     State() {
         out.swipe = out.mode = out.hints = -1; out.sensitivity = 1;
-        if (const char* p = std::getenv("ISS_PAD_PANEL")) shown = p[0] == '1'; // starts open (checks and screenshots)
         if (const char* h = std::getenv("ISS_HINTS")) hints = !std::strcmp(h, "always") ? 1 : !std::strcmp(h, "off") ? 2 : 0;
     }
 };
@@ -284,8 +283,7 @@ void EnterMode(State& s, int kind) {
     }
 }
 const char* hold_key() {
-    const char* name = std::getenv("ISS_TOUCHPAD_HOLD_KEY");
-    return name && *name ? name : "Left Alt";
+    return "Left Alt";
 }
 // A small label at the top or bottom centre: the mode, and how to leave it.
 void DrawChip(float width, float height, bool top, const char* text) {

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// ISS_NATIVE_GBUFFER: the engine side (native_gbuffer.h). Runs on the engine's threads.
+// The engine side (native_gbuffer.h). Runs on the engine's threads.
 #include "native_gbuffer.h"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -298,7 +298,7 @@ bool Scan(Batch& b, const u32* first, const u32* end) {
 }
 
 
-// ISS_NATIVE_RECORDER: what each command buffer of the engine wrote since its last baseline
+// What each command buffer of the engine wrote since its last baseline
 // (native_gbuffer.h, RangeStart). A command buffer is written by one thread at a time; the
 // table of them is shared because a job may continue one on another thread.
 RecordFn recorder{};
@@ -479,14 +479,11 @@ Track* FindTrack(CommandBuffer* dcb) {
     return it != tracks.end() ? it->second.get() : nullptr;
 }
 
-// ISS_NATIVE_GBUFFER_SEGMENTS=1 (with the recorder's chunk wrapper): a range that continues
+// A range that continues
 // into the next chunk of its command buffer is split there, one marked range per chunk (the
 // long item by item ranges otherwise cross chunks and are all left to interpretation).
 bool SegmentsEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_NATIVE_GBUFFER_SEGMENTS");
-        return value && value[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 struct OpenRange {
@@ -542,12 +539,9 @@ Track* Follow(CommandBuffer* dcb, u64 technique) {
         std::scoped_lock lock{tracks_mutex};
         t = (tracks[dcb] = std::make_unique<Track>()).get();
     }
-    // ISS_NATIVE_RECORDER_WRAP=1: the engine's chunk callback is wrapped so that a chunk's end
+    // The engine's chunk callback is wrapped so that a chunk's end
     // is applied before it is left; otherwise a new chunk starts again from the baseline.
-    static const bool wrap = [] {
-        const char* value = std::getenv("ISS_NATIVE_RECORDER_WRAP");
-        return value && value[0] == '1';
-    }();
+    static const bool wrap = false;
     const bool wrapped = dcb->reserve == &ReserveWrapper;
     const bool continuous = (wrapped || !wrap) && t->begin == dcb->begin &&
                             t->scanned >= dcb->begin && t->scanned <= dcb->cursor;
@@ -587,7 +581,7 @@ Track* Follow(CommandBuffer* dcb, u64 technique) {
     return t;
 }
 
-// ISS_ITEM_PATH_CENSUS: whether an item draw runs inside a hooked range call.
+// Whether an item draw runs inside a hooked range call.
 thread_local u32 in_range_hook = 0;
 struct RangeHookScope {
     RangeHookScope() { ++in_range_hook; }
@@ -604,13 +598,10 @@ u64 ISS_SYSV RangeHook(u64 technique, u64* args) {
     }
     const auto* t = reinterpret_cast<const u8*>(technique);
     // technique+0x1F clear: item by item (0x1A1960); +0x124: the doubled draw with altered state.
-    static const bool item_path = [] {
-        const char* value = std::getenv("ISS_NATIVE_ITEM_PATH");
-        return value && value[0] == '1';
-    }();
+    static const bool item_path = false;
     if (t[0x1F] == 0) {
         s.item_path.fetch_add(1, std::memory_order_relaxed);
-        // ISS_NATIVE_ITEM_PATH=1: item by item ranges too (their packets are checked the same).
+        // Item by item ranges too (their packets are checked the same).
         if (!item_path) return original(technique, args);
     }
     if (t[0x124] != 0) {
@@ -701,26 +692,17 @@ void FinishRange(u32* marker, u32 generation, const u32* cursor, u32* chunk_begi
 } // namespace
 
 bool Enabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_NATIVE_GBUFFER");
-        return value && value[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 
 bool RecorderEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_NATIVE_RECORDER");
-        return Enabled() && value && value[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 
 void SetRecorder(RecordFn fn, LinkFn link) {
-    static const bool chains = [] {
-        const char* value = std::getenv("ISS_NATIVE_RECORDER_CHAINS");
-        return !value || value[0] != '0';
-    }();
+    static const bool chains = true;
     linker = RecorderEnabled() && chains ? link : nullptr;
     recorder = RecorderEnabled() ? fn : nullptr;
 }
@@ -738,10 +720,7 @@ void PublishBaseline(const u32* reg_array, u32 index_type, u32 instances) {
 }
 
 bool TechStartEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_NATIVE_RECORDER_TECH_START");
-        return value && value[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 
@@ -779,7 +758,7 @@ u32 LatestGeneration() {
     return next_generation.load(std::memory_order_relaxed);
 }
 
-// ISS_ITEM_PATH_CENSUS=1 (diagnosis): who calls the engine's item by item draw (eboot 0x1A1960,
+// Who calls the engine's item by item draw (eboot 0x1A1960,
 // tech, ctx, item), by exact return address and technique vtable.
 namespace {
 using ItemDraw = u64(ISS_SYSV*)(u64 technique, u64 ctx, u64 item);
@@ -845,12 +824,6 @@ void* PatchPrologue(u64 base, u64 offset, const void* hook) {
 
 int Install(u64 base) {
     if (!Enabled()) return 0;
-    if (const char* census = std::getenv("ISS_ITEM_PATH_CENSUS"); census && census[0] == '1') {
-        image_base = base;
-        item_original = reinterpret_cast<ItemDraw>(
-            PatchPrologue(base, 0x1A1960, reinterpret_cast<const void*>(&ItemCensusHook)));
-        std::fprintf(stderr, "ITEM_PATH_CENSUS %s\n", item_original ? "installed" : "refused");
-    }
     auto* code = reinterpret_cast<unsigned char*>(base + RoutineOffset);
     if (std::memcmp(code, Prologue, sizeof(Prologue)) != 0) {
         std::fprintf(stderr, "NATIVE_GBUFFER rejected: eboot+0x%llx prologue mismatch\n",
@@ -859,13 +832,7 @@ int Install(u64 base) {
     }
     image_base = base;
     slots = std::make_unique<Batch[]>(SlotCount);
-    if (const char* value = std::getenv("ISS_NATIVE_ALL_TECHNIQUES")) all_techniques = value[0] == '1';
-    // Engine draw markers only feed diagnostics unless the native item path reads them.
-    const auto flag = [](const char* name) {
-        const char* value = std::getenv(name);
-        return value && value[0] == '1';
-    };
-    allow_engine_markers = !flag("ISS_NATIVE_ITEMS") && !flag("ISS_NATIVE_VERIFY");
+    allow_engine_markers = true;
     const auto refuse = [](const char* step) {
         std::fprintf(stderr, "NATIVE_GBUFFER rejected: %s failed (error %lu)\n", step, GetLastError());
         return -1;

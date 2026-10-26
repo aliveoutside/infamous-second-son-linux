@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Included in namespace Vulkan, after native_visual_probe.inl.
 //
-// ISS_NATIVE_DEPTH_RUN=1 (with ISS_NATIVE_INSTANCED_FEATURE=1 for drawIndirectFirstInstance): a
+// A
 // run of the city's instanced depth family (VS C01162F7/47B0694B, PS 1318DDD4 without resources)
 // is recorded as one indexed indirect draw instead of one translated draw per packet.
 //
@@ -18,7 +18,7 @@
 // A draw whose resolution would change anything else (an upload, a recorded write, another
 // command buffer) ends the run before it; its packets are interpreted as usual.
 //
-// ISS_NATIVE_DEPTH_RUN_VERIFY=1 (benchmarks; draws only into private copies): sampled runs are also drawn into
+// Sampled runs are also drawn into
 // private copies of their targets twice, draw by draw with separately copied records and the
 // separate bindings, then as the indirect draw. The target bytes must be identical.
 
@@ -83,7 +83,7 @@ constexpr std::array<const char*, ModeCount> mode_tags{
     "NATIVE_DEPTH_RUN_PAIR_REF", "NATIVE_DEPTH_RUN_PAIR_INDIRECT", "NATIVE_DEPTH_RUN_PAIR_DIRECT_MERGED",
     "NATIVE_DEPTH_RUN_PAIR_DIRECT_SEPARATE_GEOMETRY"};
 static bool DiagEnabled() {
-    static const bool enabled = iss::native_item::Flag("ISS_NATIVE_DEPTH_RUN_DIAG");
+    static constexpr bool enabled = false;
     return enabled;
 }
 static u64& VerifyRuns() {
@@ -92,7 +92,7 @@ static u64& VerifyRuns() {
 }
 static bool VerifyEnabled() {
     // Draws only into private copies: the visible frame is unchanged (allowed visible).
-    static const bool enabled = iss::native_item::Flag("ISS_NATIVE_DEPTH_RUN_VERIFY");
+    static constexpr bool enabled = false;
     return enabled;
 }
 static std::shared_ptr<NativeVisual::State> VerifyState(u32 mode = ModeIndirect) {
@@ -106,13 +106,7 @@ static std::shared_ptr<NativeVisual::State> VerifyState(u32 mode = ModeIndirect)
 } // namespace NativeDepthRun
 
 bool Rasterizer::NativeDepthRunEnabled() noexcept {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_NATIVE_DEPTH_RUN");
-        const bool on = value && value[0] == '1';
-        std::fprintf(stderr, "PORT_TUNING native_depth_run=%d\n", on ? 1 : 0);
-        return on;
-    }();
-    return enabled;
+    return false;
 }
 
 const GraphicsPipeline* Rasterizer::DepthRunCandidate() {
@@ -156,7 +150,7 @@ std::size_t Rasterizer::TryNativeDepthRun(const GraphicsPipeline* pipeline,
         caps_owner = &instance;
     }
     if (cp_split_enabled || draw_pipe_state || OnDrawWorker() || DrawQueue() != 0 ||
-        iss::command_trace::enabled || IsDumping() || host_markers_enabled ||
+        IsDumping() || host_markers_enabled ||
         guest_markers_enabled || GpuCrashDiag::Enabled() || EmulatorSettings.IsPatchShaders() ||
         occlusion.HasOpen() || buffer_cache.HasComputeQueue() ||
         !instance.IsVertexInputDynamicState() || scheduler.HasPriorPendingOperations() ||
@@ -421,8 +415,8 @@ std::size_t Rasterizer::TryNativeDepthRun(const GraphicsPipeline* pipeline,
     if (!keep_vertex_input) cmdbuf.setVertexInputEXT(bindings, attributes);
     // Recorded: each draw's own geometry bindings and a direct draw, the records shared through
     // one descriptor and firstInstance (verified identical to the draw by draw reference; shared
-    // geometry offsets in the arena drew nothing, see evidence). ISS_NATIVE_DEPTH_RUN_DIAG=1
-    // (with VERIFY): the real targets get the reference; every mode is compared with it.
+    // geometry offsets in the arena drew nothing, see evidence). With the verification below,
+    // the real targets get the reference; every mode is compared with it.
     const bool diag = VerifyEnabled() && DiagEnabled();
     if (VerifyEnabled() && (++VerifyRuns() & 15) == 0) {
         for (u32 mode = ModeIndirect; mode < ModeCount; ++mode) {
@@ -467,7 +461,6 @@ std::size_t Rasterizer::TryNativeDepthRun(const GraphicsPipeline* pipeline,
     else fast_draw.valid = false;
     for (std::size_t i = 0; i < draws.size(); ++i) {
         DebugState.IncDrawCall();
-        iss::feedback_join::Recorded();
     }
     ++stats.runs;
     stats.draws += draws.size();

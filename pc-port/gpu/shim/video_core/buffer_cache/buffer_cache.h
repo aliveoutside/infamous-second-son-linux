@@ -21,7 +21,6 @@
 #include "common/interval_set.h"
 #include "common/types.h"
 #include "video_core/buffer_cache/buffer.h"
-#include "video_core/buffer_cache/feedback_writer_probe.h"
 #include "video_core/buffer_cache/fault_manager.h"
 #include "video_core/buffer_cache/range_set.h"
 #include "video_core/buffer_cache/region_definitions.h"
@@ -66,20 +65,14 @@ struct QueueContext {
 /// (0x6042bbde, 0x1201d207: descriptor 2, 16-bit texel buffer, indexed by a vertex attribute)
 /// describe a small global table with num_records reaching the end of the GPU heap: 2.5 GB in
 /// garlic and 540 MB in onion. Bound whole, the arena made all of it resident: 3 GB of VRAM
-/// (RTX 2060, 2026-10-22). Bindings above ISS_HUGE_READ_LIMIT_MB (default 1024) are cut to
-/// ISS_HUGE_READ_WINDOW_MB (default 64: 32M 16-bit entries); reads past it return zero (robust
+/// (RTX 2060, 2026-10-22). Bindings above 1 GB are cut to a 64 MB window (32M 16-bit entries);
+/// reads past it return zero (robust
 /// buffer access). The onion one stays whole: its residency is what lets the native paths find
 /// the per-frame buffers there (cut too, they missed 93% of their draws: 48 -> 33 fps).
 inline u64 ClampHugeRead(u64 size, bool written) {
-    static const u64 window = [] {
-        const char* p = std::getenv("ISS_HUGE_READ_WINDOW_MB");
-        return u64(p ? std::strtoull(p, nullptr, 10) : 64) << 20;
-    }();
-    static const u64 limit = [] {
-        const char* p = std::getenv("ISS_HUGE_READ_LIMIT_MB");
-        return u64(p ? std::strtoull(p, nullptr, 10) : 1024) << 20;
-    }();
-    return !written && window != 0 && size > limit && size > window ? window : size;
+    constexpr u64 window = 64 << 20;
+    constexpr u64 limit = 1024 << 20;
+    return !written && size > limit ? window : size;
 }
 
 class BufferCache {
@@ -208,20 +201,6 @@ public:
     [[nodiscard]] const QueueContext& ActiveQueue() const noexcept {
         return *ActiveQueuePtr();
     }
-    // Stage 2 diagnostic identity. The caller restores the previous value after a serial scope.
-    struct SerialProducerIdentity {
-        iss::g4::CpOwner owner{iss::g4::CpOwner::Graphics};
-        u32 qid{};
-        u64 generation{};
-    };
-    SerialProducerIdentity SetSerialProducerIdentity(iss::g4::CpOwner owner, u32 qid,
-                                                      u64 generation) noexcept {
-        return std::exchange(serial_producer_identity, {owner, qid, generation});
-    }
-    void RestoreSerialProducerIdentity(SerialProducerIdentity previous) noexcept {
-        serial_producer_identity = previous;
-    }
-
     [[nodiscard]] bool OnComputeQueue() const noexcept {
         return ActiveQueuePtr()->index != 0;
     }
@@ -281,7 +260,7 @@ public:
     [[nodiscard]] bool IsUnified(VAddr address, u64 size) const noexcept {
         return address >= unified_base && size != 0 && address + size <= unified_end;
     }
-    /// ISS_NATIVE_RECORDER: the imported heap's buffer and guest base (null before import).
+    /// The imported heap's buffer and guest base (null before import).
     [[nodiscard]] const Buffer* UnifiedBuffer() const noexcept {
         return unified_buffer.get();
     }
@@ -340,7 +319,7 @@ public:
     /// Attempts to obtain a buffer without modifying the cache contents.
     [[nodiscard]] std::pair<const Buffer*, u64> ObtainBufferForImage(VAddr device_addr, u32 size);
 
-    /// ISS_NATIVE_PASSES_SYNC_READS: a read of a native segment, recorded where its arena has it,
+    /// A read of a native segment, recorded where its arena has it,
     /// whose pages the CPU wrote since: the guest data uploaded in place (as ObtainBuffer does for
     /// ranges it does not stream), returns where the range is now.
     [[nodiscard]] std::pair<const Buffer*, u64> SyncReadInPlace(VAddr device_addr, u32 size);
@@ -664,8 +643,6 @@ private:
     Core::MemoryManager* memory;
     TextureCache& texture_cache;
     std::unique_ptr<MemoryTracker> memory_tracker;
-    SerialProducerIdentity serial_producer_identity{};
-    FeedbackWriterProbe feedback_writer_probe{}; // passive, opt-in only
     iss::g4::ReadbackWriterLedger<> readback_writers{}; // under coherence_mutex
 
     StreamBuffer stream_buffer;
@@ -684,7 +661,7 @@ private:
     void SubtractGpuRange(VAddr address, u64 size);
     void SubtractGpuRangeIfUnchanged(VAddr address, u64 size, u64 write_generation);
     [[nodiscard]] u64 PublishGpuWrite(VAddr address, u64 size, u64 tick, u32 queue);
-    /// ISS_PUBLISH_REPEAT_SKIP: the last publishes (under coherence_mutex), and how many times
+    /// The last publishes (under coherence_mutex), and how many times
     /// ranges were subtracted from gpu_modified_ranges (a memo entry is only valid without one).
     struct PublishMemo {
         VAddr address;
@@ -694,7 +671,7 @@ private:
     };
     std::array<PublishMemo, 256> publish_memo{};
     u64 gpu_ranges_subtracts{};
-    /// ISS_PREFETCH_PER_SUBMIT: the tick of the last readback prefetch scan.
+    /// The tick of the last readback prefetch scan.
     u64 prefetch_scan_tick{~0ULL};
     RangeSet pending_download_ranges; ///< readback_keep_ranges: downloads in flight.
     std::deque<PendingReadback> pending_readbacks;

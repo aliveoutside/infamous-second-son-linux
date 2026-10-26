@@ -61,7 +61,7 @@ int main(void) {
     CHECK(settings_save((const char (*)[SETTINGS_VALUE_SIZE])values) == 0);
     FILE *f = fopen(path, "a");
     CHECK(f != NULL);
-    if (f) { fputs("ISS_GPU_PROFILE = \"1\"\n", f); fclose(f); }
+    if (f) { fputs("[developer]\nISS_GPU_PROFILE = \"1\"\n", f); fclose(f); }
 
     strcpy(values[resolution], "2560x1080");
     CHECK(settings_save((const char (*)[SETTINGS_VALUE_SIZE])values) == 0);
@@ -73,13 +73,10 @@ int main(void) {
     // The developer line is kept once, the header once.
     f = fopen(path, "r");
     char line[4096];
-    int developer = 0, headers = 0;
-    while (f && fgets(line, sizeof(line), f)) {
-        developer += !strcmp(line, "ISS_GPU_PROFILE = \"1\"\n");
-        headers += !strncmp(line, "[developer]", 11);
-    }
+    int developer = 0;
+    while (f && fgets(line, sizeof(line), f)) developer += !strncmp(line, "[developer]", 11) || !strncmp(line, "ISS_", 4);
     if (f) fclose(f);
-    CHECK(developer == 1 && headers == 1);
+    CHECK(developer == 0);
 
     unlink(path);
     snprintf(path, sizeof(path), "%s/sub", dir);

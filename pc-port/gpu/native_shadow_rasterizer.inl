@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Included in namespace Vulkan, after native_depth_run.inl.
 //
-// ISS_NATIVE_SHADOW=1 (native_shadow.h): the draws of an engine shadow batch, recorded from the
+// The draws of an engine shadow batch, recorded from the
 // batch instead of interpreting their packets.
 //
 // A draw's render state is everything the range's registers make of it: the registers before
@@ -48,7 +48,7 @@ static u32& LastRejectedShape() { static u32 state = ~0u; return state; }
 struct SuffixViewRequest { const ns::Batch* batch{}; u32 first{}; };
 static thread_local SuffixViewRequest suffix_view_request;
 static bool SuffixViewEnabled() {
-    static const bool enabled = iss::native_item::Flag("ISS_NATIVE_SHADOW_SUFFIX_VIEW");
+    static constexpr bool enabled = false;
     return enabled;
 }
 static std::span<const ns::Draw> ExecutionDraws(const ns::Batch& batch) {
@@ -63,14 +63,14 @@ struct MemoStats {
     bool have_previous{};
 };
 static bool MemoStatsEnabled() {
-    static const bool enabled = iss::native_item::Flag("ISS_NATIVE_SHADOW_STATS");
+    static constexpr bool enabled = false;
     return enabled;
 }
 struct CostTrace {
     enum PhaseId { Lookup, Resolve, Copy, Setup, Record, Count };
     struct Totals { u64 calls{}, draws{}, ticks[Count]{}; };
     static bool Enabled() {
-        static const bool enabled = iss::native_item::Flag("ISS_NATIVE_SHADOW_COST");
+        static constexpr bool enabled = false;
         return enabled;
     }
     static Totals& Stats() { static Totals stats; return stats; }
@@ -146,19 +146,19 @@ struct GroupDraw {
     vk::DeviceSize indirect_offset{};
 };
 static bool GroupEnabled() {
-    static const bool enabled = iss::native_item::Flag("ISS_NATIVE_SHADOW_GROUP");
+    static constexpr bool enabled = false;
     return enabled;
 }
 static bool SplitEnabled() {
-    static const bool enabled = iss::native_item::Flag("ISS_NATIVE_SHADOW_SPLIT");
+    static constexpr bool enabled = false;
     return enabled;
 }
 static bool RecordGroupEnabled() {
-    static const bool enabled = iss::native_item::Flag("ISS_NATIVE_SHADOW_RECORD_GROUP");
+    static constexpr bool enabled = false;
     return enabled;
 }
 static bool IndirectGroupEnabled() {
-    static const bool enabled = iss::native_item::Flag("ISS_NATIVE_SHADOW_INDIRECT");
+    static constexpr bool enabled = false;
     return enabled;
 }
 static void NoteGroup(u32 count, bool queued) {
@@ -208,7 +208,7 @@ static bool InactiveShadowUser(u32 reg) {
     // ShapeOk admits only PS with zero user SGPRs and VS with at most eight.
     return (reg >= 0x2C0C && reg < 0x2C1C) || (reg >= 0x2C54 && reg < 0x2C5C);
 }
-// ISS_NATIVE_SHADOW_LOOSE_KEY=1: words that differ per object but never select the pipeline
+// Words that differ per object but never select the pipeline
 // leave the memo key. VS user data 0/1: the audited shape reads its user data only as the fetch
 // list pointer (2/3) and the SSBO sharp (4..7), with no flattened user data buffer, so 0/1 reach
 // no descriptor and no specialization. The context registers the fast draw path classifies as
@@ -217,7 +217,7 @@ static bool InactiveShadowUser(u32 reg) {
 // setup and state change, read by no pipeline key. Without this, moving through the city gives
 // every range new keys (the memo fills and is cleared over and over, the ranges are interpreted).
 static bool LooseKeyEnabled() {
-    static const bool enabled = iss::native_item::Flag("ISS_NATIVE_SHADOW_LOOSE_KEY");
+    static constexpr bool enabled = false;
     return enabled;
 }
 static bool LooseKeyReg(u32 reg) {
@@ -227,7 +227,7 @@ static bool LooseKeyReg(u32 reg) {
 }
 
 static bool EquivalentStateEnabled() {
-    static const bool enabled = iss::native_item::Flag("ISS_NATIVE_SHADOW_EQUIVALENT_STATE");
+    static constexpr bool enabled = false;
     return enabled;
 }
 static bool EquivalentState(const ns::Batch& b, u32 left, u32 right, const u32* entry) {
@@ -243,7 +243,7 @@ static bool EquivalentState(const ns::Batch& b, u32 left, u32 right, const u32* 
     return true;
 }
 static bool ResourceReuseEnabled() {
-    static const bool enabled = iss::native_item::Flag("ISS_NATIVE_SHADOW_RESOURCE_REUSE");
+    static constexpr bool enabled = false;
     return enabled;
 }
 static bool EquivalentResources(const ns::Batch& b, u32 left, u32 right, const u32* entry) {
@@ -323,7 +323,7 @@ static u64 StateKey(const ns::Batch& b, u64 begin_hash, Value&& value) {
     return XXH3_64bits_withSeed(words.data(), 2 * n * sizeof(u32), begin_hash) | 1;
 }
 
-// The audited shape (as ISS_NATIVE_DEPTH_RUN): VS and PS only, one fetch attribute at user
+// The audited shape (as the instanced depth run): VS and PS only, one fetch attribute at user
 // data 2, SSBO0 read only at user data 4 and the clip planes, nothing in the PS.
 static bool ShapeOk(const GraphicsPipeline& pipeline, const AmdGpu::Regs& regs) {
     if (regs.reg_array[0xA003] & 0x78000000u) return false;
@@ -358,12 +358,12 @@ static bool ShapeOk(const GraphicsPipeline& pipeline, const AmdGpu::Regs& regs) 
     return vertex_offset == 0 && instance_offset == 0;
 }
 
-// ISS_NATIVE_SHADOW_VERIFY=1 with ISS_NATIVE_SHADOW_VERIFY_DIR (benchmarks; the visible frame
+// Verification with a directory to compare into (benchmarks; the visible frame
 // is the translated one): a sampled range is recorded from the batch into private copies of its
 // targets, then interpreted as usual into the real targets; both results, from the same
 // starting bytes, must be identical (NativeVisual::Complete: before, reference, native).
 static bool VerifyEnabled() {
-    static const bool enabled = iss::native_item::Flag("ISS_NATIVE_SHADOW_VERIFY");
+    static constexpr bool enabled = false;
     return enabled;
 }
 static std::shared_ptr<NativeVisual::State> VerifyState() {
@@ -387,8 +387,8 @@ static Verify& PendingVerify() {
 std::optional<RenderState> Rasterizer::NativeShadowVerifyStart(const RenderState& render) {
     using namespace NativeVisual;
     const auto state = NativeShadow::VerifyState();
-    const auto* output = std::getenv("ISS_NATIVE_SHADOW_VERIFY_DIR");
-    if (!output || !*output || g_iss_frame.load(std::memory_order_relaxed) < 1200 ||
+    const char* output = nullptr; // no verification run without a directory to compare into
+    if (g_iss_frame.load(std::memory_order_relaxed) < 1200 ||
         render.num_layers != 1 || render.num_color_attachments > 8 || attachment_feedback_loop ||
         render.width > 4096 || render.height > 4096 ||
         state->pending.load(std::memory_order_acquire) || state->failed.load() ||
@@ -669,7 +669,6 @@ void Rasterizer::NativeShadowAfterDraw(u32 draw) {
 }
 
 u32 Rasterizer::NativeShadowExecute(const iss::native_shadow::Batch& b) {
-    const iss::cp_path::Scope cp_path_scope{iss::cp_path::ShadowNative};
     using namespace NativeShadow;
     LastRejectedShape() = ~0u;
     CostTrace cost;
@@ -679,7 +678,7 @@ u32 Rasterizer::NativeShadowExecute(const iss::native_shadow::Batch& b) {
     if (!n) return 0;
     if (cost.enabled) CostTrace::Stats().draws += n;
     if (cp_split_enabled || draw_pipe_state || OnDrawWorker() || DrawQueue() != 0 ||
-        iss::command_trace::enabled || IsDumping() || host_markers_enabled ||
+        IsDumping() || host_markers_enabled ||
         guest_markers_enabled || GpuCrashDiag::Enabled() || EmulatorSettings.IsPatchShaders() ||
         occlusion.HasOpen() || buffer_cache.HasComputeQueue() ||
         !instance.IsVertexInputDynamicState()) {
@@ -687,8 +686,7 @@ u32 Rasterizer::NativeShadowExecute(const iss::native_shadow::Batch& b) {
         return 0;
     }
     auto& regs = DrawRegs();
-    static const bool suffix_hash = iss::native_item::Flag("ISS_NATIVE_SHADOW_SUFFIX_HASH");
-    static const bool suffix_hash_check = iss::native_item::Flag("ISS_NATIVE_SHADOW_SUFFIX_HASH_CHECK");
+    static constexpr bool suffix_hash = false;
     static bool suffix_hash_rejected{};
     static u64 suffix_hash_hits{}, suffix_hash_checks{}, suffix_hash_mismatches{};
     // The learner is reset at every marker/end. Reuse only within that active
@@ -698,15 +696,6 @@ u32 Rasterizer::NativeShadowExecute(const iss::native_shadow::Batch& b) {
     u64 begin_hash = reuse_hash ? shadow_learn.begin_hash : BeginHash(regs, b);
     if (reuse_hash) {
         ++suffix_hash_hits;
-        if (suffix_hash_check) {
-            ++suffix_hash_checks;
-            const u64 reference = BeginHash(regs, b);
-            if (reference != begin_hash) {
-                ++suffix_hash_mismatches;
-                suffix_hash_rejected = true;
-                begin_hash = reference;
-            }
-        }
         if ((suffix_hash_hits & 16383) == 1 || suffix_hash_rejected)
             std::fprintf(stderr, "NATIVE_SHADOW_SUFFIX_HASH hits=%llu checks=%llu mismatches=%llu disabled=%u\n",
                          suffix_hash_hits, suffix_hash_checks, suffix_hash_mismatches,
@@ -777,8 +766,7 @@ u32 Rasterizer::NativeShadowExecute(const iss::native_shadow::Batch& b) {
     const u64 tick = scheduler.CurrentTick();
     const bool reuse_check =
         Common::Perf::GetTuning().reuse_buffer_checks.load(std::memory_order_relaxed);
-    static const bool geometry_reuse_flag = iss::native_item::Flag("ISS_NATIVE_SHADOW_GEOMETRY_REUSE");
-    static const bool geometry_verify = iss::native_item::Flag("ISS_NATIVE_SHADOW_GEOMETRY_VERIFY");
+    static constexpr bool geometry_reuse_flag = false;
     const bool geometry_reuse = geometry_reuse_flag && StageMemoContextEligible();
     struct GeometryEntry {
         const Rasterizer* owner{};
@@ -815,15 +803,6 @@ u32 Rasterizer::NativeShadowExecute(const iss::native_shadow::Batch& b) {
             ++geometry_hits;
             unwritten = entry.unwritten;
             result = {entry.buffer, entry.offset};
-            if (geometry_verify) {
-                ++geometry_checks;
-                const bool expected_unwritten = unwritten;
-                unwritten = false;
-                const auto reference = obtain();
-                if (reference != result || unwritten != expected_unwritten) ++geometry_mismatches;
-                result = reference;
-                if (geometry_stamp() != before) entry.buffer = nullptr;
-            }
         } else {
             ++geometry_misses;
             result = obtain();
@@ -994,11 +973,11 @@ u32 Rasterizer::NativeShadowExecute(const iss::native_shadow::Batch& b) {
                 return false;
         }
         const auto target_count = bound_images.size();
-        static const bool direct_resources = iss::native_item::Flag("ISS_NATIVE_SHADOW_DIRECT_RESOURCES");
-        static const bool check_resources = iss::native_item::Flag("ISS_NATIVE_SHADOW_DIRECT_RESOURCES_CHECK");
+        static constexpr bool direct_resources = false;
+        static constexpr bool check_resources = false;
         static bool direct_resources_rejected{};
         static u64 direct_setups{}, checked_setups{}, resource_mismatches{}, resource_calls{};
-        bool direct = direct_resources && !direct_resources_rejected && !iss::hazard_probe::Enabled();
+        bool direct = direct_resources && !direct_resources_rejected;
         bool resource_mismatch = false;
         const bool generic = !direct || check_resources;
         if (generic && (!BindResources(pipeline) || bound_images.size() != target_count)) return false;
@@ -1033,7 +1012,6 @@ u32 Rasterizer::NativeShadowExecute(const iss::native_shadow::Batch& b) {
         }
         if (direct) {
             if (!generic) {
-                iss::feedback_join::BeginBindings();
                 ++bind_resources_seq;
             }
             // ShapeOk admits precisely one read-only SSBO and disabled clip
@@ -1173,8 +1151,7 @@ u32 Rasterizer::NativeShadowExecute(const iss::native_shadow::Batch& b) {
                 cmd.drawIndexed(draw.index_count, draw.instances, 0, 0, first_instance);
             }
             DebugState.IncDrawCall();
-            iss::feedback_join::Recorded();
-            ++recorded;
+                ++recorded;
         }
         if (!commands.empty()) {
             if (indirect) {
@@ -1217,7 +1194,6 @@ u32 Rasterizer::NativeShadowExecute(const iss::native_shadow::Batch& b) {
 // Retry a later run after an unsupported draw was interpreted normally. The CP
 // still walks setters and skips only draws already recorded, preserving order.
 u32 ExecuteNativeShadowSuffix(Rasterizer& rasterizer, const iss::native_shadow::Batch& b, u32 first) {
-    const iss::cp_path::Scope cp_path_scope{iss::cp_path::ShadowSuffix};
     using namespace NativeShadow;
     if (!SplitEnabled() || PendingVerify().work || first >= b.draws.size()) return 0;
     static ns::Batch slice;

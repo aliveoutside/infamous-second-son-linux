@@ -8,7 +8,6 @@
 #include "common/perf_stats.h"
 #include "common/thread.h"
 #include "fsr_upscale.h"
-#include "runtime_timeline.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/kernel/time.h"
@@ -28,7 +27,6 @@ extern std::unique_ptr<AmdGpu::Liverpool> liverpool;
 namespace Libraries::VideoOut {
 
 namespace {
-std::atomic<u64> next_trace_id{1};
 }
 
 constexpr static bool Is32BppPixelFormat(PixelFormat format) {
@@ -247,17 +245,6 @@ int VideoOutDriver::ChangeBufferAttribute(VideoOutPort* port, s32 attributeIndex
 }
 
 void VideoOutDriver::Flip(const Request& req, u64 vblank_count, bool present) {
-    const u64 present_start = iss::timeline::enabled ? Common::Perf::NowNs() : 0;
-    const u64 frame_address = iss::timeline::enabled
-                                  ? reinterpret_cast<u64>(req.frame) : 0;
-    const u64 frame_id = iss::timeline::enabled ? req.frame->id : 0;
-    const u64 frame_ready_tick = iss::timeline::enabled ? req.frame->ready_tick : 0;
-    if (iss::timeline::enabled) {
-        iss::timeline::Emit("vo_flip_begin", req.trace_id, vblank_count,
-                            static_cast<u64>(static_cast<s64>(req.index)),
-                            static_cast<u64>(req.eop), static_cast<u64>(req.flip_arg),
-                            frame_address);
-    }
     // Update HDR status before presenting.
     presenter->SetHDR(req.port->is_hdr);
 
@@ -265,17 +252,9 @@ void VideoOutDriver::Flip(const Request& req, u64 vblank_count, bool present) {
     if (present) {
         presenter->Present(req.frame);
     }
-    if (iss::timeline::enabled) {
-        iss::timeline::Emit("vo_present_return", req.trace_id, vblank_count,
-                            frame_address, frame_ready_tick,
-                            frame_id, 0, Common::Perf::NowNs() - present_start);
-    }
 
     // Update flip status.
     auto* port = req.port;
-    u64 flip_count{};
-    s32 flip_pending{};
-    s32 gc_pending{};
     {
         std::unique_lock lock{port->port_mutex};
         auto& flip_status = port->flip_status;
@@ -288,17 +267,7 @@ void VideoOutDriver::Flip(const Request& req, u64 vblank_count, bool present) {
             --flip_status.gc_queue_num;
         }
         --flip_status.flip_pending_num;
-        flip_count = flip_status.count;
-        flip_pending = flip_status.flip_pending_num;
-        gc_pending = flip_status.gc_queue_num;
     }
-    if (iss::timeline::enabled) {
-        iss::timeline::Emit("vo_flip_status", req.trace_id, vblank_count,
-                            flip_count, static_cast<u64>(flip_pending),
-                            static_cast<u64>(gc_pending),
-                            static_cast<u64>(static_cast<s64>(req.index)));
-    }
-
     // Trigger flip events for the port.
     for (auto event : port->flip_events) {
         auto equeue = Kernel::GetEqueue(event);
@@ -319,13 +288,6 @@ void VideoOutDriver::Flip(const Request& req, u64 vblank_count, bool present) {
     }
     // save to prev buf index
     port->prev_index = req.index;
-    if (iss::timeline::enabled) {
-        iss::timeline::Emit("vo_flip_events_labels_done", req.trace_id, vblank_count,
-                            static_cast<u64>(static_cast<s64>(previous_index)),
-                            static_cast<u64>(static_cast<s64>(req.index)),
-                            static_cast<u64>(port->flip_events.size()),
-                            static_cast<u64>(req.eop));
-    }
 }
 
 void VideoOutDriver::DrawBlankFrame() {
@@ -342,8 +304,6 @@ void VideoOutDriver::DrawLastFrame() {
 
 bool VideoOutDriver::SubmitFlip(VideoOutPort* port, s32 index, s64 flip_arg,
                                 bool is_eop /*= false*/) {
-    u64 trace_id{};
-    s32 pending{};
     {
         std::unique_lock lock{port->port_mutex};
         if (index != -1 && port->flip_status.flip_pending_num > 16) {
@@ -356,37 +316,22 @@ bool VideoOutDriver::SubmitFlip(VideoOutPort* port, s32 index, s64 flip_arg,
         }
         ++port->flip_status.flip_pending_num; // integral GPU and CPU pending flips counter
         port->flip_status.submit_tsc = Libraries::Kernel::sceKernelReadTsc();
-        trace_id = next_trace_id.fetch_add(1, std::memory_order_relaxed);
-        pending = port->flip_status.flip_pending_num;
-    }
-    if (iss::timeline::enabled) {
-        iss::timeline::Emit("vo_flip_accept", trace_id, 0,
-                            static_cast<u64>(static_cast<s64>(index)),
-                            static_cast<u64>(is_eop), static_cast<u64>(flip_arg),
-                            static_cast<u64>(pending));
     }
 
     if (!is_eop) {
         // Non EOP flips can arrive from any thread so ask GPU thread to perform them
         liverpool->SendCommand([=, this]() {
-            SubmitFlipInternal(port, index, flip_arg, is_eop, trace_id);
+            SubmitFlipInternal(port, index, flip_arg, is_eop);
         });
     } else {
-        SubmitFlipInternal(port, index, flip_arg, is_eop, trace_id);
+        SubmitFlipInternal(port, index, flip_arg, is_eop);
     }
 
     return true;
 }
 
-void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop,
-                                        u64 trace_id) {
+void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop) {
     iss::fsr::GetStats().flips.fetch_add(1, std::memory_order_relaxed);
-    const u64 prepare_start = iss::timeline::enabled ? Common::Perf::NowNs() : 0;
-    if (iss::timeline::enabled) {
-        iss::timeline::Emit("vo_prepare_begin", trace_id, 0,
-                            static_cast<u64>(static_cast<s64>(index)),
-                            static_cast<u64>(is_eop));
-    }
     Vulkan::Frame* frame;
     if (index == -1) {
         frame = presenter->PrepareBlankFrame(false);
@@ -397,13 +342,6 @@ void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_
         frame = presenter->PrepareFrame(group, buffer.address_left);
     }
     Vulkan::Frame* generated = iss::fsr::TakeGeneratedFrame();
-    if (iss::timeline::enabled) {
-        iss::timeline::Emit("vo_prepare_end", trace_id, 0,
-                            reinterpret_cast<u64>(frame), frame->ready_tick,
-                            static_cast<u64>(frame->id),
-                            static_cast<u64>(static_cast<s64>(index)),
-                            Common::Perf::NowNs() - prepare_start);
-    }
 
     {
         std::scoped_lock lock{mutex};
@@ -413,14 +351,8 @@ void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_
             .flip_arg = flip_arg,
             .index = index,
             .eop = is_eop,
-            .trace_id = trace_id,
             .generated = generated,
         });
-        if (iss::timeline::enabled) {
-            iss::timeline::Emit("vo_queue_push", trace_id, 0,
-                                requests.size(), reinterpret_cast<u64>(frame),
-                                frame->ready_tick, static_cast<u64>(frame->id));
-        }
     }
 }
 
@@ -437,32 +369,15 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
                                         u64& queue_depth) -> Request {
         std::scoped_lock lk{mutex};
         queue_depth = requests.size();
-        if (iss::timeline::enabled) {
-            iss::timeline::Emit("vo_poll", requests.empty() ? 0 : requests.front().trace_id,
-                                vblank_count, queue_depth,
-                                static_cast<u64>(flip_rate),
-                                static_cast<u64>(!requests.empty()));
-        }
         if (!requests.empty()) {
             const auto request = requests.front();
             requests.pop();
-            if (iss::timeline::enabled) {
-                iss::timeline::Emit("vo_queue_pop", request.trace_id, vblank_count,
-                                    requests.size(), reinterpret_cast<u64>(request.frame),
-                                    request.frame->ready_tick,
-                                    static_cast<u64>(request.frame->id));
-            }
             return request;
         }
         return {};
     };
 
-    // ISS_FLIP_RATE=n: the flips are taken every n+1 vblanks whatever rate the guest set (its
-    // 30 FPS option sets 1: with BB_VBLANK_HZ=240 the flips snap to a 120 Hz grid).
-    const s32 forced_flip_rate = [] {
-        const char* value = std::getenv("ISS_FLIP_RATE");
-        return value && *value ? std::atoi(value) : -1;
-    }();
+    constexpr s32 forced_flip_rate = -1; // the guest's own rate
     // BB_FPS_LIMIT=n (launcher "FPS limit", 0 = off): a flip is taken only once 1/n s passed since
     // the last one (half a vblank of tolerance, so jitter does not cost a whole tick); the guest
     // waits for its queued flip, which paces the game itself.
@@ -500,10 +415,6 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
         const s32 flip_rate = forced_flip_rate >= 0 ? forced_flip_rate : main_port.flip_rate;
 
         const bool paused = DebugState.IsGuestThreadsPaused();
-        if (iss::timeline::enabled && paused != was_paused) {
-            iss::timeline::Emit("vo_pause_change", 0, 0,
-                                static_cast<u64>(paused));
-        }
         was_paused = paused;
         if (paused) {
             if (parked) {
@@ -517,7 +428,6 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
         // Check if it's time to take a request.
         auto& vblank_status = main_port.vblank_status;
         const u64 vblank_count = vblank_status.count;
-        u64 presented_trace_id{};
         const bool limit_ok =
             frame_limit == 0 || std::chrono::steady_clock::now() - last_flip >= min_flip_interval;
         if (!parked && vblank_status.count % (flip_rate + 1) == 0 && limit_ok) {
@@ -533,7 +443,6 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
                     }
                 }
             } else {
-                presented_trace_id = request.trace_id;
                 last_flip = std::chrono::steady_clock::now();
                 if (last_real != std::chrono::steady_clock::time_point{}) {
                     const auto dt = std::min<std::chrono::nanoseconds>(last_flip - last_real,
@@ -589,12 +498,6 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
             main_port.vblank_cv.notify_all();
             new_vblank_count = vblank_status.count;
             vblank_event_count = main_port.vblank_events.size();
-        }
-        if (iss::timeline::enabled) {
-            iss::timeline::Emit("vo_vblank", presented_trace_id, vblank_count,
-                                new_vblank_count,
-                                static_cast<u64>(main_port.flip_rate),
-                                vblank_event_count);
         }
 
         timer.End();

@@ -173,7 +173,7 @@ public:
     /// Scout thread: the shader stage lookups of a draw, from the registers at that draw.
     void ScoutDraw(const AmdGpu::Regs& regs, AmdGpu::ScoutDraw& draw,
                    AmdGpu::ScoutArena& arena) override;
-    /// ISS_SPEC_COMPUTE (default on with ISS_SPEC_TRANSLATE, =0 off): a native passes/compute
+    /// A native passes/compute
     /// recording thread met a dispatch with this compute program before the command processor: a new
     /// compute program is translated ahead by the speculative translator (any thread).
     void RequestComputeSpecTranslation(const AmdGpu::ComputeProgram& cs);
@@ -190,13 +190,10 @@ public:
     std::unordered_map<u64, std::pair<Program*, size_t>> preload_stages;
     u64 preload_stage_hits{};
     bool LoadCachedPipelineStage(u64 hash, size_t stage);
-    bool parallel_preload{};
-    void QueuePreload(Pipeline* pipeline);
-    void WaitPreload();
     /// A thread that needs a pipeline still waiting in the compiler queue takes it out and
     /// compiles it itself (true); false when a worker has it (or it is done).
     bool CompileNowIfQueued(const Pipeline* pipeline);
-    /// ISS_ASYNC_SKIP_DRAWS: the pipeline of a skipped draw to the front of the compile queue.
+    /// The pipeline of a skipped draw to the front of the compile queue.
     void PrioritizeCompile(const Pipeline* pipeline);
 
     const GraphicsPipeline* GetGraphicsPipeline(const DrawIndirectParams params = {});
@@ -300,14 +297,14 @@ private:
                                      const Shader::IR::Program& ir_program,
                                      const std::span<const u32>& code, size_t perm_idx,
                                      Shader::Backend::Bindings& binding, iss::g4::CpOwner owner);
-    /// ISS_PARALLEL_TRANSLATE: the vertex stage of a draw whose two stages are new programs,
+    /// The vertex stage of a draw whose two stages are new programs,
     /// translated by a helper thread while the command processor translates the pixel stage.
     struct PreTranslation;
     PreTranslation* pre_translation{};
-    /// ISS_SPEC_TRANSLATE: new programs the scout meets are translated ahead by worker threads
+    /// New programs the scout meets are translated ahead by worker threads
     /// (the translation does not depend on the bindings, only the emission does).
     std::unique_ptr<class SpecTranslator> spec_translator;
-    /// ISS_ASYNC_SKIP_DRAWS: a stage of the current draw is still being translated by the
+    /// A stage of the current draw is still being translated by the
     /// speculative translator (the draw is skipped; RefreshGraphicsStages).
     bool async_translation_pending{};
     void RequestSpecTranslation(Shader::HwStage hw_stage, Shader::SwStage sw_stage,
@@ -422,12 +419,12 @@ private:
 
     std::unique_ptr<PipelineCompiler> compiler;
 
-    /// ISS_AOT_COMPUTE=<index> (scripts/aot_index.py): every compute shader of the game files
+    /// Every compute shader of the game files
     /// translated and compiled ahead of time by low priority threads; the command processor
     /// only adopts the finished programs and pipelines (DrainAot).
     std::unique_ptr<struct AotCompute> aot;
     void StartAotCompute(const char* index_path);
-    /// ISS_AOT_RECIPES: the SPIR-V of the recipe pack's stages, made from the game files.
+    /// The SPIR-V of the recipe pack's stages, made from the game files.
     void PrepareRecipeStages();
     void DrainAot();
 };

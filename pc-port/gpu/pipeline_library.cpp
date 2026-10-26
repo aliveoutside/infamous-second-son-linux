@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #define NOMINMAX
 #include <windows.h>
-#include "runtime_timeline.h"
 #include "sha256.h"
 #include <algorithm>
 #include <cstdio>
@@ -56,19 +55,6 @@ void ValidateRecipes(const std::map<std::string, std::vector<u8>>& snapshot) {
         char meta_name[32];
         std::snprintf(meta_name, sizeof(meta_name), "0x%016llx.meta", static_cast<unsigned long long>(hash));
         if (!snapshot.contains(meta_name)) throw std::runtime_error("SPIR-V missing metadata");
-    }
-    // ISS_AOT_RECIPES: a recipe pack has no SPIR-V (made from the game files when loaded): its
-    // metadata names the permutation itself.
-    static const bool recipes = [] {
-        const char* value = std::getenv("ISS_AOT_RECIPES");
-        return value && value[0] == '1';
-    }();
-    if (recipes) {
-        for (const auto& [name, bytes] : snapshot) {
-            if (!name.ends_with(".meta") || bytes.size() < 24) continue;
-            const u64 hash = std::stoull(name.substr(2, 16), nullptr, 16);
-            if (Word64(bytes, 8) == hash) variants.emplace(hash, Word64(bytes, 16));
-        }
     }
     for (const auto& [name, bytes] : snapshot) {
         if (!name.ends_with(".meta")) continue;
@@ -186,13 +172,9 @@ bool Open(std::span<const u8> profile, const std::filesystem::path& primary) {
     files.clear(); extra_keys.clear(); enabled = false;
     const char* option = std::getenv("ISS_PIPELINE_LIBRARY");
     if (!option || !*option) return false;
-    const bool skip_compute = [] {
-        const char* stride = std::getenv("ISS_DYNAMIC_STRIDE");
-        const char* aot = std::getenv("ISS_AOT_COMPUTE");
-        const char* stats = std::getenv("ISS_AOT_FORMAT_STATS");
-        return (stride && stride[0] == '1') ||
-               (aot && aot[0] && !(stats && stats[0] == '1'));
-    }();
+    // Compute modules read their buffer strides: a library compiled with a fixed stride does not
+    // match them.
+    const bool skip_compute = true;
     const auto started = Common::Perf::NowNs();
     try {
         const auto root = std::filesystem::canonical(std::filesystem::u8path(option));
@@ -228,7 +210,7 @@ bool Open(std::span<const u8> profile, const std::filesystem::path& primary) {
             total += bytes.size();
             if (total > MaxTotal) throw std::runtime_error("library exceeds memory budget");
             const auto name = item.at("filename").get<std::string>();
-            // ISS_DYNAMIC_STRIDE / ISS_AOT_COMPUTE: compute shaders are compiled with another
+            // Compute shaders are compiled with another
             // recompiler variant (and by the AOT compiler into the cache): the library's are
             // stale; its graphics recipes are kept.
             if (skip_compute && IsComputeAsset(name, bytes)) continue;
@@ -279,9 +261,7 @@ void Discard() {
     files.clear(); extra_keys.clear(); enabled = false;
 }
 void LogMiss(const char* kind, u64 key, u64 guest_hash, u64 duration_ns) {
-    iss::timeline::Emit("pipeline_miss",key,guest_hash,static_cast<u64>(kind[0]),0,0,0,duration_ns);
-    static const bool log = [] { const char* p=std::getenv("ISS_PIPELINE_EVENTS"); return p&&p[0]=='1'; }();
-    if (!log) return;
+    return;
     std::fprintf(stderr, "PIPELINE_MISS kind=%s key=0x%016llx guest_hash=0x%016llx frame=%llu ns=%llu elapsed_ms=%.3f\n",
                  kind, static_cast<unsigned long long>(key), static_cast<unsigned long long>(guest_hash),
                  static_cast<unsigned long long>(Common::Perf::GuestFrameCounter().load()),

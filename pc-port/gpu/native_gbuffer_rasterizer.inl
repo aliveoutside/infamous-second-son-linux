@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Included in namespace Vulkan, after native_shadow_rasterizer.inl.
 //
-// ISS_NATIVE_GBUFFER=1 (native_gbuffer.h): the draws of an engine G-buffer material range
+// The draws of an engine G-buffer material range
 // recorded from the range instead of interpreting their packets.
 //
 // Each draw takes the registers the range gives it (its render state version and its per draw
@@ -13,7 +13,7 @@
 // geometry. Any draw the path does not take ends the native prefix: the command processor
 // interprets the rest of the range from that draw.
 //
-// ISS_NATIVE_GBUFFER_VERIFY=1 (with ISS_NATIVE_SHADOW_VERIFY_DIR): a sampled range is recorded
+// A sampled range is recorded
 // into private copies of its targets and then interpreted into the real targets; both results
 // must be identical (NATIVE_GBUFFER_PAIR).
 
@@ -66,7 +66,7 @@ static bool ShapeOk(const GraphicsPipeline& pipeline) {
         }
         for (const auto& image : stage->images) check(!image.is_written, 3);
     }
-    // Vertex samplers: compared by the lean path like the others (ISS_NATIVE_GBUFFER_SETS).
+    // Vertex samplers: compared by the lean path like the others.
     check(!vs || vs->samplers.empty() || NativeMaterial::SetsEnabled(), 5);
     check(pipeline.GetFetchShader().attributes.size() <= MaxSharps, 6);
     const bool ok = fail == ~0u;
@@ -117,20 +117,17 @@ static std::array<u64, StopCount>& StopCounts() { static std::array<u64, StopCou
 static Totals& Counters() { static Totals totals; return totals; }
 
 static bool VerifyEnabled() {
-    static const bool enabled = iss::native_item::Flag("ISS_NATIVE_GBUFFER_VERIFY");
+    static constexpr bool enabled = false;
     return enabled;
 }
-// Diagnosis: ISS_NATIVE_GBUFFER_LEAN=0 sends every draw through the full path;
-// ISS_NATIVE_GBUFFER_VERIFY_CONTINUE=1 keeps sampling after a differing pair.
+// Diagnosis: sending every draw through the full path, and keeping the sampling on after a
+// differing pair.
 static bool LeanEnabled() {
-    static const bool enabled = [] {
-        const char* p = std::getenv("ISS_NATIVE_GBUFFER_LEAN");
-        return !p || p[0] != '0';
-    }();
+    static const bool enabled = true;
     return enabled;
 }
 static bool VerifyContinue() {
-    static const bool enabled = iss::native_item::Flag("ISS_NATIVE_GBUFFER_VERIFY_CONTINUE");
+    static constexpr bool enabled = false;
     return enabled;
 }
 struct Verify {
@@ -209,15 +206,14 @@ void Rasterizer::NativeGbufferRangeEnd(const iss::native_gbuffer::Batch* batch) 
 u32 Rasterizer::NativeGbufferExecute(const iss::native_gbuffer::Batch& b,
                                      const std::function<void(const u32*)>& begin_draw,
                                      const std::function<void()>& end_draw) {
-    const iss::cp_path::Scope cp_path_scope{iss::cp_path::GbufferNative};
     using namespace NativeGbuffer;
     const u32 n = u32(b.draws.size());
     if (!n) return 0;
     if (cp_split_enabled || draw_pipe_state || OnDrawWorker() || DrawQueue() != 0 ||
-        iss::command_trace::enabled || IsDumping() || host_markers_enabled ||
+        IsDumping() || host_markers_enabled ||
         guest_markers_enabled || GpuCrashDiag::Enabled() || EmulatorSettings.IsPatchShaders() ||
         occlusion.HasOpen() || buffer_cache.HasComputeQueue() ||
-        !instance.IsVertexInputDynamicState() || iss::hazard_probe::Enabled() ||
+        !instance.IsVertexInputDynamicState() ||
         g_num_traced_ranges != 0 || NativeShadow::PendingVerify().work ||
         PendingVerify().work) {
         ng::NoteRange(ng::Context, n);
@@ -234,7 +230,7 @@ u32 Rasterizer::NativeGbufferExecute(const iss::native_gbuffer::Batch& b,
         saved_vs[k] = regs.reg_array[ng::VsUser0 + k];
         saved_ps[k] = regs.reg_array[ng::PsUser0 + k];
     }
-    // ISS_NATIVE_MATERIALS: the range context, before any register of the range is set.
+    // The range context, before any register of the range is set.
     const bool materials = NativeMaterial::Enabled();
     const u64 context_hash = materials ? NativeMaterial::ContextHash(regs, b.state_regs) : 0;
     std::vector<u64> state_keys(materials ? b.states.size() : 0, 0);
@@ -305,7 +301,7 @@ u32 Rasterizer::NativeGbufferExecute(const iss::native_gbuffer::Batch& b,
     static u64 verify_counter{};
     bool verifying = VerifyEnabled() && (++verify_counter % 61) == 0;
 
-    // ISS_NATIVE_RECORDER: the range as its engine thread recorded it (sampled verification
+    // The range as its engine thread recorded it (sampled verification
     // ranges take the paths below).
     if (materials) {
         NativeRecorderSetup();
@@ -432,7 +428,7 @@ u32 Rasterizer::NativeGbufferExecute(const iss::native_gbuffer::Batch& b,
             }
         }
 
-        // ISS_NATIVE_MATERIALS: a material seen before in this render state draws from its
+        // A material seen before in this render state draws from its
         // template (no pipeline lookup, no texture search).
         const NativeMaterialTemplate* tmpl = nullptr;
         if (!lean && materials && (!verifying || PendingVerify().work)) {
@@ -662,7 +658,6 @@ u32 Rasterizer::NativeGbufferExecute(const iss::native_gbuffer::Batch& b,
             GetDrawOffsets(regs, vs, drawn->GetFetchShader());
         cmd.drawIndexed(regs.num_indices, regs.num_instances.NumInstances(), 0, s32(vertex_offset),
                         instance_offset);
-        iss::feedback_join::Recorded();
         DebugState.IncDrawCall();
         kept_stamp = CaptureStageMemoStamp();
         finish_scout();

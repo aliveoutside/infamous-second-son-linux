@@ -2,7 +2,7 @@
 // Included in namespace Vulkan, after native_material_rasterizer.inl and before
 // native_gbuffer_rasterizer.inl.
 //
-// ISS_NATIVE_RECORDER=1 (with ISS_NATIVE_GBUFFER=1 and ISS_NATIVE_MATERIALS=1): native renderer
+// Native renderer
 // step 2. The engine thread that wrote a material range records its draws into a Vulkan
 // secondary command buffer right away, in parallel with the other engine threads, from:
 //  - the registers at the range start that its command buffer wrote, over the baseline the
@@ -89,7 +89,7 @@ struct Recording {
     u64 seq{}; ///< order of the recordings of its worker (descriptor pool reuse)
 };
 
-// ISS_NATIVE_GBUFFER_SETS: descriptor sets of an engine thread, from pools used in recording
+// Descriptor sets of an engine thread, from pools used in recording
 // order. A full pool is reset once the recordings that took sets from it are released (they are
 // released in recording order, Worker::Reclaim).
 constexpr u32 PoolSets = 256;
@@ -779,7 +779,6 @@ u32 Rasterizer::NativeRecorderExecute(const iss::native_gbuffer::Batch& b, u64 c
                                       const std::function<void(u32)>& set_registers,
                                       const std::function<void(const u32*)>& begin_draw,
                                       const std::function<void()>& end_draw) {
-    const iss::cp_path::Scope cp_path_scope{iss::cp_path::RecorderExecute};
     using namespace NativeRecorder;
     auto& c = cp_stats;
     if ((++c.ranges & 4095) == 1) Report();
@@ -882,7 +881,6 @@ u32 Rasterizer::NativeRecorderExecute(const iss::native_gbuffer::Batch& b, u64 c
     }
     // The ranges chained to this one, as far as each is still valid (the others take their own
     // marker): the registers between them are plain writes the command processor applies.
-    iss::cp_path::Switch(iss::cp_path::RecChain);
     std::vector<Recording*> chain{rec};
     for (Recording* m = rec->next; m; m = m->next) {
         if (m->batch_generation != m->batch->generation ||
@@ -920,7 +918,6 @@ u32 Rasterizer::NativeRecorderExecute(const iss::native_gbuffer::Batch& b, u64 c
     const auto release_chain = [&] {
         for (size_t i = 1; i < chain.size(); ++i) chain[i]->state.store(0, std::memory_order_release);
     };
-    iss::cp_path::Switch(iss::cp_path::RecTargets);
     const RenderState render = BeginRendering(pipeline);
     if (attachment_feedback_loop) {
         release_chain();
@@ -954,7 +951,6 @@ u32 Rasterizer::NativeRecorderExecute(const iss::native_gbuffer::Batch& b, u64 c
     }
 
     // Accepted: textures to their read layouts, buffer reads ordered after their writers.
-    iss::cp_path::Switch(iss::cp_path::RecBarriers);
     const u64 tick = scheduler.CurrentTick();
     for (const Template* t : validated) {
         for (const auto& cap : t->images) {
@@ -973,7 +969,6 @@ u32 Rasterizer::NativeRecorderExecute(const iss::native_gbuffer::Batch& b, u64 c
         const VideoCore::Buffer* buffer;
         u64 offset, size;
     };
-    iss::cp_path::Switch(iss::cp_path::RecReads);
     static thread_local std::vector<Read> reads;
     reads.clear();
     for (const Recording* m : chain) {
@@ -1003,7 +998,6 @@ u32 Rasterizer::NativeRecorderExecute(const iss::native_gbuffer::Batch& b, u64 c
     }
     reads.resize(merged);
     for (const auto& r : reads) needs_barrier |= Rt().IsBufferAccessed(r.buffer, r.offset, r.size, false);
-    iss::cp_path::Switch(iss::cp_path::RecSubmit);
     if (needs_barrier) runtime.FlushBarriers();
     // A rendering scope of secondary contents only (no VK_KHR_maintenance7 mixing).
     scheduler.BeginSecondaryRendering(render);
@@ -1018,7 +1012,6 @@ u32 Rasterizer::NativeRecorderExecute(const iss::native_gbuffer::Batch& b, u64 c
     scheduler.GetDynamicState().Invalidate();
     fast_draw.valid = false;
     native_stretch.clear();
-    iss::cp_path::Switch(iss::cp_path::RecDraws);
     for (const Recording* m : chain) {
         for (const auto& d : m->batch->draws) {
             begin_draw(d.packet);
@@ -1027,7 +1020,6 @@ u32 Rasterizer::NativeRecorderExecute(const iss::native_gbuffer::Batch& b, u64 c
         }
         if (m != rec) native_stretch.push_back(m->batch);
     }
-    iss::cp_path::Switch(iss::cp_path::RecAccess);
     ResetBindings(false);
     for (const auto& r : reads)
         Rt().AccessBuffer(r.buffer, r.offset, r.size, vk::PipelineStageFlagBits2::eAllGraphics,

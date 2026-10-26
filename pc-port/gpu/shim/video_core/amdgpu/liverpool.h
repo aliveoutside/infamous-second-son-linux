@@ -197,7 +197,7 @@ public:
 
     /// Context, config and uconfig register writes that changed a value so far (command
     /// processor thread).
-    /// ISS_DRAW_PIPE_DEFER: a fence packet (graphics EOS/EOP, compute RELEASE_MEM) the command
+    /// A fence packet (graphics EOS/EOP, compute RELEASE_MEM) the command
     /// processor queued behind the draws before it instead of draining: run by the draw pipe
     /// worker in order, as the command processor runs it without the pipe.
     void RunDeferredFence(u32 opcode, const u32* words, u32 pipe_id);
@@ -453,10 +453,7 @@ private:
     const bool guest_markers_enabled;
     std::jthread process_thread{};
     std::jthread asc_process_thread{};
-    const bool cp_split_requested = [] {
-        const char* flag = std::getenv("ISS_CP_SPLIT");
-        return flag && flag[0] == '1';
-    }();
+    const bool cp_split_requested = false;
     std::atomic<bool> cp_split_decided{};
     std::atomic<bool> cp_split_active{};
     std::atomic<bool> cp_stopping{};

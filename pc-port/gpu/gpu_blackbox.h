@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 
-// GPU black box (ISS_GPU_BLACKBOX, on unless =0). Every marked GPU command (command processor
+// GPU black box (on unless the driver has no buffer marker). Every marked GPU command (command
+// processor
 // draws and dispatches, native segments and each of their draws) writes its number with
 // VK_AMD_buffer_marker to host memory when the GPU starts it and when it completes, and its
 // description (path, shaders, targets, blend, pause) stays in a ring on the CPU. A diary keeps the
@@ -15,7 +16,7 @@
 
 namespace iss::blackbox {
 
-/// ISS_GPU_BLACKBOX (default on). Valid once the Vulkan device exists.
+/// Whether the black box is on. Valid once the Vulkan device exists.
 bool On();
 
 /// Diary categories: each keeps its own recent events in the reports.

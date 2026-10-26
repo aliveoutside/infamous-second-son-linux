@@ -70,11 +70,11 @@ struct Stats {
     std::array<std::atomic<u64>, 258> unknown_opcodes{}; // 256: not type 3, 257: past the cursor
     // Command processor.
     std::atomic<u64> claimed{}, executed{}, executed_draws{}, rejected{}, learned{};
-    // Compute (ISS_NATIVE_COMPUTE): dispatches seen and recorded, segments, learn requests,
+    // Compute: dispatches seen and recorded, segments, learn requests,
     // dispatches without gnmdriver's trailing NOP, and what closed compute segments (opcode).
     std::atomic<u64> dispatches{}, dispatches_recorded{}, cs_segments{}, cs_learn_posted{},
         cs_no_nop{};
-    // ISS_NATIVE_INDIRECT: indexed indirect draws seen and recorded.
+    // Indexed indirect draws seen and recorded.
     std::atomic<u64> indirect_seen{}, indirect_recorded{};
     std::array<std::atomic<u64>, 257> cs_close_opcodes{};
 };
@@ -164,7 +164,7 @@ struct Lane {
     bool pending_index_type{}, pending_instances{};
     u32 index_type{}, instances{};
     std::unordered_map<u32, u32> final_index; ///< reg -> index in open->final_regs
-    /// ISS_NATIVE_INDIRECT: the indirect argument table (SET_BASE) and which of SET_BASE (1),
+    /// The indirect argument table (SET_BASE) and which of SET_BASE (1),
     /// INDEX_BASE (2), INDEX_BUFFER_SIZE (4) this job saw (its indirect draws need all three).
     u64 indirect_base{};
     u32 indirect_seen{};
@@ -190,10 +190,7 @@ struct Lane {
 // did not write itself.
 std::array<std::atomic<u32>, TrackedTotal> latest{};
 std::array<std::atomic<bool>, TrackedTotal> latest_set{};
-const bool predict_latest = [] {
-    const char* p = std::getenv("ISS_NATIVE_PASSES_PREDICT");
-    return p && p[0] == '1';
-}();
+constexpr bool predict_latest = false;
 
 std::mutex lanes_mutex;
 std::unordered_map<CommandBuffer*, std::unique_ptr<Lane>> lanes;
@@ -348,7 +345,7 @@ void CloseCompute(Lane& l, Close why, u32 opcode) {
 // are left to the command processor's paths until it learns the first.
 std::mutex learn_mutex;
 std::unordered_map<u64, u64> learn_posted_at;
-// Submit mode with ISS_NATIVE_PASSES_TEMPLATE_GATE (default on): the recorder dedups by template
+// Submit mode with the template gate (on): the recorder dedups by template
 // (native_passes_rasterizer.inl LearnGate), not by key here.
 bool dedup_by_key = true;
 
@@ -498,7 +495,7 @@ void Apply(Lane& l, const u32* p, const u32* end) {
             break;
         case 0x28: // CONTEXT_CONTROL: nothing for the command processor
             break;
-        // ISS_NATIVE_INDIRECT: the state of indexed indirect draws, kept by the lane (and as the
+        // The state of indexed indirect draws, kept by the lane (and as the
         // segment's final state) instead of closing it.
         case 0x11: // SET_BASE
             if (IndirectEnabled() && count >= 3 && (p[1] & 0xF) == 1) {
@@ -667,7 +664,7 @@ u64 ISS_SYSV DrawIndexHook(CommandBuffer* dcb, u32 count, u64 index_address, u32
                     if (!IsDynamicReg(reg)) continue;
                     const u32 t = reg - 0xA000;
                     if ((l->written[t >> 5] >> (t & 31)) & 1) continue;
-                    // ISS_NATIVE_PASSES_PREDICT=1: the latest the engine wrote; otherwise what the
+                    // The latest the engine wrote; otherwise what the
                     // command processor had where this command buffer started last time.
                     if (predict_latest && latest_set[t].load(std::memory_order_relaxed))
                         l->words[reg] = latest[t].load(std::memory_order_relaxed);
@@ -728,16 +725,13 @@ u64 ISS_SYSV DrawIndexHook(CommandBuffer* dcb, u32 count, u64 index_address, u32
     return result;
 }
 
-// ---- ISS_NATIVE_PASSES_SUBMIT: recording at the submission, from exact registers ----------
+// ---- Submit mode: recording at the submission, from exact registers -----------------------
 //
 // The registers at each draw are the command processor's own: the scan applies the register
 // writes of every command buffer in submission order (from where the previous submission left
 // them, seeded once from the command processor), so no inherited word is assumed. A lane per
 // pool thread records the command buffers it is given, start to end.
-const bool submit_mode = [] {
-    const char* p = std::getenv("ISS_NATIVE_PASSES_SUBMIT");
-    return p && p[0] == '1';
-}();
+constexpr bool submit_mode = false;
 
 // The recording of one command buffer: its jobs left (the command processor waits for 0).
 struct DcbWork {
@@ -766,10 +760,10 @@ struct SubmitState {
     std::condition_variable work_cv, done_cv;
     std::deque<Job> jobs;
     std::unordered_map<const u32*, std::shared_ptr<DcbWork>> pending; // by command buffer
-    // ISS_NATIVE_ASC_ASYNC: the compute submissions the pool is recording, by ring position, with
+    // The compute submissions the pool is recording, by ring position, with
     // when the command processor first found one unfinished (0: not yet).
     std::unordered_map<const u32*, std::pair<std::shared_ptr<DcbWork>, u64>> asc_pending;
-    // ISS_NATIVE_PASSES_ASYNC_SCAN=1: the submissions the scan thread has yet to scan, in order.
+    // The submissions the scan thread has yet to scan, in order.
     struct ScanItem {
         const u32* begin{};
         const u32* end{};
@@ -1164,10 +1158,7 @@ void* Patch(u64 base, u64 offset, const unsigned char* prologue, size_t size, co
 
 bool IndirectEnabled() {
     // Default on (=0 off): city 4.17 M indirect draws native, scenes visually checked (a3v-*).
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_NATIVE_INDIRECT");
-        return !value || value[0] != '0';
-    }();
+    static const bool enabled = true;
     return enabled;
 }
 
@@ -1181,14 +1172,9 @@ bool Enabled() {
 
 int Install(u64 image_base) {
     if (!Enabled()) return 0;
-    if (const char* g = std::getenv("ISS_NATIVE_GBUFFER"); g && g[0] == '1') {
-        std::fprintf(stderr, "NATIVE_PASSES refused: ISS_NATIVE_GBUFFER also wraps the chunk callback\n");
-        return -1;
-    }
     registry = std::make_unique<Slot[]>(RegistrySize);
     if (submit_mode) {
-        if (const char* p = std::getenv("ISS_NATIVE_PASSES_TEMPLATE_GATE"); !p || p[0] != '0')
-            dedup_by_key = false;
+        dedup_by_key = false;
         std::fprintf(stderr, "NATIVE_PASSES submit mode (no draw time hooks)" "\n");
         return 1;
     }
@@ -1290,10 +1276,7 @@ namespace {
 thread_local std::shared_ptr<DcbWork> cp_work;
 thread_local u32 cp_next_job = 0;
 bool JobWait() {
-    static const bool enabled = [] {
-        const char* p = std::getenv("ISS_NATIVE_PASSES_JOB_WAIT");
-        return !p || p[0] != '0';
-    }();
+    static const bool enabled = true;
     return enabled;
 }
 // Waits (pool lock held) until job k of the command processor's command buffer is recorded.
@@ -1397,12 +1380,9 @@ void ScanOnly(const u32* dcb, u32 dwords) {
 // submit.mutex): its jobs, the registers at its start and every job_draws draws.
 void ScanCommandBuffer(const u32* begin, const u32* end, const std::shared_ptr<DcbWork>& work,
                        std::vector<Job>& jobs) {
-    static const u32 job_draws = [] {
-        const char* p = std::getenv("ISS_NATIVE_PASSES_JOB_DRAWS");
-        // 48 (was 96): the command processor's wait for the pool 1.47 -> 0.89 ms per frame in the
-        // city, the first job of each command buffer ready sooner (jd48 2026-10-18).
-        return p ? u32(std::max(8, std::atoi(p))) : 48u;
-    }();
+    // 48 (was 96): the command processor's wait for the pool 1.47 -> 0.89 ms per frame in the
+    // city, the first job of each command buffer ready sooner (jd48 2026-10-18).
+    static constexpr u32 job_draws = 48;
     const auto snapshot = [](const Lane& shadow) {
         std::vector<u32> start;
         start.reserve(TrackedWords + CsWords + 3);
@@ -1430,7 +1410,7 @@ void ScanCommandBuffer(const u32* begin, const u32* end, const std::shared_ptr<D
         const u32* next = p + 1 + ((header >> 16) & 0x3FFF) + 1;
         if (next > end) break;
         const u32 op = (header >> 8) & 0xFF;
-        // Every recorded kind of draw counts: indexed indirect draws (0x25, ISS_NATIVE_INDIRECT)
+        // Every recorded kind of draw counts: indexed indirect draws (0x25)
         // and auto-index draws (0x2D) left out made the passes made of them one long job, which a
         // single pool thread recorded while the command processor waited (a third of its time
         // inside the city's hitches, cpprof3 2026-10-18).
@@ -1458,10 +1438,7 @@ void ScanCommandBuffer(const u32* begin, const u32* end, const std::shared_ptr<D
 
 void StartPool() {
     if (!submit.threads.empty()) return;
-    static const u32 n = [] {
-        const char* p = std::getenv("ISS_NATIVE_PASSES_THREADS");
-        return p ? u32(std::max(1, std::atoi(p))) : 6u;
-    }();
+    static constexpr u32 n = 6;
     for (u32 i = 0; i < n; ++i) submit.threads.emplace_back(PoolThread);
 }
 
@@ -1482,7 +1459,7 @@ void QueueJobs(std::vector<Job>& jobs, const std::vector<std::shared_ptr<DcbWork
     submit.done_cv.notify_all();
 }
 
-// ISS_NATIVE_PASSES_ASYNC_SCAN=1: scans the submissions off the submitting thread, one command
+// Scans the submissions off the submitting thread, one command
 // buffer at a time. The frame is a chain (the game waits for the GPU, submits, the command
 // processor waits for that submit): the game's submit returns at once and the command processor
 // starts on the first command buffer sooner.
@@ -1508,10 +1485,7 @@ void ScanThread() {
 }
 
 bool AsyncScan() {
-    static const bool enabled = [] {
-        const char* p = std::getenv("ISS_NATIVE_PASSES_ASYNC_SCAN");
-        return p && p[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 
@@ -1571,7 +1545,7 @@ void BeforeSubmit(u32 count, const u32* const* dcbs, const u32* sizes_in_bytes) 
     }
 }
 
-// ---- ISS_NATIVE_ASC: the asynchronous compute queues ---------------------------------------
+// ---- The asynchronous compute queues ------------------------------------------------------
 //
 // The engine's particle simulation runs on the compute rings (DingDong): ~300 tiny dispatches a
 // frame in the city, ~1300 in the forest, ~5 us of the command processor each through the full
@@ -1596,16 +1570,12 @@ struct AscStats {
 };
 AscStats asc_stats;
 
-u32 AscEnv(const char* name, u32 fallback) {
-    const char* p = std::getenv(name);
-    return p && *p ? u32(std::max(1, std::atoi(p))) : fallback;
-}
 
 // Scans one indirect buffer of a compute queue into jobs (the caller holds the shadow's lock).
 void ScanAscBuffer(AscShadow& sh, const u32* begin, const u32* end,
                    const std::shared_ptr<DcbWork>& work, std::vector<Job>& jobs, u32 depth) {
     // A segment holds at most MaxComputeDispatches anyway; smaller jobs only help the pool.
-    static const u32 job_dispatches = AscEnv("ISS_NATIVE_ASC_JOB", 64);
+    static constexpr u32 job_dispatches = 64;
     const auto snapshot = [&] {
         std::vector<u32> start(TrackedWords + CsWords, 0u);
         std::memcpy(&start[TrackedWords], sh.words.data(), CsWords * 4);
@@ -1656,15 +1626,10 @@ void ScanAscBuffer(AscShadow& sh, const u32* begin, const u32* end,
 } // namespace
 
 bool AscEnabled() {
-    // Default on (=0 off) since GDS dispatches are recorded too (ISS_NATIVE_COMPUTE_GDS): the forest
+    // Default on (=0 off) since GDS dispatches are recorded too: the forest
     // 99.7% of the rings native, CP 12.6 -> 9.7 ms, GPU 12.4 -> 11.6 ms, fire and smoke right
     // (a4-visitors-*, 2026-10-18).
-    static const bool enabled = [] {
-        const char* p = std::getenv("ISS_NATIVE_ASC");
-        const char* c = std::getenv("ISS_NATIVE_COMPUTE");
-        return !(p && p[0] == '0') && !(c && c[0] == '0');
-    }();
-    return enabled && SubmitMode() && cb.record_dispatch;
+    return SubmitMode() && cb.record_dispatch;
 }
 
 void BeforeAscSubmit(u32 qid, const u32* ring, u32 dwords, const u32* cp_cs, u32 cp_words) {
@@ -1709,17 +1674,11 @@ void BeforeAscSubmit(u32 qid, const u32* ring, u32 dwords, const u32* cp_cs, u32
         return;
     }
     asc_stats.jobs.fetch_add(jobs.size(), std::memory_order_relaxed);
-    // ISS_NATIVE_ASC_INLINE (default on, =0: the pool): recorded here, on the submitting thread
+    // Recorded here, on the submitting thread
     // (a submission is ~30 dispatches; the pool made it wait ~0.8 ms behind the graphics jobs,
     // cpdiag-q-cidade 2026-10-18).
-    static const bool record_inline = [] {
-        const char* p = std::getenv("ISS_NATIVE_ASC_INLINE");
-        return !p || p[0] != '0';
-    }();
-    static const bool async_mode = [] {
-        const char* p = std::getenv("ISS_NATIVE_ASC_ASYNC");
-        return p && p[0] == '1';
-    }();
+    static const bool record_inline = true;
+    static const bool async_mode = false;
     if (record_inline && !async_mode) {
         static thread_local std::unique_ptr<Lane> lane;
         if (!lane) lane = NewJobLane();
@@ -1728,26 +1687,13 @@ void BeforeAscSubmit(u32 qid, const u32* ring, u32 dwords, const u32* cp_cs, u32
         return;
     }
     work->jobs_left.store(u32(jobs.size()), std::memory_order_relaxed);
-    // ISS_NATIVE_ASC_ASYNC=1: the game's thread returns at once (recording ~1300 dispatches a
+    // The game's thread returns at once (recording ~1300 dispatches a
     // frame took ~13% of it in the forest, profv 2026-10-18); the command processor waits for
     // the recording when it reaches this submission (AscRecorded).
-    static const bool record_async = [] {
-        const char* p = std::getenv("ISS_NATIVE_ASC_ASYNC");
-        return p && p[0] == '1';
-    }();
-    if (record_async) {
-        {
-            std::scoped_lock lock{submit.pool_mutex};
-            submit.asc_pending[ring] = {work, 0};
-        }
-        QueueJobs(jobs, {work}, true);
-        asc_stats.scan_us.fetch_add(NowUs() - t0, std::memory_order_relaxed);
-        return;
-    }
     QueueJobs(jobs, {work}, true);
     const u64 t1 = NowUs();
     asc_stats.scan_us.fetch_add(t1 - t0, std::memory_order_relaxed);
-    static const u32 wait_limit_us = AscEnv("ISS_NATIVE_ASC_WAIT_US", 4000);
+    static constexpr u32 wait_limit_us = 4000;
     std::unique_lock lock{submit.pool_mutex};
     const bool done = submit.done_cv.wait_for(lock, std::chrono::microseconds(wait_limit_us), [&] {
         return work->jobs_left.load(std::memory_order_acquire) == 0;

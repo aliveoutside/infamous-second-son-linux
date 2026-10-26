@@ -635,7 +635,7 @@ void PatchBufferArgs(IR::Inst& inst, Info& info) {
     }
 
     IR::IREmitter ir{*inst.GetParent(), IR::Block::InstructionList::s_iterator_to(inst)};
-    // ISS_DYNAMIC_STRIDE (compute): the stride is read from the V# the dispatch binds (its dword 1
+    // The stride is read from the V# the dispatch binds (its dword 1
     // in the flattened user data) instead of being compiled in, so one module serves a shader
     // bound with any stride and the specialization leaves the stride out (specialization.h).
     std::optional<IR::U32> dynamic_stride;
@@ -959,7 +959,7 @@ void ResourcePatchingPass(Shader::Info& info, const ResourceDiscoveryList& resou
         }
     }
 
-    // Ahead-of-time translation (ISS_AOT_COMPUTE) has no game state: each buffer reads the V# the
+    // Ahead-of-time translationhas no game state: each buffer reads the V# the
     // game binds to almost every formatted buffer of its compute shaders (97% of them: 32x4 float,
     // XYZW), so the permutation it makes is the one the game asks for. Another V# does not fit
     // its specialization and gets its own permutation, as before.

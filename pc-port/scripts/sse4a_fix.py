@@ -9,7 +9,7 @@ A site shorter than the 5-byte jump also moves the instruction after it into its
 
 The sites are listed for the one supported eboot (found with a disassembler, none is a branch
 target); each is checked against the image bytes first, so any other image is refused.
-link_modules.py calls patch_linked_image when the CPU has no SSE4A (or ISS_SSE4A_FIX=1).
+link_modules.py calls patch_linked_image when the CPU has no SSE4A.
 Idea and first version: Castlesea/infamous-second-son-pc-port#38.
 """
 import struct

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Linux: engine patches installed into the loaded eboot before module initializers and guest entry.
 // Only native/ultrawide.cpp (ISS_RESOLUTION, ISS_FOV, ISS_HUD_ASPECT), native/mouse_look.cpp,
-// native/graffiti.cpp and native/perf_mode.cpp (ISS_PERF_MODE) are built; the other native/* replacements (ISS_NATIVE_*, ISS_SPIN_PROBE, ISS_FEEDBACK_IDENTITY experiments) are not ported.
+// native/graffiti.cpp and native/perf_mode.cpp are built; the other native/* replacements
+// (experiments) are not ported.
 #include "../runtime.h"
 #include "../../native/graffiti.h"
 #include "../../native/mouse_look.h"

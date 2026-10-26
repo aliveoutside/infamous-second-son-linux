@@ -371,7 +371,7 @@ void PollPads(State& s) {
 
 } // namespace
 
-// Fonts: Segoe UI on Windows; under Proton, ISS_UI_FONT (the launcher's font), else ImGui's.
+// Fonts: Segoe UI on Windows; under Proton the launcher's font, else ImGui's.
 void LoadFonts(ImGuiIO& io) {
     static const ImWchar ranges[] = {0x0020, 0x00FF, 0x2010, 0x2027, 0x2122, 0x2122, 0x21B5, 0x21B5, 0};
     ImFontConfig cfg;
@@ -388,7 +388,6 @@ void LoadFonts(ImGuiIO& io) {
     const std::string segoe_bold = std::string(windir) + "\\Fonts\\seguisb.ttf";
     g_regular = load(segoe.c_str());
     g_bold = load(segoe_bold.c_str());
-    if (!g_regular) g_regular = load(std::getenv("ISS_UI_FONT"));
     for (const char* path : {"/usr/share/fonts/TTF/DejaVuSans.ttf", "/usr/share/fonts/noto/NotoSans-Regular.ttf",
                              "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
                              "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"})

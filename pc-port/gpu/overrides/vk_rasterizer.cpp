@@ -3,17 +3,12 @@
 #include <algorithm>
 #include <execution>
 #include "native_item_identity.h"
-#include "repeat_census.h"
 #include "unified_memory.h"
 #include "native_shadow.h"
 #include "native_gbuffer.h"
 #include "native_passes.h"
 #include "pause_guard.h"
-#include "cp_path_cycles.h"
 #include "common/scope_exit.h"
-#include "deep_profile.h"
-#include "feedback_join.h"
-#include "infamous_renderer/secondary_batch_probe.h"
 #include <unordered_set>
 #include <cstdio>
 #include <intrin.h>
@@ -22,7 +17,6 @@
 #include "draw_pipe.h"
 #include "g4_qid1_owner.h"
 #include "g4_copy_hle_plan.h"
-#include "hazard_probe.h"
 #include "infamous_renderer/feedback_identity_registry.h"
 #include "infamous_renderer/native_draw_run.h"
 #include "infamous_renderer/native_geometry_batch_vulkan.h"
@@ -31,8 +25,6 @@
 #include "infamous_renderer/native_instanced_run.h"
 #include "video_core/amdgpu/pm4_cmds.h"
 #include "video_core/buffer_cache/memory_tracker.h"
-namespace VideoCore {void RecordReadbackDma(VAddr,VAddr,u64,u64,u32);}
-namespace iss::diagnostics {void RecordFeedbackBinding(u64 address,u64 size,u64 hash,u64 tick);}
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -50,8 +42,6 @@ namespace iss::diagnostics {void RecordFeedbackBinding(u64 address,u64 size,u64 
 #include "common/io_file.h"
 #include "common/path_util.h"
 #include "common/perf_stats.h"
-#include "runtime_timeline.h"
-#include "compute_phase.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
 #include "core/memory.h"
@@ -72,19 +62,6 @@ namespace iss::diagnostics {void RecordFeedbackBinding(u64 address,u64 size,u64 
 #include "video_core/texture_cache/texture_cache.h"
 #include "video_core/renderer_vulkan/descriptor_write_storage.h"
 
-namespace iss::command_trace {
-extern const bool enabled;
-void Submit();
-void Stage(const char* kind, int queue, const Shader::Info& info, u64 code,
-           u32 x, u32 y, u32 z, u64 tick, bool barrier, u64 args, u64 count_address);
-void VertexFetch(int queue, const Shader::Info& info,
-                 const Shader::Gcn::FetchShaderData& fetch, u64 pipeline_identity,
-                 u64 context_changes, u32 primitive_type, u32 instance_count,
-                 u32 index_count, u64 index_address, u32 index_type, u32 index_offset,
-                 const std::array<u8, 3>& attribute_ownership, u8 index_ownership,
-                 u64 mapping_epoch, u64 buffer_mapping_generation);
-}
-
 namespace iss::asc_stats {
 // Defined in buffer_cache.cpp (same enum).
 enum Cause:u32 {WaitGraphicsSubmitted,ComputeSubmit,GdsFlushGraphics,GdsFlushCompute,BdaFlush,
@@ -98,7 +75,7 @@ std::atomic<u64> fallback[4]{};
 }
 namespace iss::asc_stats_api {void Print();}
 namespace iss::ring_barriers {
-// ISS_RING_BARRIERS=1: the particle update dispatches of the guest's compute ring (phase 2,
+// The particle update dispatches of the guest's compute ring (phase 2,
 // shaders A8) run on the PS4 back to back with no barrier between them inside a segment of the
 // ring (the guest's barriers are RELEASE_MEM/WAIT_REG_MEM/ACQUIRE_MEM packets, which end the run
 // as before). The shaders listed here were audited (evidence/mapping/shader-access-proof-09.json,
@@ -107,12 +84,7 @@ namespace iss::ring_barriers {
 // their own emitter. Only hazards between dispatches of these shaders inside one run are not
 // flushed; any other dispatch, upload, copy or packet makes the next hazard flush. The dependent
 // pair E902349D -> 03E4B72E (0x3F49E0, phase 3) is not listed and keeps its barriers.
-static const bool enabled = [] {
-    const char* p = std::getenv("ISS_RING_BARRIERS");
-    const bool on = p && p[0] == '1';
-    std::fprintf(stderr, "PORT_TUNING ring_barriers=%d\n", int(on));
-    return on;
-}();
+static const bool enabled = true;
 constexpr u32 audited[]{0x3839CBEA, 0x29F590F3, 0xB12F0F9D, 0x7EB39747, 0x4274ADD5,
                         0x1FC9E69C, 0x5563EA54, 0x187E6FAF, 0x21E3C997};
 bool Audited(u64 hash) {
@@ -135,8 +107,7 @@ thread_local Rasterizer::SplitThreadState Rasterizer::split_thread_state{};
 namespace {
 
 bool EarlyFeedbackEnabled() {
-    static const bool enabled=[] {const char *p=std::getenv("ISS_FEEDBACK_EARLY_SUBMIT");return p&&p[0]=='1';}();
-    return enabled;
+    return false;
 }
 // Only the graphics command processor owns this state. A tick change means an
 // existing fence/readback already submitted the batch; do not submit it twice.
@@ -150,25 +121,19 @@ void SubmitFeedbackBatch(Scheduler& scheduler) {
     if(++count==1||(count&(count-1))==0)
         LOG_INFO(Render_Vulkan,"PORT_FEEDBACK early submissions {}",count);
 }
-// ISS_SUBMIT_EVERY=N: the batch is submitted every N draws of one submission, so the GPU runs
+// The batch is submitted every N draws of one submission, so the GPU runs
 // the frame while the command processor records the rest of it. Without it the GPU only starts
 // at the readbacks (about 8 per frame), and the command processor then waits for all the work
 // recorded before each of them (CP recording and GPU execution do not overlap).
-// ISS_SUBMIT_INTERVAL_US=N: also once the batch has been recorded for N us. A native segment counts
+// Also once the batch has been recorded for N us. A native segment counts
 // as one draw, so with ~150 segments a frame the batches went out ~13 times a frame, up to 2.4 ms
 // apart: the GPU waited for the next one, then fell behind on a heavy one (a1-jobwait 2026-10-18).
 thread_local u64 periodic_tick{};
 thread_local u32 periodic_draws{};
 thread_local u64 periodic_start_ns{};
 void PeriodicSubmit(Scheduler& scheduler) {
-    static const u32 every = [] {
-        const char* p = std::getenv("ISS_SUBMIT_EVERY");
-        return p ? static_cast<u32>(std::strtoul(p, nullptr, 10)) : 0u;
-    }();
-    static const u64 interval_ns = [] {
-        const char* p = std::getenv("ISS_SUBMIT_INTERVAL_US");
-        return p ? std::strtoull(p, nullptr, 10) * 1000ull : 0ull;
-    }();
+    static const u32 every = 0u;
+    static const u64 interval_ns = 500'000ull; // submit every 0.5 ms of recording: a guest read waits ~2 ms
     if (every == 0 && interval_ns == 0) return;
     const u64 tick = scheduler.CurrentTick();
     if (tick != periodic_tick) {
@@ -720,13 +685,6 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
       host_markers_enabled{EmulatorSettings.IsVkHostMarkersEnabled()},
       guest_markers_enabled{EmulatorSettings.IsVkGuestMarkersEnabled()},
       occlusion{instance, scheduler} {
-    if (const char* value = std::getenv("ISS_CP_SPLIT_PREPARE_SERIAL");
-        value && value[0] == '1') {
-        // Exercise the thread-local queue selection and owner scratch on the existing
-        // single CP before any second worker is allowed to touch shared caches.
-        buffer_cache.SetCpSplitEnabled(true);
-        LOG_INFO(Render_Vulkan, "CP split owner scratch: serial preparation enabled");
-    }
     if (!EmulatorSettings.IsNullGPU()) {
         liverpool->BindRasterizer(this);
         ASSERT_MSG(liverpool->BindGraphicsFallbackRecorder(
@@ -766,11 +724,7 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
 }
 
 bool Rasterizer::Qid1RecordContextEnabled() noexcept {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_CP_RECORD_CONTEXT_QID1_STAGE2");
-        return value && value[0] == '1';
-    }();
-    return enabled;
+    return false;
 }
 
 bool Rasterizer::PrepareCpSplit(std::string& reason) {
@@ -947,7 +901,7 @@ void Rasterizer::EnsureComputeQueueInitialized() {
         compute_runtime = std::move(new_runtime);
         compute_stream = std::move(new_stream);
         if (AscQueueEnabled()) {
-            // ISS_ASC_NATIVE_QUEUE: a graphics session runs after the compute work recorded
+            // A graphics session runs after the compute work recorded
             // before its submission (the unified heap and readback stamps of that work carry the
             // graphics tick of the session recorded with it).
             scheduler.SetBeforeSubmitCallback([this] { AscFlush(); });
@@ -1040,7 +994,6 @@ bool Rasterizer::FilterDraw() {
 }
 
 void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
-    const iss::cp_path::Scope cp_path_scope{iss::cp_path::PrepareRender};
     // Prefetch render targets to handle overlaps with bound textures (e.g. mipgen)
     const auto& key = pipeline->GetGraphicsKey();
     const auto& regs = DrawRegs();
@@ -1209,42 +1162,29 @@ static void NoteDrawCensus(const RenderState& state, u32 path, const GraphicsPip
                            const AmdGpu::Regs& regs);
 
 namespace {
-// ISS_DRAW_CYCLES=1: time stamp counter cycles of each phase of the direct draw path, and of the
+// Time stamp counter cycles of each phase of the direct draw path, and of the
 // command processor work between draws, reported per draw every 65536 draws.
 bool LazyPipelinesEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_LAZY_PIPELINES");
-        return value && value[0] == '1';
-    }();
-    return enabled;
+    return false;
 }
-// ISS_ASYNC_SKIP_DRAWS=1 (gow3_pc style, off by default): a graphics draw whose pipeline is still
+// A graphics draw whose pipeline is still
 // compiling is skipped instead of waited for (no stall on new shaders; the object or effect
 // appears a few frames later). Dispatches still wait: their results are read afterwards.
 bool AsyncSkipDrawsEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_ASYNC_SKIP_DRAWS");
-        const bool on = value && value[0] == '1';
-        if (on) std::fprintf(stderr, "ASYNC_SKIP_DRAWS on: draws of compiling pipelines are skipped\n");
-        return on;
-    }();
-    return enabled;
+    return false;
 }
 bool SkipUnreadyDraws() {
     return !LazyPipelinesEnabled() || AsyncSkipDrawsEnabled();
 }
-// Whether this draw of a compiling pipeline is skipped. With ISS_ASYNC_SKIP_DRAWS a skip must not
+// Whether this draw of a compiling pipeline is skipped. A skip must not
 // break the whole frame: a full screen pass (a few vertices: lighting, sky, composite, post
 // effects) waits for its pipeline. Skipping them when the world spawns showed the raw G-buffer, a
-// flat yellow-green screen. ISS_ASYNC_SKIP_FRAME_CAP=N (off by default) also makes every draw
+// flat yellow-green screen. A frame cap also makes every draw
 // after N skips in a frame wait: with a cold cache the spawn frame then waited ~500 pipelines (6 s).
 bool SkipUnreadyDraw(u32 num_vertices, u32 num_instances) {
     if (!SkipUnreadyDraws()) return false;
     if (!AsyncSkipDrawsEnabled()) return true;
-    static const u32 frame_cap = [] {
-        const char* value = std::getenv("ISS_ASYNC_SKIP_FRAME_CAP");
-        return value ? static_cast<u32>(std::atoi(value)) : ~0u;
-    }();
+    static const u32 frame_cap = ~0u;
     if (num_vertices <= 6 && num_instances <= 1) return false;
     thread_local u64 frame = ~0ull;
     thread_local u32 skips = 0;
@@ -1258,10 +1198,7 @@ bool SkipUnreadyDraw(u32 num_vertices, u32 num_instances) {
     return true;
 }
 struct DrawCycles {
-    bool enabled = [] {
-        const char* value = std::getenv("ISS_DRAW_CYCLES");
-        return value && value[0] == '1';
-    }();
+    bool enabled = false;
     std::array<u64, 16> cycles{};
     u64 draws{};
     u64 last{};
@@ -1293,7 +1230,7 @@ struct DrawCycles {
 DrawCycles g_draw_cycles;
 } // namespace
 
-// ISS_LAZY_PIPELINES=1: a new graphics pipeline is compiled by the compiler workers while the
+// A new graphics pipeline is compiled by the compiler workers while the
 // command processor goes on; its bind waits for it on the recording thread, when the commands
 // run in order (a burst of new pipelines compiles in parallel instead of one after another).
 static std::atomic<u64> g_lazy_binds{}, g_lazy_wait_ns{}, g_lazy_steals{};
@@ -1420,110 +1357,10 @@ bool FsrFullPath(const AmdGpu::Regs& regs, Vulkan::PipelineCache& cache) {
     }
     return entry.fsr;
 }
-// ISS_FSR_DEBUG: frames that are not one edges, one blend weights and one resolve with the
-// other jitter phase, with the wall time, to match against what is seen on screen.
-void FsrWatch(u64 hash, bool pipelined);
 } // namespace
 
-namespace {
-// ISS_FSR_DEBUG: every SMAA pass of a frame with more than one (or the first frames): the images
-// each pass reads and writes (guest addresses, sizes), the jitter phase of its blend weights, and
-// what the resolve reads. Shows which pass is the scene the resolve uses.
-void FsrPassLog(const AmdGpu::Regs& regs, const Shader::Info& ps, bool pipelined) {
-    static const bool debug = std::getenv("ISS_FSR_DEBUG") != nullptr;
-    if (!debug) {
-        return;
-    }
-    const u64 hash = ps.pgm_hash;
-    const char* name = hash == kFsrEdgesPsHash          ? "edges"
-                       : hash == kFsrBlendWeightsPsHash ? "blend"
-                       : hash == kFsrNeighborhoodPsHash ? "neighborhood"
-                       : hash == kFsrResolvePsHash      ? "resolve"
-                                                        : nullptr;
-    if (!name) {
-        return;
-    }
-    static std::string log;
-    static int edges = 0;
-    static u64 resolves = 0, printed = 0;
-    char line[512];
-    int n = std::snprintf(line, sizeof(line), "  flip %llu %s%s target %#llx",
-                          (unsigned long long)iss::fsr::GetStats().flips.load(std::memory_order_relaxed),
-                          name, pipelined ? " (pipelined)" : "",
-                          regs.color_buffers[0] ? (unsigned long long)regs.color_buffers[0].Address() : 0ull);
-    for (size_t i = 0; i < ps.images.size() && i < 5 && n < 400; ++i) {
-        const auto sharp = ps.images[i].GetSharp(ps);
-        n += std::snprintf(line + n, sizeof(line) - n, " in%zu %#llx %ux%u", i,
-                           (unsigned long long)sharp.Address(), unsigned(sharp.width + 1),
-                           unsigned(sharp.height + 1));
-    }
-    if (hash == kFsrBlendWeightsPsHash) {
-        n += std::snprintf(line + n, sizeof(line) - n, " phase %d", g_fsr_scene.phase);
-    }
-    log += line;
-    log += '\n';
-    edges += hash == kFsrEdgesPsHash;
-    if (hash == kFsrResolvePsHash) {
-        const auto now = std::chrono::steady_clock::now();
-        static const auto start = now;
-        if ((edges != 1 || resolves < 3) && (printed < 60 || (printed % 100) == 0)) {
-            std::fprintf(stderr, "FSR_PASSES t=%.2fs resolve %llu, %d scene passes:\n%s",
-                         std::chrono::duration<float>(now - start).count(),
-                         (unsigned long long)resolves, edges, log.c_str());
-        }
-        printed += edges != 1;
-        ++resolves;
-        edges = 0;
-        log.clear();
-    } else if (log.size() > 8192) {
-        log.clear(); // no resolve: not a frame
-    }
-}
-
-void FsrWatch(u64 hash, bool pipelined) {
-    static const bool debug = std::getenv("ISS_FSR_DEBUG") != nullptr;
-    static int edges = 0, blends = 0, last_phase = 0;
-    static u64 resolves = 0;
-    static auto last = std::chrono::steady_clock::now();
-    static const auto start = last;
-    if (!debug) {
-        return;
-    }
-    if (hash == kFsrEdgesPsHash) {
-        ++edges;
-    } else if (hash == kFsrBlendWeightsPsHash) {
-        ++blends;
-    } else if (hash == kFsrResolvePsHash) {
-        const auto now = std::chrono::steady_clock::now();
-        const float dt = std::chrono::duration<float, std::milli>(now - last).count();
-        const float t = std::chrono::duration<float>(now - start).count();
-        const int phase = g_fsr_scene.phase;
-        if (edges != 1 || blends != 1 || phase == last_phase || pipelined || dt > 50.0f) {
-            std::fprintf(stderr,
-                         "FSR_WATCH t=%.2fs resolve %llu: edges %d blends %d phase %d (last %d) "
-                         "pipelined %d dt %.1f ms\n",
-                         t, (unsigned long long)resolves, edges, blends, phase, last_phase,
-                         int(pipelined), dt);
-        }
-        ++resolves;
-        edges = blends = 0;
-        last_phase = phase;
-        last = now;
-    }
-}
-} // namespace
-
-// ISS_FSR_DEBUG: why a frame keeps the game's resolve (counts, every 256th of a reason).
+// Why a frame keeps the game's resolve (counts, every 256th of a reason).
 static bool FsrSkip(int reason) {
-    static const bool debug = std::getenv("ISS_FSR_DEBUG") != nullptr;
-    static u64 skips[6]{};
-    if (debug && (skips[reason]++ & 255) == 0) {
-        static constexpr const char* names[] = {"no edges draw", "no jitter phase",
-                                                "image generation changed", "no motion learned",
-                                                "no target", "no FSR run on this render"};
-        std::fprintf(stderr, "FSR: skipped: %s (%llu)\n", names[reason],
-                     (unsigned long long)skips[reason]);
-    }
     return false;
 }
 
@@ -1651,14 +1488,6 @@ bool Rasterizer::FsrResolve(const GraphicsPipeline* pipeline, bool copy) {
         }
         return false;
     }
-    if (static int reported = 0; reported++ < 2 && std::getenv("ISS_FSR_DEBUG")) {
-        const auto sw = regs.color_buffers[0].Swizzle();
-        std::fprintf(stderr, "FSR: target %ux%u format %s cb swizzle %d%d%d%d edges dst_sel %d%d%d%d\n",
-                     output.info.size.width, output.info.size.height,
-                     vk::to_string(output.info.pixel_format).c_str(), int(sw.r), int(sw.g),
-                     int(sw.b), int(sw.a), g_fsr_scene.dst_sel[0], g_fsr_scene.dst_sel[1],
-                     g_fsr_scene.dst_sel[2], g_fsr_scene.dst_sel[3]);
-    }
     // ISS_FG: the output before the HUD and the optical flow. After a hitch (two renders for
     // this resolve) the vectors cover one render, not the time shown: FG starts over.
     auto fg_frame = frame;
@@ -1743,7 +1572,6 @@ bool Rasterizer::FsrUpscalePass(const GraphicsPipeline* pipeline) {
 
 std::size_t Rasterizer::Draw(bool is_indexed, u32 index_offset,
                              std::span<const u32> following_commands, std::size_t native_packet_budget) {
-    const iss::cp_path::Scope cp_path_scope{iss::cp_path::Draw};
     ObserveNativeVisualDraw();
     if (g_draw_cycles.enabled) g_draw_cycles.Mark(13);
     const bool pipelined=UseDrawPipe() && FilterDrawPasses();
@@ -1752,7 +1580,6 @@ std::size_t Rasterizer::Draw(bool is_indexed, u32 index_offset,
     // Pause guard (pause_guard.h): in the pause every native/fast path below is off.
     const bool native_off = pass_learn || iss::pause_guard::Blocked() || FsrFullPath(DrawRegs(), pipeline_cache);
     if(!pipelined){DrainDrawPipe(5);SubmitFeedbackBatch(scheduler);PeriodicSubmit(scheduler);}
-    iss::diagnostics::Scope phase_scope(iss::diagnostics::Draw);
     RENDERER_TRACE;
 
     if(!pipelined)scheduler.PopPendingOperations();
@@ -1820,38 +1647,9 @@ std::size_t Rasterizer::Draw(bool is_indexed, u32 index_offset,
     if (!pipeline) {
         return 0;
     }
-    if (const char* fp = std::getenv("ISS_FSR_PROBE"); fp && fp[0] == '1') [[unlikely]] {
-        static std::atomic<u64> reached{0};
-        const auto* ps = pipeline->GetStages()[static_cast<u32>(Shader::SwStage::Fragment)];
-        if (ps && ps->pgm_hash == 0xabc3c768) {
-            // SMAA edges: its colour texture is the tonemap output, its depth the scene depth.
-            static std::atomic<u64> edges{0};
-            const u64 n = edges.fetch_add(1) + 1;
-            if (n <= 3 || n % 1024 == 0) {
-                const auto& regs = DrawRegs();
-                std::fprintf(stderr, "FSR_PROBE edges n=%llu target=%llx depth=%llx dvalid=%d\n",
-                             (unsigned long long)n, (unsigned long long)regs.color_buffers[0].Address(),
-                             (unsigned long long)regs.depth_buffer.DepthAddress(),
-                             int(regs.depth_buffer.DepthValid()));
-                for (size_t i = 0; i < ps->images.size(); ++i) {
-                    const auto t = ps->images[i].GetSharp(*ps);
-                    std::fprintf(stderr, "FSR_PROBE   edges img%zu: addr=%llx %ux%u dfmt=%d nfmt=%d\n", i,
-                                 (unsigned long long)t.Address(), unsigned(t.width) + 1,
-                                 unsigned(t.height) + 1, int(t.GetDataFmt()), int(t.GetNumberFmt()));
-                }
-            }
-        }
-        if (ps && ps->pgm_hash == 0xa6d23116) {
-            const u64 n = reached.fetch_add(1) + 1;
-            if (n == 1 || (n & 1023) == 0)
-                std::fprintf(stderr, "FSR_PROBE resolve reached Draw() n=%llu pipelined=%d\n",
-                             (unsigned long long)n, int(pipelined));
-        }
-    }
     if (iss::fsr::Enabled()) [[unlikely]] {
         const auto* ps = pipeline->GetStages()[static_cast<u32>(Shader::SwStage::Fragment)];
         if (ps) {
-            FsrWatch(ps->pgm_hash, pipelined);
         }
         if (g_fsr_scene.upscale_pending && !pipelined && FsrUpscalePass(pipeline)) {
             return 0;
@@ -1869,9 +1667,6 @@ std::size_t Rasterizer::Draw(bool is_indexed, u32 index_offset,
             }
             ++g_fsr_scene.frames;
         }
-        if (ps) {
-            FsrPassLog(regs, *ps, pipelined); // after the blend weights set the phase
-        }
         if (!pipelined && ps && ps->pgm_hash == kFsrNeighborhoodPsHash) {
             FsrDispatch();
         }
@@ -1880,9 +1675,6 @@ std::size_t Rasterizer::Draw(bool is_indexed, u32 index_offset,
                           g_fsr_scene.dispatched && g_fsr_scene.scene_address && *cb &&
                           cb->Address() == g_fsr_scene.output_address && ps->images.size() == 1 &&
                           ps->images[0].GetSharp(*ps).Address() == g_fsr_scene.scene_address;
-        if (copy) {
-            FsrWatch(kFsrResolvePsHash, false); // the frame's resolve, for the debug lines
-        }
         if (copy || (!pipelined && ps && ps->pgm_hash == kFsrResolvePsHash)) {
             const bool fsr = FsrResolve(pipeline, copy);
             g_fsr_scene.frames = 0;
@@ -1891,20 +1683,6 @@ std::size_t Rasterizer::Draw(bool is_indexed, u32 index_offset,
             if (fsr) {
                 return 0;
             }
-        }
-    }
-    // Diagnostic only (wrong image): ISS_DIAG_SKIP_DRAWS=1 drops the dominant city draw family,
-    // 2 drops every direct draw, to measure how the frame rate follows command processor work.
-    static const int diag_skip = [] {
-        const char* value = std::getenv("ISS_DIAG_SKIP_DRAWS");
-        return value ? std::atoi(value) : 0;
-    }();
-    if (diag_skip != 0) [[unlikely]] {
-        const auto* vs = pipeline->GetStages()[static_cast<u32>(Shader::SwStage::Vertex)];
-        const auto* ps = pipeline->GetStages()[static_cast<u32>(Shader::SwStage::Fragment)];
-        if (diag_skip == 2 || (vs && ps && vs->pgm_hash == 0x0BEB7156 &&
-                               ps->pgm_hash == 0x6353E48B)) {
-            return 0;
         }
     }
     if (!pipeline->IsReady() &&
@@ -1936,8 +1714,6 @@ std::size_t Rasterizer::Draw(bool is_indexed, u32 index_offset,
 
 void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline,bool is_indexed,u32 index_offset) {
     if (NativeVisualCaptureEnabled()) native_visual_latch = {};
-    std::optional<iss::diagnostics::Scope> worker_scope;
-    if(OnDrawWorker())worker_scope.emplace(iss::diagnostics::Draw);
     const auto& regs=DrawRegs();
     // Statistics: draws a fast path for unchanged render state could take.
     if (const u64 changes = DrawContextChanges(); changes == last_draw_context_changes) {
@@ -1971,30 +1747,6 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline,bool is_indexed,u32
         return;
     }
     if (is_indexed && native_visual_latch.material_verified) CompleteNativeVisualPlans(pipeline);
-    // ISS_FSR_PROBE=1 (diagnosis, FSR prototype): the images the T2x temporal resolve (pixel shader
-    // a6d23116) reads, in shader order, and its target.
-    static const bool fsr_probe = [] {
-        const char* p = std::getenv("ISS_FSR_PROBE");
-        return p && p[0] == '1';
-    }();
-    if (fsr_probe && !OnDrawWorker() &&
-        pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash == 0xa6d23116) {
-        static u64 probe_calls = 0;
-        if (probe_calls++ < 4 || probe_calls % 600 == 0) {
-            std::fprintf(stderr, "FSR_PROBE call=%llu target=%llx fmt=%u images=%zu\n",
-                         (unsigned long long)probe_calls,
-                         (unsigned long long)regs.color_buffers[0].Address(),
-                         unsigned(regs.color_buffers[0].GetDataFmt()), image_bindings.size());
-            const auto& ps = pipeline->GetStage(Shader::SwStage::Fragment);
-            for (size_t i = 0; i < ps.images.size(); ++i) {
-                const auto t = ps.images[i].GetSharp(ps);
-                std::fprintf(stderr, "FSR_PROBE   img%zu: addr=%llx %ux%u dfmt=%d nfmt=%d type=%d written=%d\n", i,
-                             (unsigned long long)t.Address(), unsigned(t.width) + 1, unsigned(t.height) + 1,
-                             int(t.GetDataFmt()), int(t.GetNumberFmt()), int(t.GetType()),
-                             int(ps.images[i].is_written));
-            }
-        }
-    }
     if (iss::fsr::Enabled() && !OnDrawWorker() &&
         pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash == kFsrEdgesPsHash) [[unlikely]] {
         const auto& ps = pipeline->GetStage(Shader::SwStage::Fragment);
@@ -2013,12 +1765,6 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline,bool is_indexed,u32
         }
     }
     if (cycles) g_draw_cycles.Mark(3);
-    if (iss::command_trace::enabled) {
-        for (const auto* stage : pipeline->GetStages()) if (stage)
-            iss::command_trace::Stage("draw", DrawQueue(), *stage,
-                                      stage->ProgramBase(), 0, 0, 0, scheduler.CurrentTick(),
-                                      needs_barrier, 0, 0);
-    }
     if (g_dump.frames_left != 0) [[unlikely]] {
         DumpCommand(is_indexed ? "drawidx" : "draw", pipeline,
                     fmt::format("n{} i{} prim{}", regs.num_indices,
@@ -2028,9 +1774,6 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline,bool is_indexed,u32
     if (native_recording) native_recording->render_state = state;
     if (cycles) g_draw_cycles.Mark(4);
 
-    iss::native_geometry::ProbeSecondaryDraw(
-        *pipeline, regs, *memory, buffer_cache,
-        DrawQueue(), index_offset, scheduler.CurrentTick());
     BindVertexBuffers(pipeline);
     if (cycles) g_draw_cycles.Mark(5);
     if (is_indexed) {
@@ -2051,55 +1794,12 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline,bool is_indexed,u32
     if (cycles) g_draw_cycles.Mark(10);
     if (pass_learn_key && !attachment_feedback_loop) {
         native_image_capture = &pass_capture;
-        // ISS_LEARN_STATS=1 (diagnosis): the cost of building templates, every 4096 learns.
-        static const bool learn_stats = [] {
-            const char* p = std::getenv("ISS_LEARN_STATS");
-            return p && p[0] == '1';
-        }();
-        const u64 learn_start = learn_stats ? Common::Perf::NowNs() : 0;
         NativePassLearn(pass_learn_key, pipeline, state);
-        if (learn_stats) {
-            static u64 learns = 0, learn_ns = 0;
-            learn_ns += Common::Perf::NowNs() - learn_start;
-            if ((++learns & 4095) == 0)
-                std::fprintf(stderr, "LEARN_STATS learns=%llu avg_us=%.1f\n",
-                             (unsigned long long)learns, double(learn_ns) / 1000.0 / double(learns));
-        }
         native_image_capture = nullptr;
     }
 
     const auto& vs_info = pipeline->GetStage(Shader::SwStage::Vertex);
     const auto& fetch_shader = pipeline->GetFetchShader();
-    if (iss::command_trace::enabled && vs_info.pgm_hash == 0x0BEB7156 &&
-        pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash == 0x6353E48B) {
-        std::array<u8, 3> attribute_ownership{};
-        for (u32 i = 0; i < std::min<u32>(3, fetch_shader.attributes.size()); ++i) {
-            const auto sharp = fetch_shader.attributes[i].GetSharp(vs_info);
-            if (!sharp.base_address || !sharp.GetSize()) continue;
-            attribute_ownership[i] =
-                (buffer_cache.HasGpuData(sharp.base_address, sharp.GetSize()) ? 1 : 0) |
-                (buffer_cache.IsRegionCpuModified(sharp.base_address, sharp.GetSize()) ? 2 : 0) |
-                (memory->ClampRangeSize(sharp.base_address, sharp.GetSize()) == sharp.GetSize()
-                     ? 4 : 0);
-        }
-        const bool index16 = regs.index_buffer_type.index_type == AmdGpu::IndexType::Index16;
-        const u32 index_size = index16 ? sizeof(u16) : sizeof(u32);
-        const VAddr index_address = regs.index_base_address.Address<VAddr>() +
-                                    u64{index_offset} * index_size;
-        const u64 index_bytes = u64{regs.num_indices} * index_size;
-        const u8 index_ownership = index_bytes && index_bytes <= std::numeric_limits<u32>::max()
-            ? (buffer_cache.HasGpuData(index_address, index_bytes) ? 1 : 0) |
-              (buffer_cache.IsRegionCpuModified(index_address, index_bytes) ? 2 : 0) |
-              (memory->ClampRangeSize(index_address, index_bytes) == index_bytes ? 4 : 0)
-            : 0;
-        iss::command_trace::VertexFetch(
-            DrawQueue(), vs_info, fetch_shader, reinterpret_cast<u64>(pipeline),
-            DrawContextChanges(), u32(regs.primitive_type),
-            regs.num_instances.NumInstances(), regs.num_indices,
-            index_address, regs.index_buffer_type.raw, index_offset,
-            attribute_ownership, index_ownership, memory->MappingEpoch(),
-            buffer_cache.MappingGeneration());
-    }
     const auto [vertex_offset, instance_offset] = GetDrawOffsets(regs, vs_info, fetch_shader);
 
     const auto cmdbuf = scheduler.Recorder();
@@ -2124,7 +1824,6 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline,bool is_indexed,u32
         cmdbuf.draw(regs.num_indices, regs.num_instances.NumInstances(), vertex_offset,
                     instance_offset);
     }
-    iss::feedback_join::Recorded();
     DebugState.IncDrawCall();
 
     if (g_dump.frames_left != 0) [[unlikely]] {
@@ -2150,13 +1849,12 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline,bool is_indexed,u32
 void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u32 stride,
                               u32 max_count, VAddr count_address, u16 vertex_sgpr_offset,
                               u16 instance_sgpr_offset) {
-    const iss::cp_path::Scope cp_path_scope{iss::cp_path::DrawIndirect};
     BumpBindEpoch();
     const DrawIndirectParams params = {
         .vertex_sgpr_offset = vertex_sgpr_offset,
         .instance_sgpr_offset = instance_sgpr_offset,
     };
-    // ISS_DRAW_PIPE_DEFER: queued to the draw pipe worker behind the draws before it (the
+    // Queued to the draw pipe worker behind the draws before it (the
     // arguments are read there, in order), instead of draining the pipe.
     if (draw_pipe_state && draw_pipe_state->defer && UseDrawPipe() && FilterDrawPasses() &&
         g_dump.frames_left == 0 &&
@@ -2226,7 +1924,7 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     }
 
     PrepareRenderState(pipeline);
-    // ISS_NATIVE_INDIRECT: a learn request at this indexed indirect draw keeps its template.
+    // A learn request at this indexed indirect draw keeps its template.
     const u64 pass_learn_key = native_pass_learn && native_pass_learn_indirect && is_indexed &&
                                        !OnDrawWorker()
                                    ? NativePassLearnKey(native_pass_learn) : 0;
@@ -2244,13 +1942,6 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
                     fmt::format("args{:x} stride{} max{} count{:x} prim{}", arg_address + offset,
                                 stride, max_count, count_address,
                                 u32(DrawRegs().primitive_type)));
-    }
-    if (iss::command_trace::enabled) {
-        for (const auto* stage : pipeline->GetStages()) if (stage)
-            iss::command_trace::Stage("draw_indirect", DrawQueue(), *stage,
-                                      stage->ProgramBase(), max_count, stride, is_indexed,
-                                      scheduler.CurrentTick(), needs_barrier,
-                                      arg_address + offset, count_address);
     }
     const auto state = BeginRendering(pipeline);
 
@@ -2322,7 +2013,6 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
         }
         DebugState.IncDrawCall();
     }
-    iss::feedback_join::Recorded();
 
     if (g_dump.frames_left != 0) [[unlikely]] {
         DumpAfter(pipeline);
@@ -3415,12 +3105,9 @@ void Rasterizer::FinishAscHostWrite(AscHostWriteGuard& guard) noexcept {
     guard.lease_id = 0;
 }
 
-// ISS_DISPATCH_CYCLES=1: where a direct dispatch spends its cycles (command processor thread).
+// Where a direct dispatch spends its cycles (command processor thread).
 struct DispatchCycles {
-    bool enabled = [] {
-        const char* value = std::getenv("ISS_DISPATCH_CYCLES");
-        return value && value[0] == '1';
-    }();
+    bool enabled = false;
     bool active{};
     std::array<u64, 8> cycles{};
     u64 count{}, hle{}, last{};
@@ -3457,11 +3144,9 @@ struct DispatchCycles {
 static DispatchCycles g_dispatch_cycles;
 
 void Rasterizer::DispatchDirect() {
-    const iss::cp_path::Scope cp_path_scope{iss::cp_path::Dispatch};
     auto& dc = g_dispatch_cycles;
     if (dc.enabled && !OnDrawWorker()) dc.Start();
     BumpBindEpoch();
-    iss::diagnostics::Scope phase_scope(iss::diagnostics::Dispatch);
     RENDERER_TRACE;
 
     const bool pipelined=UseDrawPipe();
@@ -3498,8 +3183,6 @@ void Rasterizer::DispatchDirect() {
 }
 
 void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
-    std::optional<iss::diagnostics::Scope> worker_scope;
-    if(OnDrawWorker())worker_scope.emplace(iss::diagnostics::Dispatch);
     const auto& cs_program=DrawCsRegs();
     const auto& cs = pipeline->GetStage(Shader::SwStage::Compute);
     const bool feedback=WritesFeedbackRecord(cs);
@@ -3518,11 +3201,9 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
     auto& push_data = ComputeBindingsActive() ? compute_bindings.push_data : this->push_data;
     auto& needs_barrier = ComputeBindingsActive() ? compute_bindings.needs_barrier
                                                    : this->needs_barrier;
-    const bool hazard_diag=iss::hazard_probe::Enabled();
-    if(hazard_diag)iss::hazard_probe::BeginDispatch(cs.pgm_hash,0,Sched().CurrentTick(),u32(DrawQueue()),u32(cs.hw_stage),needs_barrier);
     auto& dc = g_dispatch_cycles;
     dc.Mark(2);
-    // ISS_NATIVE_COMPUTE: a learn request's dispatch keeps what BindResources resolves.
+    // A learn request's dispatch keeps what BindResources resolves.
     const u64 compute_learn =
         native_compute_learn && !OnDrawWorker() && !ComputeBindingsActive() ? native_compute_learn : 0;
     std::vector<NativeImageCapture> compute_capture;
@@ -3530,7 +3211,6 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
     const bool bound_resources = BindResources(pipeline);
     if (compute_learn) native_image_capture = nullptr;
     if (!bound_resources) {
-        if(hazard_diag)iss::hazard_probe::AbortDispatch(1);
         return;
     }
     if (compute_learn) {
@@ -3544,40 +3224,12 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
                                 cs_program.dim_z, OnComputeRecordQueue() ? " cq" : ""));
     }
 
-    // Compute phases (see compute_phase.h): a dispatch of the compute queues following the
-    // dispatches of an open run with nothing but register writes in between needs no barrier
-    // for hazards with them only.
-    if (iss::command_trace::enabled) {
-        iss::command_trace::Stage("dispatch", DrawQueue(), cs,
-                                  cs_program.Address<u64>(), cs_program.dim_x, cs_program.dim_y,
-                                  cs_program.dim_z, Sched().CurrentTick(), needs_barrier, 0, 0);
-    }
-    const bool phase = (iss::phase::Enabled() && DrawAsync() && !OnComputeRecordQueue()) ||
-                       (iss::ring_barriers::enabled && DrawAsync() &&
-                        iss::ring_barriers::Audited(cs.pgm_hash));
-    if (phase) {
-        iss::phase::g_owner.store(&Rt(), std::memory_order_relaxed);
-        if (iss::phase::g_boundary.exchange(false, std::memory_order_relaxed)) {
-            iss::phase::g_open.store(false, std::memory_order_relaxed);
-        }
-    }
-    bool hazard_flushed=false;
+    const bool phase = iss::ring_barriers::enabled && DrawAsync() &&
+                       iss::ring_barriers::Audited(cs.pgm_hash);
     if (needs_barrier) {
-        if (phase && iss::phase::g_open.load(std::memory_order_relaxed) &&
-            !iss::phase::g_foreign.load(std::memory_order_relaxed)) {
-            iss::phase::g_skipped.fetch_add(1, std::memory_order_relaxed);
-        } else {
-            Rt().FlushBarriers();
-            hazard_flushed=true;
-            if (phase) {
-                iss::phase::g_flushed.fetch_add(1, std::memory_order_relaxed);
-                iss::phase::g_open.store(true, std::memory_order_relaxed);
-                iss::phase::g_foreign.store(false, std::memory_order_relaxed);
-            }
-        }
+        Rt().FlushBarriers();
     }
 
-    if(hazard_diag)iss::hazard_probe::EndDispatch(needs_barrier,hazard_flushed);
     dc.Mark(4);
     if (!OnComputeRecordQueue()) {
         scheduler.EndRendering();
@@ -3592,25 +3244,19 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
     }
     Sched().ProfileDispatchBegin(cs.pgm_hash);
     cmdbuf.dispatch(cs_program.dim_x, cs_program.dim_y, cs_program.dim_z);
-    iss::feedback_join::Recorded();
     Sched().ProfileDispatchEnd();
     DebugState.IncDispatch();
 
     if (g_dump.frames_left != 0) [[unlikely]] {
         DumpAfter(pipeline);
     }
-    // The accesses of a dispatch of the open run belong to the run.
-    const bool run_access = phase && iss::phase::g_open.load(std::memory_order_relaxed);
-    iss::phase::g_run_access.store(run_access, std::memory_order_relaxed);
     dc.Mark(5);
     ResetBindings(true);
-    iss::phase::g_run_access.store(false, std::memory_order_relaxed);
     dc.Mark(6);
     if(feedback&&!OnComputeRecordQueue())pending_feedback_tick=scheduler.CurrentTick();
 }
 
 void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
-    const iss::cp_path::Scope cp_path_scope{iss::cp_path::Dispatch};
     BumpBindEpoch();
     DrainDrawPipe(5);
     SubmitFeedbackBatch(scheduler);
@@ -3656,12 +3302,6 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
 
     const auto [buffer, base] = buffer_cache.ObtainBuffer(address + offset, size, false);
     needs_barrier |= Rt().IsBufferAccessed(buffer, base, size);
-    if (iss::command_trace::enabled) {
-        iss::command_trace::Stage("dispatch_indirect", DrawQueue(),
-                                  pipeline->GetStage(Shader::SwStage::Compute),
-                                  cs_program.Address<u64>(), 0, 0, 0, Sched().CurrentTick(),
-                                  needs_barrier, address + offset, 0);
-    }
 
     if (needs_barrier) {
         Rt().FlushBarriers();
@@ -3680,7 +3320,6 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
     }
     Sched().ProfileDispatchBegin(pipeline->GetStage(Shader::SwStage::Compute).pgm_hash);
     cmdbuf.dispatchIndirect(buffer->Handle(), base);
-    iss::feedback_join::Recorded();
     Sched().ProfileDispatchEnd();
     DebugState.IncDispatch();
 
@@ -3708,7 +3347,6 @@ void Rasterizer::Finish() {
 void Rasterizer::OnSubmit() {
     BumpBindEpoch();
     DrainDrawPipe(5);
-    if (iss::command_trace::enabled) iss::command_trace::Submit();
     if (Common::Perf::GetTuning().asc_queue.load(std::memory_order_relaxed)) {
         // asc_queue: cumulative cross-queue counters every 5 s (stderr, CP thread only).
         static u64 last_print{};
@@ -3731,15 +3369,6 @@ void Rasterizer::OnSubmit() {
             }
             std::fputc('\n', stderr);
             iss::asc_stats_api::Print();
-        }
-    }
-    if (iss::ring_barriers::enabled) {
-        static u64 last_ring_print{};
-        if (const u64 now = Common::Perf::NowNs(); now - last_ring_print >= 5'000'000'000ull) {
-            last_ring_print = now;
-            std::fprintf(stderr, "RING_BARRIERS frames=%llu skipped=%llu flushed=%llu\n",
-                         u64(Common::Perf::GuestFrameCounter().load()),
-                         iss::phase::g_skipped.load(), iss::phase::g_flushed.load());
         }
     }
     // Frame x-ray: a new request dumps the next 2 guest frames.
@@ -3805,7 +3434,7 @@ void Rasterizer::OnFence() {
 
 void Rasterizer::RetireReadbacks() {
     // An early retire is only an optimization (a guest fault completes the readback anyway):
-    // with ISS_DRAW_PIPE_LAZY it waits for a moment when stage B is idle.
+    // The draw pipe waits for a moment when stage B is idle.
     if(DrawPipeBusyLazy(draw_pipe_state.get()))return;
     DrainDrawPipe(5);
     buffer_cache.RetireReadbacks();
@@ -3878,8 +3507,6 @@ static bool StageMemoCycles();
 bool Rasterizer::BindResources(const Pipeline* pipeline,
                                const Shader::PushData* captured_push_data,
                                bool skip_compute_hle) {
-    const iss::cp_path::Scope cp_path_scope{iss::cp_path::BindRes};
-    iss::feedback_join::BeginBindings();
     ++bind_resources_seq;
     auto& set_write_index = ComputeBindingsActive() ? compute_bindings.set_write_index
                                                     : this->set_write_index;
@@ -3887,7 +3514,6 @@ bool Rasterizer::BindResources(const Pipeline* pipeline,
     auto& buffer_infos = ComputeBindingsActive() ? compute_bindings.buffer_infos : this->buffer_infos;
     auto& image_infos = ComputeBindingsActive() ? compute_bindings.image_infos : this->image_infos;
     auto& push_data = ComputeBindingsActive() ? compute_bindings.push_data : this->push_data;
-    iss::diagnostics::Scope phase_scope(iss::diagnostics::Resources);
     if (!skip_compute_hle &&
         (IsComputeImageCopy(pipeline) || IsComputeMetaClear(pipeline) ||
          IsComputeImageClear(pipeline))) {
@@ -3901,12 +3527,7 @@ bool Rasterizer::BindResources(const Pipeline* pipeline,
     }
 
     set_write_index = 0;
-    static const bool reuse_descriptor_storage = [] {
-        const char* value = std::getenv("SHADPS4_REUSE_DESCRIPTOR_STORAGE");
-        const bool enabled = value && value[0] == '1';
-        LOG_INFO(Render_Vulkan, "Descriptor storage reuse: {}", enabled);
-        return enabled;
-    }();
+    static const bool reuse_descriptor_storage = false;
     size_t write_count = 0;
     for (const auto* stage : pipeline->GetStages()) {
         if (stage) {
@@ -3922,7 +3543,7 @@ bool Rasterizer::BindResources(const Pipeline* pipeline,
     // Bind resource buffers and textures.
     Shader::Backend::Bindings binding{};
     push_data = captured_push_data ? *captured_push_data : MakeUserData(DrawRegs());
-    // ISS_NATIVE_MATERIALS learns from the descriptors resolved here, not from a replay.
+    // The native materials learn from the descriptors resolved here, not from a replay.
     const bool stage_memo = StageMemoEnabled() && !captured_push_data && !pipeline->IsCompute() &&
                             !native_image_capture && StageMemoContextEligible();
     if (StageMemoEnabled() && !pipeline->IsCompute() && ++stage_memo_stats.report >= 262144) {
@@ -4008,8 +3629,6 @@ bool Rasterizer::BindResources(const Pipeline* pipeline,
 }
 
 void Rasterizer::BindVertexBuffers(const GraphicsPipeline* pipeline) {
-    const iss::cp_path::Scope cp_path_scope{iss::cp_path::BindVertex};
-    iss::diagnostics::Scope phase_scope(iss::diagnostics::Vertices);
     const auto& regs = DrawRegs();
     VertexInputs<vk::VertexInputAttributeDescription2EXT> attributes;
     VertexInputs<vk::VertexInputBindingDescription2EXT> bindings;
@@ -4035,10 +3654,7 @@ void Rasterizer::BindVertexBuffers(const GraphicsPipeline* pipeline) {
     // them as one native host-visible allocation instead of resolving three guest ranges
     // through the general buffer cache. Keep the ordinary path for GPU-produced data,
     // unmapped ranges, and every other shader or vertex layout.
-    static const bool native_city_fetch = [] {
-        const char* value = std::getenv("ISS_NATIVE_CITY_FETCH");
-        return value && value[0] == '1';
-    }();
+    static const bool native_city_fetch = false;
     if (native_city_fetch && DrawQueue() == 0 && guest_buffers.size() == 3 &&
         pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash == 0x0BEB7156 &&
         pipeline->GetStage(Shader::SwStage::Fragment).pgm_hash == 0x6353E48B) {
@@ -4160,8 +3776,6 @@ void Rasterizer::BindVertexBuffers(const GraphicsPipeline* pipeline) {
     }
     for (auto& range : ranges_merged) {
         const u64 size = memory->ClampRangeSize(range.base_address, range.GetSize());
-        if (iss::repeat_census::enabled) [[unlikely]]
-            iss::repeat_census::Note(iss::repeat_census::VertexRange, range.base_address, size);
         bool known_unwritten = false;
         const bool reuse_check = Common::Perf::GetTuning().reuse_buffer_checks.load(std::memory_order_relaxed);
         std::tie(range.buffer, range.offset) =
@@ -4223,8 +3837,6 @@ void Rasterizer::BindVertexBuffers(const GraphicsPipeline* pipeline) {
 }
 
 void Rasterizer::BindIndexBuffer(u32 index_offset) {
-    const iss::cp_path::Scope cp_path_scope{iss::cp_path::BindIndex};
-    iss::diagnostics::Scope phase_scope(iss::diagnostics::Indices);
     const auto& regs = DrawRegs();
 
     // Figure out index type and size.
@@ -4236,8 +3848,6 @@ void Rasterizer::BindIndexBuffer(u32 index_offset) {
 
     // Bind index buffer.
     const u32 index_buffer_size = regs.num_indices * index_size;
-    if (iss::repeat_census::enabled) [[unlikely]]
-        iss::repeat_census::Note(iss::repeat_census::IndexRange, index_address, index_buffer_size);
     bool known_unwritten = false;
     const bool reuse_check = Common::Perf::GetTuning().reuse_buffer_checks.load(std::memory_order_relaxed);
     const auto [buffer, offset] =
@@ -4252,7 +3862,6 @@ void Rasterizer::BindIndexBuffer(u32 index_offset) {
 }
 
 void Rasterizer::ResetBindings(bool is_compute) {
-    const iss::cp_path::Scope cp_path_scope{iss::cp_path::Reset};
     auto& bound_images = ComputeBindingsActive() ? compute_bindings.bound_images
                                                  : this->bound_images;
     auto& bound_buffers = ComputeBindingsActive() ? compute_bindings.bound_buffers
@@ -4608,14 +4217,9 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
                                                     : this->set_write_index;
     auto& needs_barrier = ComputeBindingsActive() ? compute_bindings.needs_barrier
                                                    : this->needs_barrier;
-    iss::diagnostics::Scope phase_scope(iss::diagnostics::Buffers);
     const u64 alignment = instance.StorageMinAlignment();
-    const bool hazard_diag=iss::hazard_probe::Enabled();
     // Stage 1 is a serial assertion adapter, not a second command processor.
-    static const bool qid1_owner_stage1 = [] {
-        const char* value = std::getenv("ISS_CP_OWNER_QID1_STAGE1");
-        return value && value[0] == '1';
-    }();
+    static const bool qid1_owner_stage1 = false;
     const bool explicit_qid1 = qid1_owner_stage1 && !OnDrawWorker() && DrawQueue() == 1;
     for (const auto& trace : Common::Perf::GetTuning().trace_shaders) {
         const u64 hash = trace.load(std::memory_order_relaxed);
@@ -4648,7 +4252,6 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
         }
     }
     for (const auto& desc : stage.buffers) {
-        iss::hazard_probe::BufferCheck check{};
         const u32 native_index = static_cast<u32>(&desc - stage.buffers.data());
         const u32 native_bound_start = bound_buffers.size();
         NativeBufferAccess* native_access = native_access_audit
@@ -4658,7 +4261,6 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
             const auto& token = native_access_audit->record->buffer_tokens[native_index];
             native_access->cached = token && buffer_cache.ValidatePreparedRead(*token);
         }
-        if(hazard_diag){check.descriptor_index=u32(&desc-stage.buffers.data());check.buffer_type=u32(desc.buffer_type);check.is_special=desc.IsSpecial();check.is_written=desc.is_written;check.needs_before=needs_barrier;}
         if (!desc.IsSpecial() && !desc.is_written && !desc.is_formatted &&
             stage.hw_stage == Shader::HwStage::Fragment && NativeContext()) {
             const bool hazard = PrepareNativeReadOnlyBuffer(desc.GetSharp(stage), stage.pgm_hash,
@@ -4670,7 +4272,6 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
                 buffer_infos.emplace_back(gds_buf->Handle(), 0, gds_buf->SizeBytes());
                 const bool hit=Rt().IsBufferAccessed(gds_buf,0,gds_buf->SizeBytes(),desc.is_written);
                 needs_barrier |= hit;
-                if(hazard_diag){check.effective_size=gds_buf->SizeBytes();check.backing_id=reinterpret_cast<u64>(gds_buf);check.tracked_size=gds_buf->SizeBytes();check.check_performed=true;check.hit=hit;}
                 buffer_cache.NoteGdsAccess(desc.is_written);
                 bound_buffers.emplace_back(gds_buf, 0, gds_buf->SizeBytes(), desc.is_written);
             } else if (desc.buffer_type == Shader::BufferType::Flatbuf) {
@@ -4722,10 +4323,6 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
             }
         } else {
             const auto vsharp = desc.GetSharp(stage);
-            if (iss::repeat_census::enabled) [[unlikely]]
-                iss::repeat_census::Note(iss::repeat_census::StageBuffer, vsharp.base_address,
-                                         vsharp.GetSize(), u32(stage.hw_stage));
-            if(hazard_diag){AmdGpu::Buffer raw{};desc.sharp_fetch.Fetch(stage.FlatUserData().data(),&raw);std::memcpy(check.raw_vsharp.data(),&raw,sizeof(raw));check.effective_address=vsharp.base_address;check.effective_size=vsharp.GetSize();}
             if (vsharp.base_address == 0 || vsharp.GetSize() == 0) {
                 buffer_infos.emplace_back(VK_NULL_HANDLE, 0, VK_WHOLE_SIZE);
             } else {
@@ -4734,58 +4331,6 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
                 if (size != vsharp.GetSize()) {
                     LOG_ERROR(Render, "Clamped size from {} to {} for stage {:#x}",
                               vsharp.GetSize(), size, stage.pgm_hash);
-                }
-                // Correlate the game's 48-byte feedback descriptor with the
-                // EBOOT call-site observation. This is passive: recycled guest
-                // addresses and untracked aliases still require generic GPU
-                // binding/readback. No descriptor or synchronization changes.
-                static const bool observe_feedback_identity = [] {
-                    const char* setting = std::getenv("ISS_FEEDBACK_IDENTITY");
-                    return setting && setting[0] == '1';
-                }();
-                if (observe_feedback_identity &&
-                    stage.hw_stage == Shader::HwStage::Compute && size == 48) {
-                    const auto observed = iss::game::feedback::IdentityRegistry::Instance()
-                                              .Latest(vsharp.base_address);
-                    static std::atomic<u64> candidates{}, matches{};
-                    const auto candidate = ++candidates;
-                    const auto matched = observed ? ++matches : matches.load();
-                    if (observed) {
-                        thread_local std::unordered_map<u64, u64> hashes;
-                        const auto hash_count = ++hashes[stage.pgm_hash];
-                        if (hash_count == 1 || (hash_count & (hash_count - 1)) == 0) {
-                            std::fprintf(stderr,
-                                         "FB_IDENTITY_HASH hash=0x%llx count=%llu "
-                                         "descriptor=%u record=0x%llx write=%u stride=%u records=%u\n",
-                                         static_cast<unsigned long long>(stage.pgm_hash),
-                                         static_cast<unsigned long long>(hash_count),
-                                         unsigned(&desc - stage.buffers.data()),
-                                         static_cast<unsigned long long>(vsharp.base_address),
-                                         unsigned(desc.is_written), unsigned(vsharp.GetStride()),
-                                         unsigned(vsharp.num_records));
-                        }
-                    }
-                    if ((observed && matched <= 256) || candidate <= 8 ||
-                        (candidate & (candidate - 1)) == 0) {
-                        std::fprintf(stderr,
-                                     "FB_IDENTITY_BIND candidate=%llu match=%u matches=%llu "
-                                     "hash=0x%llx descriptor=%u record=0x%llx "
-                                     "write=%u stride=%u records=%u "
-                                     "owner=0x%llx shader_object=0x%llx "
-                                     "sequence=%llu reuses=%llu\n",
-                                     static_cast<unsigned long long>(candidate),
-                                     unsigned(observed.has_value()),
-                                     static_cast<unsigned long long>(matched),
-                                     static_cast<unsigned long long>(stage.pgm_hash),
-                                     unsigned(&desc - stage.buffers.data()),
-                                     static_cast<unsigned long long>(vsharp.base_address),
-                                     unsigned(desc.is_written), unsigned(vsharp.GetStride()),
-                                     unsigned(vsharp.num_records),
-                                     static_cast<unsigned long long>(observed ? observed->owner_object : 0),
-                                     static_cast<unsigned long long>(observed ? observed->shader_object : 0),
-                                     static_cast<unsigned long long>(observed ? observed->sequence : 0),
-                                     static_cast<unsigned long long>(observed ? observed->address_reuses : 0));
-                    }
                 }
                 bool known_unwritten = false;
                 const bool reuse_check = Common::Perf::GetTuning().reuse_buffer_checks.load(std::memory_order_relaxed);
@@ -4812,7 +4357,6 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
                         buffer_cache, owner, vsharp.base_address, size, desc.is_written,
                         desc.is_formatted, reuse_check ? &known_unwritten : nullptr);
                 }();
-                if(hazard_diag){check.effective_size=size;check.backing_id=reinterpret_cast<u64>(buffer);check.buffer_offset=offset;check.tracked_size=size;}
                 const u64 offset_aligned = Common::AlignDown(offset, alignment);
                 const u64 adjust = offset - offset_aligned;
                 if (adjust % 4 != 0) {
@@ -4822,14 +4366,6 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
                 push_data.AddOffset(binding.buffer, adjust);
                 buffer_infos.emplace_back(buffer->Handle(), offset_aligned, size + adjust);
                 if (desc.is_written) {
-                    if (iss::feedback_join::enabled && size == 48) {
-                        iss::feedback_join::Binding(
-                            vsharp.base_address, stage.pgm_hash, u32(stage.hw_stage),
-                            DrawQueue(), buffer_cache.OnComputeQueue() ? 1 : 0,
-                            buffer_cache.MappingGeneration(), Sched());
-                    }
-                    iss::diagnostics::RecordFeedbackBinding(vsharp.base_address, size,
-                                                           stage.pgm_hash, Sched().CurrentTick());
                     // Raw storage-buffer writes can also make an aliased cached image stale.
                     texture_cache.InvalidateMemoryFromGPU(vsharp.base_address, size);
                     if (!skipped_writes.empty()) {
@@ -4842,7 +4378,7 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
                     bound_buffers.emplace_back(buffer, offset, size, desc.is_written,
                                                vsharp.base_address);
                     if (known_unwritten) Common::Perf::Add(Common::Perf::BufferChecksReused);
-                    else {const bool hit=Rt().IsBufferAccessed(buffer,offset,size,desc.is_written);needs_barrier|=hit;if(hazard_diag){check.check_performed=true;check.hit=hit;}}
+                    else {const bool hit=Rt().IsBufferAccessed(buffer,offset,size,desc.is_written);needs_barrier|=hit;}
                 }
             }
         }
@@ -4851,7 +4387,6 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
             native_access->hazard_after = runtime.HazardSeq();
             native_access->bound.assign(bound_buffers.begin() + native_bound_start, bound_buffers.end());
         }
-        if(hazard_diag){check.needs_after=needs_barrier;iss::hazard_probe::Buffer(check);}
         auto& set_write = set_writes[set_write_index++];
         WriteBufferDescriptor(set_write, binding.unified++, &buffer_infos.back());
         ++binding.buffer;
@@ -4859,7 +4394,6 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
 }
 
 void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindings& binding) {
-    const iss::cp_path::Scope cp_path_scope{iss::cp_path::BindTex};
     auto& image_bindings = ComputeBindingsActive() ? compute_bindings.image_bindings
                                                    : this->image_bindings;
     auto& image_sources = ComputeBindingsActive() ? compute_bindings.image_sources
@@ -4875,7 +4409,6 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
                                                   : this->sampler_memos;
     auto& needs_barrier = ComputeBindingsActive() ? compute_bindings.needs_barrier
                                                    : this->needs_barrier;
-    iss::diagnostics::Scope phase_scope(iss::diagnostics::Textures);
     image_bindings.clear();
     image_sources.clear();
     const u32 first_image_idx = image_infos.size();
@@ -4932,9 +4465,6 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
         if (native_access_audit)
             native_access_audit->images[desc_index].hazard_before = runtime.HazardSeq();
         const auto tsharp = image_desc.GetSharp(stage);
-        if (iss::repeat_census::enabled) [[unlikely]]
-            iss::repeat_census::Note(iss::repeat_census::Texture, tsharp.Address(),
-                                     TexMemoKey(tsharp, 0, image_desc));
         if (texture_cache.IsMeta(tsharp.Address())) {
             LOG_WARNING(Render_Vulkan, "Unexpected metadata read by a shader (texture)");
         }
@@ -5242,8 +4772,6 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
 }
 
 RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
-    const iss::cp_path::Scope cp_path_scope{iss::cp_path::BeginRender};
-    iss::diagnostics::Scope phase_scope(iss::diagnostics::RenderTargets);
     attachment_feedback_loop = false;
     const auto& regs = DrawRegs();
     const auto& key = pipeline->GetGraphicsKey();
@@ -5421,7 +4949,7 @@ void Rasterizer::DepthStencilCopy(bool is_depth, bool is_stencil) {
     ScopeMarkerEnd();
 }
 
-// ---- ISS_ASC_NATIVE_QUEUE (see vk_rasterizer.h) -------------------------------------------
+// ---- The asynchronous compute queue (see vk_rasterizer.h) ---------------------------------
 namespace {
 struct AscQueueState {
     bool unflushed = false;               ///< compute work recorded since the last submission
@@ -5437,7 +4965,7 @@ AscQueueState g_asc;
 } // namespace
 
 namespace {
-// ISS_ASC_NATIVE_QUEUE: a transfer of a compute ring on the compute queue, ordered with that
+// A transfer of a compute ring on the compute queue, ordered with that
 // queue's dispatches and transfers.
 void AscTransferBarrier(vk::CommandBuffer cmd, bool before) {
     const vk::MemoryBarrier2 barrier = before
@@ -5485,7 +5013,7 @@ void Rasterizer::FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gds
             return;
         }
     }
-    // ISS_ASC_NATIVE_QUEUE: a compute ring's fill runs on the compute queue.
+    // A compute ring's fill runs on the compute queue.
     if (asc_copy_vqid != ~0u) {
         const u32 vqid = std::exchange(asc_copy_vqid, ~0u);
         if (compute_scheduler && AscQueueEnabled()) {
@@ -5547,32 +5075,9 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
             // time (images over it dirty and untracked, tracked pages CPU modified): the game's
             // DMA copies of ~5 MB into its texture pool every ~2 s faulted once per page on this
             // thread (~1240 Windows exceptions, part of the periodic 45 ms frames, 2026-10-17).
-            static const bool whole_invalidate = [] {
-                const char* p = std::getenv("ISS_CP_COPY_INVALIDATE");
-                return !p || p[0] != '0';
-            }();
-            // ISS_BIG_UPLOAD_LOG=1 (diagnosis): the host copies of 256 KB or more.
-            static const bool log_copies = [] {
-                const char* p = std::getenv("ISS_BIG_UPLOAD_LOG");
-                return p && p[0] == '1';
-            }();
-            static const u32 log_min = [] {
-                const char* p = std::getenv("ISS_BIG_UPLOAD_LOG_MIN");
-                return p ? u32(std::strtoul(p, nullptr, 10)) : (256u << 10);
-            }();
-            const bool log_copy = log_copies && num_bytes >= log_min;
-            const u64 copy_t0 = log_copy ? Common::Perf::NowNs() : 0;
-            if (whole_invalidate) {
-                InvalidateMemory(dst, num_bytes, true);
-            }
-            const u64 copy_t1 = log_copy ? Common::Perf::NowNs() : 0;
-            // Copies of 4 MB or more split over the parallel algorithms' threads
-            // (ISS_PARALLEL_UPLOAD_COPY=0 off, as the large uploads).
-            static const bool parallel_copy = [] {
-                const char* p = std::getenv("ISS_PARALLEL_UPLOAD_COPY");
-                return !p || p[0] != '0';
-            }();
-            if (parallel_copy && num_bytes >= (4u << 20)) {
+            InvalidateMemory(dst, num_bytes, true);
+            // Copies of 4 MB or more split over the parallel algorithms' threads.
+            if (num_bytes >= (4u << 20)) {
                 constexpr u32 Chunk = 1u << 20;
                 std::vector<u32> chunks((num_bytes + Chunk - 1) / Chunk);
                 for (u32 i = 0; i < chunks.size(); ++i) chunks[i] = i * Chunk;
@@ -5582,25 +5087,7 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
                 });
             } else
             std::memcpy(std::bit_cast<void*>(dst), std::bit_cast<void*>(src), num_bytes);
-            const u64 copy_t2 = log_copy ? Common::Perf::NowNs() : 0;
             buffer_cache.OnGpuThreadWrite(dst, num_bytes);
-            if (log_copy) [[unlikely]] {
-                static std::atomic<u32> logged{0};
-                static const u64 log_from = [] {
-                    const char* p = std::getenv("ISS_BIG_UPLOAD_LOG_FROM_FRAME");
-                    return p ? std::strtoull(p, nullptr, 10) : 0ull;
-                }();
-                if (Common::Perf::GuestFrameCounter().load() >= log_from &&
-                    logged.fetch_add(1, std::memory_order_relaxed) < 20000)
-                    std::fprintf(stderr,
-                                 "BIG_DMA frame=%llu dst=%llx src=%llx size=%u invalidate_us=%llu "
-                                 "copy_us=%llu written_us=%llu\n",
-                                 (unsigned long long)Common::Perf::GuestFrameCounter().load(),
-                                 (unsigned long long)dst, (unsigned long long)src, num_bytes,
-                                 (unsigned long long)((copy_t1 - copy_t0) / 1000),
-                                 (unsigned long long)((copy_t2 - copy_t1) / 1000),
-                                 (unsigned long long)((Common::Perf::NowNs() - copy_t2) / 1000));
-            }
             if (g_dump.frames_left != 0) [[unlikely]] {
                 ProbeBuffer("copy-dst-host", nullptr, 0, num_bytes, dst);
             }
@@ -5608,7 +5095,7 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
         }
     }
     texture_cache.InvalidateMemoryFromGPU(dst, num_bytes);
-    // ISS_ASC_NATIVE_QUEUE: a compute ring's copy between buffers runs on the compute queue,
+    // A compute ring's copy between buffers runs on the compute queue,
     // after that ring's earlier compute work (none from an image or GDS; CPU data uploaded on
     // the graphics queue sends it there).
     if (asc_copy_vqid != ~0u) {
@@ -5616,8 +5103,6 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
         if (compute_scheduler && AscQueueEnabled() &&
             (src_gds || !texture_cache.FindImageFromRange(src, num_bytes))) {
             const u64 uploads_before = Common::Perf::Total(Common::Perf::BufferUploads);
-            if (!dst_gds && !src_gds)
-                VideoCore::RecordReadbackDma(dst, src, num_bytes, scheduler.CurrentTick(), 0);
             // A source only the CPU wrote: its bytes into the compute queue's stream buffer.
             const bool cpu_source = !src_gds && num_bytes <= (1u << 20) &&
                                     !buffer_cache.HasGpuData(src, num_bytes);
@@ -5658,7 +5143,6 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
     const ComputeQueueScope queue_scope{
         *this, UseComputeQueueForCopy() &&
                    (src_gds || !texture_cache.FindImageFromRange(src, num_bytes))};
-    if(!dst_gds && !src_gds)VideoCore::RecordReadbackDma(dst,src,num_bytes,Sched().CurrentTick(),OnComputeRecordQueue()?1:0);
     const auto* gds_buffer = buffer_cache.GetGdsBuffer();
     const auto [src_buffer, src_offset] = [&] -> std::pair<const VideoCore::Buffer*, u64> {
         if (src_gds) {
@@ -5689,11 +5173,7 @@ bool Rasterizer::CopyBufferHostBatch(std::span<const HostCopy> copies) {
     // The game's texture streamer sends ~1500 DMA copies of 4-16 KB in one frame every few
     // seconds (~10 MB into its texture pool): one by one, the invalidation and the per packet
     // work cost the command processor ~6 ms of a 24 ms frame (city at 75 Hz, 2026-10-19).
-    static const bool whole_invalidate = [] {
-        const char* p = std::getenv("ISS_CP_COPY_INVALIDATE");
-        return !p || p[0] != '0';
-    }();
-    if (!whole_invalidate || g_dump.frames_left != 0) {
+    if (g_dump.frames_left != 0) {
         return false;
     }
     for (const auto& copy : copies) {
@@ -5981,13 +5461,7 @@ void Rasterizer::OnGpuThreadWrite(VAddr addr, u64 size) {
 
 bool Rasterizer::DeferUnifiedFence(VAddr dst, u32 bytes, std::optional<u32> value, bool irq,
                                    Common::UniqueFunction<void>&& write) {
-    // ISS_UNIFIED_FENCES=early (experiment): labels written when the command processor reads
-    // them, as without unified memory; the guest may then reuse heap memory the GPU still reads.
-    static const bool early_fences = [] {
-        const char* p = std::getenv("ISS_UNIFIED_FENCES");
-        return p && std::string_view{p} == "early";
-    }();
-    if (!iss::unified::enabled || early_fences ||
+    if (!iss::unified::enabled ||
         !buffer_cache.IsUnified(iss::unified::RangeBase(), sizeof(u32)) || draw_pipe_state) {
         return false;
     }
@@ -6000,19 +5474,7 @@ bool Rasterizer::DeferUnifiedFence(VAddr dst, u32 bytes, std::optional<u32> valu
     DrainDrawPipe(5);
     unified_barrier_pending = true;
     const u64 tick = scheduler.CurrentTick();
-    if (iss::timeline::enabled) {
-        // fence_defer / fence_write: from the command processor reading the fence to the label
-        // reaching guest memory.
-        const u64 defer_ns = Common::Perf::NowNs();
-        iss::timeline::Emit("fence_defer", reinterpret_cast<u64>(this), tick, dst, value ? *value : 0, irq);
-        unified_ops.emplace_back(tick, [w = std::move(write), dst, tick, defer_ns, this]() mutable {
-            w();
-            iss::timeline::Emit("fence_write", reinterpret_cast<u64>(this), tick, dst, 0, 0, 0,
-                                Common::Perf::NowNs() - defer_ns);
-        });
-    } else {
-        unified_ops.emplace_back(tick, std::move(write));
-    }
+    unified_ops.emplace_back(tick, std::move(write));
     if (bytes != 0 && value) {
         std::erase_if(unified_labels, [&](const UnifiedLabel& label) {
             return label.address == dst ||
@@ -6023,16 +5485,9 @@ bool Rasterizer::DeferUnifiedFence(VAddr dst, u32 bytes, std::optional<u32> valu
             unified_labels.push_back({dst, *value, tick});
         }
     }
-    static const u64 flush_interval_ns = [] {
-        const char* p = std::getenv("ISS_UNIFIED_FLUSH_US");
-        return (p ? std::strtoull(p, nullptr, 10) : 1000ull) * 1000ull;
-    }();
-    static const bool flush_irq = [] {
-        const char* p = std::getenv("ISS_UNIFIED_FLUSH_IRQ");
-        return !p || p[0] != '0';
-    }();
+    constexpr u64 flush_interval_ns = 1000ull * 1000ull;
     const u64 now = Common::Perf::NowNs();
-    if ((irq && flush_irq) || now - unified_last_flush_ns >= flush_interval_ns) {
+    if (irq || now - unified_last_flush_ns >= flush_interval_ns) {
         unified_last_flush_ns = now;
         Flush();
         iss::unified::Add(iss::unified::FencesFlushed);
@@ -6054,10 +5509,7 @@ void Rasterizer::FlushUnifiedFences(bool idle) {
         unified_unsubmitted_tick = 0; // submitted with its command buffer meanwhile
         return;
     }
-    static const u64 flush_interval_ns = [] {
-        const char* p = std::getenv("ISS_UNIFIED_FLUSH_US");
-        return (p ? std::strtoull(p, nullptr, 10) : 1000ull) * 1000ull;
-    }();
+    constexpr u64 flush_interval_ns = 1000ull * 1000ull;
     const u64 now = Common::Perf::NowNs();
     if (!idle && now - unified_unsubmitted_ns < flush_interval_ns) {
         return;
@@ -6070,10 +5522,7 @@ void Rasterizer::FlushUnifiedFences(bool idle) {
 
 
 bool Rasterizer::AscQueueEnabled() const noexcept {
-    static const bool enabled = [] {
-        const char* p = std::getenv("ISS_ASC_NATIVE_QUEUE");
-        return p && p[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled && instance.HasComputeQueue() && iss::asc_family::family != ~0u &&
            !cp_split_enabled && !draw_pipe_state;
 }
@@ -6162,11 +5611,7 @@ bool Rasterizer::AscRelease(u32 vqid, VAddr dst, u32 bytes, std::optional<u32> v
         if (unified_labels.size() < 256) unified_labels.push_back({dst, *value, tick, true});
     }
     g_asc.unflushed = true;
-    static const u64 flush_interval_ns = [] {
-        const char* p = std::getenv("ISS_UNIFIED_FLUSH_US");
-        return (p ? std::strtoull(p, nullptr, 10) : 1000ull) * 1000ull;
-    }();
-    if (irq || Common::Perf::NowNs() - g_asc.last_flush_ns >= flush_interval_ns) AscFlush();
+    if (irq || Common::Perf::NowNs() - g_asc.last_flush_ns >= 1000ull * 1000ull) AscFlush();
     ++g_asc.releases;
     return true;
 }
@@ -6287,17 +5732,9 @@ void Rasterizer::UnmapMemory(VAddr addr, u64 size) {
 }
 
 void Rasterizer::UpdateDynamicState(const GraphicsPipeline* pipeline, const bool is_indexed) const {
-    const iss::cp_path::Scope cp_path_scope{iss::cp_path::Dynamic};
-    iss::diagnostics::Scope phase_scope(iss::diagnostics::DynamicState);
     auto& dynamic_state = scheduler.GetDynamicState();
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_NATIVE_DRAW_STATE");
-        return value && value[0] == '1';
-    }();
-    static const bool verify = [] {
-        const char* value = std::getenv("ISS_NATIVE_DRAW_STATE_VERIFY");
-        return value && value[0] == '1';
-    }();
+    static const bool enabled = false;
+    static const bool verify = false;
     auto& native = native_draw_state;
     const bool eligible = enabled && !cp_split_enabled && !native.failed;
     const u64 context_changes = DrawContextChanges();

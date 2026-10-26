@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Included by native_depth_run.inl (namespace Vulkan). ISS_NATIVE_DEPTH_RUN_VERIFY=1,
-// benchmarks (visible allowed: only private copies are drawn): the run is drawn into two private copies of its targets, draw by draw with the
-// separate bindings and separately copied records (reference), and as the indirect draw
+// Included by native_depth_run.inl (namespace Vulkan). Verification, for benchmarks (the visible
+// frame is left alone: only private copies are drawn): the run is drawn into two private copies
+// of its targets, draw by draw with the separate bindings and separately copied records
+// (reference), and as the indirect draw
 // (candidate). No real draw is skipped or duplicated; the caller records the real one once.
 
 
@@ -69,8 +70,8 @@ void Rasterizer::VerifyDepthRunPair(const GraphicsPipeline* pipeline, RenderStat
         render.width > 4096 || render.height > 4096 ||
         state->pending.load(std::memory_order_acquire) || state->failed.load() ||
         state->qualified.load() >= 6 || state->attempts.load() >= 32) return;
-    const auto* output = std::getenv("ISS_NATIVE_DEPTH_RUN_VERIFY_DIR");
-    if (!output || !*output) return;
+    const char* output = nullptr;
+    if (!output) return;
     static u64 rejected{};
     const auto reject = [&](const char* why) {
         if (++rejected <= 16 || (rejected & 4095) == 0)

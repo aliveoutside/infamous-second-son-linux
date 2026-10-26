@@ -5,11 +5,9 @@ std::size_t Rasterizer::TryNativeCpuRun(const GraphicsPipeline* pipeline,
                                        std::span<const u32> following_commands,
                                        std::size_t packet_budget) {
     namespace ng=iss::native_geometry;
-    static const bool enabled=[] {const char* p=std::getenv("ISS_NATIVE_CPU_DRAWS");return p&&p[0]=='1';}();
-    static const bool verified=[] {const char* p=std::getenv("ISS_CPU_BUNDLE_SPV_VERIFIED");return p&&p[0]=='1';}();
-    static const bool index_once=[] {const char* p=std::getenv("ISS_CPU_BUNDLE_INDEX_ONCE");return p&&p[0]=='1';}();
+    static constexpr bool enabled=false, verified=false, index_once=false;
     if(!enabled || !verified || cp_split_enabled || draw_pipe_state || OnDrawWorker() ||
-       DrawQueue()!=0 || iss::command_trace::enabled || IsDumping() || host_markers_enabled ||
+       DrawQueue()!=0 || IsDumping() || host_markers_enabled ||
        guest_markers_enabled || GpuCrashDiag::Enabled() || EmulatorSettings.IsPatchShaders() ||
        scheduler.HasPriorPendingOperations())return 0;
     auto& regs=DrawRegs();

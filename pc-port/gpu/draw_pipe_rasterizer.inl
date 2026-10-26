@@ -21,7 +21,7 @@ struct DrawPipeState {
     bool defer{}; // ISS_DRAW_PIPE_DEFER: fences and indirect draws are queued, not drained
     bool waits{}; // ISS_DRAW_PIPE_WAITS: waits held in queue order are queued too (slower so far)
     std::atomic<u64> deferred_fences{},deferred_indirect{};
-    // ISS_DRAW_PIPE_DEFER: the memory the queued fences will write (A only), by fence sequence;
+    // The memory the queued fences will write (A only), by fence sequence;
     // the worker publishes the last sequence it ran.
     struct PendingWrite {u64 seq;VAddr address;u32 value;bool known;};
     static constexpr u32 NumPendingWrites=256;
@@ -83,32 +83,9 @@ struct PipePacket {
 };
 struct PipeStage {const Shader::Info* info;VAddr base;u32 ud_size,flat_size,reads,reserved;};
 struct PipeGdsFill {VAddr address;u32 size,value;};
-bool PipeFlag(const char* name){const char* p=std::getenv(name);return p&&p[0]=='1';}
 }
 void Rasterizer::InitializeDrawPipe(){
-    if(!PipeFlag("ISS_DRAW_PIPE"))return;
-    if(host_markers_enabled||guest_markers_enabled||iss::command_trace::enabled||
-       PipeFlag("ISS_COMPUTE_PHASES")||PipeFlag("ISS_FEEDBACK_EARLY_SUBMIT")){
-        std::fprintf(stderr,"ISS_DRAW_PIPE fallback: incompatible marker/legacy trace/phase mode\n");return;
-    }
-    // Native shadow/G-buffer batches and native pass segments jump over their packets and write
-    // the registers they leave directly (their NOP markers pass BeforeDrawPipePacket unmarked):
-    // stage B's register copy would miss them.
-    if(iss::native_shadow::Enabled()||iss::native_gbuffer::Enabled()||iss::native_passes::Enabled()){
-        std::fprintf(stderr,"ISS_DRAW_PIPE fallback: incompatible with native shadow/gbuffer/passes\n");return;
-    }
-    draw_pipe_state=std::make_unique<DrawPipeState>();auto& s=*draw_pipe_state;
-    s.Mark(0,AmdGpu::Regs::NumRegs);
-    if(const char* p=std::getenv("ISS_DRAW_PIPE_VERIFY"))s.verify_interval=std::strtoul(p,nullptr,10);
-    if(const char* p=std::getenv("ISS_DRAW_PIPE_GDS"))s.pipe_gds=p[0]!='0';
-    s.lazy=PipeFlag("ISS_DRAW_PIPE_LAZY");
-    s.fast=PipeFlag("ISS_DRAW_PIPE_FAST");
-    s.defer=PipeFlag("ISS_DRAW_PIPE_DEFER");
-    s.waits=PipeFlag("ISS_DRAW_PIPE_WAITS");
-    if(const char* p=std::getenv("ISS_DRAW_PIPE_WRITE_GUARD"))s.write_guard=p[0]!='0';
-    if(const char* p=std::getenv("ISS_DRAW_PIPE_LOG")){s.log=std::fopen(p,"w");if(s.log){std::setvbuf(s.log,nullptr,_IONBF,0);std::fputs("time_ns,packets,completed,draws,dispatches,worker_busy_ns,producer_wait_ns,drains,verify_checks,gds_fills,drain_packet_ns,drain_commands_ns,drain_submission_ns,drain_yield_ns,drain_fault_ns,drain_resource_ns,drain_fence_ns,drain_indirect_ns\n",s.log);}}
-    s.queue=std::make_unique<iss::DrawPipe>(&Rasterizer::RunDrawPipePacket,this);
-    std::fprintf(stderr,"ISS_DRAW_PIPE enabled: ordered direct draws/dispatches; fences and indirects drain; verify=%u lazy=%d write_guard=%d\n",s.verify_interval,int(s.lazy),int(s.write_guard));
+    // The draw pipe is gone: every draw is recorded on the command processor.
 }
 bool Rasterizer::OnDrawWorker() const {return active_draw_pipe&&active_draw_pipe==draw_pipe_state.get();}
 bool Rasterizer::UseDrawPipe() const {
@@ -131,7 +108,7 @@ bool Rasterizer::PrepareDrawPipeFault(bool is_write){
         // A protected guest page can still be clean before queued B bindings register it.
         // Serialize a write before InvalidateRegion takes any region lock/unprotects it.
         // Only A may read the non-atomic producer head or drain the SPSC queue.
-        // ISS_DRAW_PIPE_WRITE_GUARD=0 is an unproven hypothesis (diagnostic only): a guest
+        // A write guard is an unproven hypothesis (diagnostic only): a guest
         // write racing a submitted, unrecorded draw would also race the GPU on the PS4.
         if(is_write&&draw_pipe_state&&draw_pipe_state->write_guard&&!draw_pipe_state->queue->Idle()){
             draw_pipe_state->guard_commands.fetch_add(1,std::memory_order_relaxed);
@@ -167,7 +144,7 @@ bool Rasterizer::BeforeDrawPipePacket(u32 op,const u32* words,u32 count,int asc_
         const u64 before=s.queue->wait_ns;DrainDrawPipe(reason);
         if(const u64 ns=s.queue->wait_ns-before){++s.op_drains[op&255];s.op_ns[op&255]+=ns;}
     };
-    // ISS_DRAW_PIPE_DEFER: the fence goes to the worker behind the draws it follows, which
+    // The fence goes to the worker behind the draws it follows, which
     // signals it once they are recorded (what draining before signaling here achieves).
     const auto defer_fence=[&](u32 pipe_id){
         if(!s.defer||!UseDrawPipe()||liverpool->CpSplitActive()||count*4>iss::DrawPipe::MaxPayload/2)return false;
@@ -220,7 +197,7 @@ bool Rasterizer::BeforeDrawPipePacket(u32 op,const u32* words,u32 count,int asc_
         s.wait_drains.fetch_add(1,std::memory_order_relaxed);
         drain(iss::DrawPipe::Packet);return false;
     case O::DrawIndirect:case O::DrawIndexIndirect:
-        // DrawIndirect queues them (ISS_DRAW_PIPE_DEFER) or drains itself.
+        // DrawIndirect queues themor drains itself.
         if(s.defer&&asc_pipe_id<0)return false;
         drain(iss::DrawPipe::Packet);return false;
     case O::SetConfigReg:base=AmdGpu::Regs::ConfigRegWordOffset;break;
@@ -249,15 +226,14 @@ bool Rasterizer::BeforeDrawPipePacket(u32 op,const u32* words,u32 count,int asc_
     if(count>=2)s.Mark(base+(words[1]&0xffff),count-2);
     return false;
 }
-// ISS_DRAW_PIPE_REUSE=1: stage A takes the previous draw's pipeline instead of the full lookup
+// Stage A takes the previous draw's pipeline instead of the full lookup
 // (key, programs, runtime info: ~20% of A in the city) when nothing it depends on changed: no
 // config/context/uconfig register write since, the same vertex/pixel program registers (the
 // vertex user data aside), the same pixel user data, the same attachment extents, and the same
 // format words of every vertex buffer and fetch attribute V# (their addresses may differ). The
 // stages' user data and flattened copies are refreshed as the lookup does.
-// ISS_DRAW_PIPE_REUSE_VERIFY=1 also runs the full lookup and asserts the same pipeline.
-static bool PipeReuseEnabled(){static const bool on=PipeFlag("ISS_DRAW_PIPE_REUSE");return on;}
-static bool PipeReuseVerify(){static const bool on=PipeFlag("ISS_DRAW_PIPE_REUSE_VERIFY");return on;}
+static bool PipeReuseEnabled(){return false;}
+static bool PipeReuseVerify(){return false;}
 struct PipeReuse {
     const GraphicsPipeline* pipeline{};
     u64 context_changes{};
@@ -316,7 +292,7 @@ const GraphicsPipeline* Rasterizer::PipeLookupGraphics(){
 // at every one of the ~40 submissions a frame (most of its wait in the city): the worker runs
 // OnSubmit and the scheduler flush when it reaches it, in order behind the draws before it.
 bool Rasterizer::PostDrawPipeSubmit(){
-    if(!UseDrawPipe()||iss::command_trace::enabled)return false;
+    if(!UseDrawPipe())return false;
     auto& s=*draw_pipe_state;u8* out=s.queue->Begin(sizeof(PipePacket));
     auto& p=*reinterpret_cast<PipePacket*>(out);p={};p.submit=true;p.async=async_compute_translation;p.queue_id=liverpool->CurrentQueue();
     s.queue->Commit();return true;

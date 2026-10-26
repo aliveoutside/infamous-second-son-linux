@@ -53,8 +53,6 @@ bool Matches(unsigned char *image,std::uint64_t size,std::uint64_t function,std:
 
 namespace iss::native {
 int InstallGraffiti(unsigned char *image,std::uint64_t size){
-    const char *option=std::getenv("ISS_GRAFFITI_AUTO");
-    if(option&&option[0]=='0')return 0;
     for(const Entry &e:entries)if(!Matches(image,size,e.function,e.slot,e.slot+0x20,e.hash,e.name))return 0;
     const std::uint64_t base=reinterpret_cast<std::uintptr_t>(image);
     for(const Query &q:queries){

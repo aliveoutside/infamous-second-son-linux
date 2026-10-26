@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// ISS_NATIVE_SHADOW=1: the shadow maps drawn from the engine's batches instead of their PM4.
+// The shadow maps drawn from the engine's batches instead of their PM4.
 //
 // The engine draws every instanced shadow caster through one routine, the depth technique's
 // "render item range" method (eboot 0x43D590, vtable 0xD68648 slot 6; evidence

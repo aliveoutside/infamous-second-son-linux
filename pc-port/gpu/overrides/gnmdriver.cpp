@@ -475,13 +475,10 @@ u32 PS4_SYSV_ABI sceGnmDispatchInitDefaultHardwareState(u32* cmdbuf, u32 size) {
     return HwInitPacketSize;
 }
 
-// ISS_GNM_CENSUS=1: which guest threads record the draws, and how the frame's draws are
+// Which guest threads record the draws, and how the frame's draws are
 // spread over the submitted command buffers (for parallel recording on the game threads).
 static bool GnmCensusEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_GNM_CENSUS");
-        return value && value[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 struct GnmCensus {
@@ -607,22 +604,8 @@ s32 PS4_SYSV_ABI sceGnmDrawIndex(u32* cmdbuf, u32 size, u32 index_count, uintptr
             }
         }
         NoteGnmCaller(5, reinterpret_cast<const void*>(base + found));
-        // ISS_GNM_CENSUS_CHAIN=1: the first two values on the stack that look like eboot code
+        // The first two values on the stack that look like eboot code
         // addresses outside the wrapper (the emitting function and its caller), as one key.
-        static const bool chain = [] {
-            const char* value = std::getenv("ISS_GNM_CENSUS_CHAIN");
-            return value && value[0] == '1';
-        }();
-        if (chain) {
-            u64 first = 0, second = 0;
-            for (u32 i = 1; i < 48 && !second; ++i) {
-                const u64 v = slot[i] - base;
-                if (slot[i] < base || v >= 0x800000 || (v >= 0x623c60 && v < 0x623d40)) continue;
-                if (!first) first = v;
-                else if (v != first) second = v;
-            }
-            NoteGnmCaller(6, reinterpret_cast<const void*>(base + (first | (second << 32))));
-        }
     }
 
     if (cmdbuf && (size == 10) && (index_addr != 0) && (index_addr & 1) == 0 &&
@@ -637,10 +620,7 @@ s32 PS4_SYSV_ABI sceGnmDrawIndex(u32* cmdbuf, u32 size, u32 index_count, uintptr
         draw_index->draw_initiator = sceKernelIsNeoMode() ? flags & 0xe0000000u : 0;
 
         WriteTrailingNop<3>(cmdbuf + 6);
-        static const bool capture_shadow = [] {
-            const char* p = std::getenv("ISS_NATIVE_SHADOW_DIRECT_CAPTURE");
-            return p && p[0] == '1';
-        }();
+        static const bool capture_shadow = false;
         if (capture_shadow)
             iss::native_shadow::CaptureIndexed(cmdbuf, index_count, index_addr, draw_index->draw_initiator);
         return ORBIS_OK;

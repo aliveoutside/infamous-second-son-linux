@@ -6,21 +6,21 @@ Offsets are image offsets of the 1.07 eboot (sha256 `2d1ca796...`); at run time 
 
 ## What the player gets
 
-- The mouse looks and aims from the start (`mouse_aim = on`, env `ISS_MOUSE_AIM`; F4 toggles). SDL
+- The mouse looks and aims from the start (`mouse_aim = on`; F4 toggles). SDL
   relative mouse mode. Left button = R2 (fire), right = L2 (aim), middle = R3.
 - The mouse turns the camera by an **angle**: the same hand distance gives the same turn at any speed,
-  no dead zone, no acceleration, no delay. `mouse_sensitivity` (percent, 10 to 1000, env
-  `ISS_MOUSE_SENS`): 100% = 0.0008 rad (0.046°) per mouse count, 7854 counts per full turn.
+  no dead zone, no acceleration, no delay. `mouse_sensitivity` (percent, 10 to 1000):
+  100% = 0.0008 rad (0.046°) per mouse count, 7854 counts per full turn.
   Tested in game by the user: it feels native.
 - Keyboard (table `keys[]` in `pad_read`, `src/pad.c`): W A S D move, Space = Cross (jump),
   Left Shift = Circle (power dash, menu back), F = Square (melee), E = Triangle (subdue / heal),
   Q / R = L1 / R1 (the current power's moves), Left Ctrl = L3, M = R3, Esc = Options,
   Up, Left, Right arrows = D-pad, G = D-pad Down (ultimate; the Down arrow is free), U / O = L2 / R2 when mouse aim is off, I J K L = right stick.
   Touchpad: Z / X (left / right side, right side = absorb), T centre, 1-4 swipes (`touch_keys`).
-  F4 mouse aim, F5 touchpad panel, F6 mouse as touchpad, or hold Left Alt for the same until it is let go (`touchpad_hold` in `ISS_TOUCH_KEYS`; an on-screen hint names the key, and once, on the first run, tells where to find it; marker file `touchpad-hint-seen` in the user folder) (left button = finger, right = touchpad click,
+  F4 mouse aim, F5 touchpad panel, F6 mouse as touchpad, or hold Left Alt for the same until it is let go (an on-screen hint names the key, and once, on the first run, tells where to find it; marker file `touchpad-hint-seen` in the user folder) (left button = finger, right = touchpad click,
   middle or a side button = R2 held, so a touchpad move that needs R2 is one hand; O also holds R2), F7 spray can, F9 FPS overlay, F10 perf mark.
-  Graffiti: while a stencil is on screen (it reads `GYRO_Y_AXIS`, `GYRO_RETICLE_POS` and tests the SprayShake button, hooked by `native/graffiti.cpp`;
-  `ISS_GRAFFITI_AUTO=0` turns it off) the mouse is the spray can by itself, as F7: move = aim, left
+  Graffiti: while a stencil is on screen (it reads `GYRO_Y_AXIS`, `GYRO_RETICLE_POS` and tests the SprayShake button, hooked by `native/graffiti.cpp`)
+  the mouse is the spray can by itself, as F7: move = aim, left
   button = spray (R2), right = shake, middle = recentre, Shift = fine. A controller without a gyro
   aims with the right stick and shakes with L2; a DualShock 4 / DualSense uses its own gyro. The can
   is kept as yaw and pitch within the game's aim window (`pad_spray_step`): the game's aim
@@ -64,8 +64,8 @@ and paid out as stick deflection, K = 2400 px/s at 100%, `pad_info` then reports
 6. Auto-follow: the camera swings back behind the player by itself. The right stick turns that off through
    the ManualCamera event, the mouse does not. The only reader of the game's "no auto-follow" byte
    (eboot `+0xe16c40`) is `+0x14936e`, in `+0x149360`, which then takes the game's own off path. The hook
-   sets the byte while the mouse moves and clears it `ISS_MOUSE_FOLLOW_HOLD` seconds (default 5, 0 = leave
-   auto-follow alone) after the last move. Found in axylpup/shadPS4 (`src/core/mouse_aim.cpp`).
+   sets the byte while the mouse moves and clears it 5 seconds after the last move. Found in
+   axylpup/shadPS4 (`src/core/mouse_aim.cpp`).
 7. `src/pad.c` gathers the counts in `look[]` under the pad lock; `pad_look_take` hands them to the
    camera and clears them. If the camera has not taken them for two pad reads (menus, cutscenes), they
    are dropped, so the view does not jump when play resumes. `pad_look_direct` is set by the installer.
@@ -93,9 +93,9 @@ and paid out as stick deflection, K = 2400 px/s at 100%, `pad_info` then reports
 
 ## Debugging tips
 
-- Run with `ISS_PAD_SCRIPT=turn ISS_PAD_SCRIPT_DELAY=40 scripts/linux/play.sh`: after 40 s of process
-  time the right stick is held at 168 (camera turns slowly right); the save loads by itself and the
-  city is reached after about 80 to 120 s.
+- A pad script (the right stick held at 168 after a delay, so the camera turns slowly right) used
+  to drive repeatable A/B runs; it is gone. The save loads by itself and the city is reached after
+  about 80 to 120 s.
 - gdb attaches (`ptrace_scope` 0). The runtime uses SIGSEGV on purpose: `handle SIGSEGV nostop noprint
   pass` (and SIGUSR1/2). The guest code cannot take software breakpoints ("Cannot access memory"):
   use `hbreak`. Hardware `rwatch` also fires on writes on x86; filter by RIP. The process is

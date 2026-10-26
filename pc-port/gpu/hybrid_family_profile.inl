@@ -8,10 +8,7 @@
 namespace Vulkan { extern std::atomic<u64> g_iss_frame; }
 namespace iss::hybrid_profile {
 static bool Enabled() {
-    static const bool enabled = [] {
-        const char* p = std::getenv("ISS_HYBRID_FAMILY_PROFILE");
-        return p && p[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 // Any coroutine switch contaminates an elapsed TSC interval: never count it as CP work.

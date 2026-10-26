@@ -16,16 +16,6 @@ typedef struct {
 } GuestStat;
 _Static_assert(sizeof(GuestStat)==120,"PS4 stat layout");
 typedef struct { int host; HostLock lock; int active; char path[1024]; } File;
-static HostLock log_lock = HOST_LOCK_INIT;
-static FILE *io_log;
-static void trace_io(const char *op,int fd,const char *path,int64_t offset,uint64_t requested,uint64_t completed,uint32_t native,int err) {
-    host_lock(&log_lock);
-    if(!io_log){const char *p=getenv("ISS_IO_LOG");if(p)io_log=fopen(p,"a");}
-    if(io_log){fprintf(io_log,"%llu\t%u\t%s\t%d\t%lld\t%llu\t%llu\t%u\t%d\t%s\n",
-        (unsigned long long)host_monotonic_ms(),host_thread_id(),op,fd,(long long)offset,
-        (unsigned long long)requested,(unsigned long long)completed,native,err,path?path:"");fflush(io_log);}
-    host_unlock(&log_lock);
-}
 static File files[4096];
 static HostLock registry = HOST_LOCK_INIT;
 static pthread_once_t initialize_once = PTHREAD_ONCE_INIT;
@@ -128,14 +118,13 @@ static int32_t GUEST_ABI open_file(const char *path,int32_t flags,uint16_t mode)
     if(flags&0x200)native|=O_CREAT;if(flags&0x400)native|=O_TRUNC;if(flags&0x800)native|=O_EXCL;
     if(flags&0x20000)native|=O_DIRECTORY;
     int host=open(translated,native|O_CLOEXEC,mode?mode:0644);
-    if(host<0) {int saved=errno;e=host_error();trace_io("open",-1,path,0,0,0,(uint32_t)saved,e);printf("File open failed: %s errno=%d\n",path,e);return error(e);}
+    if(host<0) {e=host_error();printf("File open failed: %s errno=%d\n",path,e);return error(e);}
     host_lock(&registry);
     int fd;
     for(fd=3;fd<4096&&files[fd].active;++fd){}
     if(fd==4096){host_unlock(&registry);close(host);return error(24);}
     files[fd].host=host;files[fd].active=1;host_lock_init(&files[fd].lock);
     snprintf(files[fd].path,sizeof(files[fd].path),"%s",path);
-    trace_io("open",fd,path,0,0,0,0,0);
     if(flags&8)lseek(host,0,SEEK_END);
     host_unlock(&registry);printf("Opened %s fd=%d\n",path,fd);
     {size_t n=strlen(path);if(n>5&&!strcmp(path+n-5,".xpps"))gpu_file_opened(path);}
@@ -150,7 +139,6 @@ static void release_file(File *f){host_unlock(&f->lock);host_unlock_shared(&regi
 static int32_t GUEST_ABI close_file(int fd) {
     host_lock(&registry);
     if(fd<3||fd>=4096||!files[fd].active){host_unlock(&registry);return error(9);}
-    trace_io("close",fd,files[fd].path,0,0,0,0,0);
     close(files[fd].host);files[fd].active=0;host_unlock(&registry);return 0;
 }
 static int64_t transfer(int fd,void *buffer,uint64_t size,int writing,int64_t offset,int positioned) {
@@ -180,7 +168,6 @@ static int64_t transfer(int fd,void *buffer,uint64_t size,int writing,int64_t of
         total+=(uint64_t)done;if((size_t)done<amount)break;
     }
     free(staging);
-    trace_io(writing?"write":"read",fd,f->path,start,size,total,native_error,e);
     release_file(f);return total?(int64_t)total:e?error(e):0;
 }
 static int64_t GUEST_ABI read_file(int fd,void *p,uint64_t n){return transfer(fd,p,n,0,0,0);}

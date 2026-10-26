@@ -4,10 +4,7 @@
 class DirectCapture;
 thread_local DirectCapture* active_capture{};
 bool DirectCaptureEnabled() {
-    static const bool enabled = [] {
-        const char* p = std::getenv("ISS_NATIVE_SHADOW_DIRECT_CAPTURE");
-        return p && p[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 class DirectCapture {
@@ -151,26 +148,8 @@ bool SameCapture(const Batch& a, const Batch& b) {
 }
 bool FinishCapture(DirectCapture* capture, Batch& batch, const u32* first, const u32* end) {
     if (!capture) return Scan(batch, first, end);
-    static const bool check = [] {
-        const char* p = std::getenv("ISS_NATIVE_SHADOW_CAPTURE_CHECK");
-        return p && p[0] == '1';
-    }();
     static std::atomic<u64> captured{}, rejected{}, compared{}, mismatches{};
     bool valid = capture->Finish(end);
-    if (check) {
-        Batch reference;
-        const bool reference_ok = Scan(reference, first, end);
-        if (valid) {
-            const bool same = reference_ok && SameCapture(batch, reference);
-            ++compared;
-            if (!same) { ++mismatches; valid = false; }
-        } else {
-            static std::atomic<u32> details{};
-            if (details.fetch_add(1) < 24)
-                std::fprintf(stderr, "NATIVE_SHADOW_CAPTURE_REJECT opcode=%x reg=%x draws=%zu reference_ok=%d reference_draws=%zu\n",
-                             capture->last_opcode, capture->last_reg, batch.draws.size(), reference_ok, reference.draws.size());
-        }
-    }
     if (valid) ++captured; else ++rejected;
     if (((captured.load() + rejected.load()) & 16383) == 1)
         std::fprintf(stderr, "NATIVE_SHADOW_CAPTURE captured=%llu rejected=%llu compared=%llu mismatches=%llu\n",

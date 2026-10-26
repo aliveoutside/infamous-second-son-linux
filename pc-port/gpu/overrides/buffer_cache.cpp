@@ -1,8 +1,4 @@
 #include "vram_budget.h"
-#include "deep_profile.h"
-#include "repeat_census.h"
-#include "compute_phase.h"
-#include "runtime_timeline.h"
 #include "unified_memory.h"
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
@@ -47,7 +43,6 @@
 
 #include <vk_mem_alloc.h>
 
-namespace iss {void ProbeNativeFeedback(const Vulkan::Instance&,Vulkan::Scheduler&);}
 namespace iss::asc_family {extern u32 family;extern bool readback;extern u32 readback_family;extern thread_local u32 pool_family;}
 namespace iss::asc_stats {
 // Cross-queue flush causes (asc_queue). Count and CP time of each forced submit.
@@ -85,16 +80,12 @@ u64 g_iss_dcb_lo{}, g_iss_dcb_hi{};
 namespace VideoCore {
 
 namespace {
-// ISS_PARALLEL_UPLOAD_COPY (default on, =0 off): the guest copy of a large upload part split in
+// The guest copy of a large upload part split in
 // 4 MB chunks over the parallel algorithms' threads. The world's first frame after a load binds a
 // 2.6 GB texel buffer: 747 ms of copy on the command processor alone (load1 2026-10-18).
 void ParallelGuestCopy(Core::MemoryManager* memory, VAddr source, u8* dest, u64 bytes) {
-    static const bool enabled = [] {
-        const char* p = std::getenv("ISS_PARALLEL_UPLOAD_COPY");
-        return !p || p[0] != '0';
-    }();
     constexpr u64 Chunk = 4ull << 20;
-    if (!enabled || bytes < 2 * Chunk) {
+    if (bytes < 2 * Chunk) {
         memory->CopySparseMemory(source, dest, bytes);
         return;
     }
@@ -106,11 +97,7 @@ void ParallelGuestCopy(Core::MemoryManager* memory, VAddr source, u8* dest, u64 
 }
 
 bool SmallReadMemoEnabled() {
-    static const bool enabled = [] {
-        const char* flag = std::getenv("ISS_SMALL_READ_MEMO");
-        return flag && flag[0] == '1';
-    }();
-    return enabled;
+    return false;
 }
 // Cache only alias metadata, never content or GPU completion. Native remaps and
 // GPU mapping changes invalidate every cached answer through their generations.
@@ -127,125 +114,7 @@ bool UniqueReadbackBacking(Core::MemoryManager& memory, VAddr address, u64 size,
     entries[next++%entries.size()]={&memory,address,size,generation,epoch,unique};
     return unique;
 }
-// Diagnostic only. No guest memory contents are logged. The fixed cap keeps a long run bounded
-// even when the guest faults on the same feedback page every frame.
-constexpr u64 ReadbackDiagMaxBytes = 32_MB;
-constexpr u64 ReadbackDiagMaxRows = 200'000;
-struct ReadbackDiagEvent {
-    const char* event{};
-    u64 rip{};
-    u64 address{};
-    u64 size{};
-    u64 src{};
-    u64 dst{};
-    u64 window_start{};
-    u64 window_end{};
-    u64 request_gfx_tick{};
-    u64 request_compute_tick{};
-    u64 window_gfx_tick{};
-    u64 window_compute_tick{};
-    u32 request_state{}; // bit 0 done, 1 submitted, 2 current
-    u32 window_state{};
-    u32 queue{};
-    u64 wait_tick{};
-    u32 copies{};
-    u64 copy_bytes{};
-    u64 duration_ns{};
-    u32 flags{}; // event-specific, documented in the report
-};
 
-bool G4FeedbackProbeEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_G4_FEEDBACK_PROBE");
-        return value && value[0] == '1';
-    }();
-    return enabled;
-}
-
-bool ReadbackDiagEnabled() {
-    static const bool enabled = [] {
-        const char* flag = std::getenv("ISS_READBACK_DIAG");
-        const char* path = std::getenv("ISS_READBACK_DIAG_LOG");
-        return flag && flag[0] == '1' && path && path[0] != '\0';
-    }();
-    if (!enabled) return false;
-    static const u64 first_frame = [] {
-        const char* p = std::getenv("ISS_READBACK_DIAG_START_FRAME");
-        return p ? std::strtoull(p, nullptr, 0) : 0;
-    }();
-    static const u64 frame_count = [] {
-        const char* p = std::getenv("ISS_READBACK_DIAG_FRAMES");
-        return p ? std::strtoull(p, nullptr, 0) : ~u64{0};
-    }();
-    const auto frame = Common::Perf::GuestFrameCounter().load(std::memory_order_relaxed);
-    return frame >= first_frame && frame - first_frame < frame_count;
-}
-
-void LogReadbackDiag(const ReadbackDiagEvent& e) {
-    if (!ReadbackDiagEnabled()) [[likely]] {
-        return;
-    }
-    static std::mutex mutex;
-    static std::FILE* file = [] {
-        std::FILE* out = std::fopen(std::getenv("ISS_READBACK_DIAG_LOG"), "wb");
-        if (out) {
-            std::setvbuf(out, nullptr, _IOFBF, 1 << 20);
-            std::fputs("event,ns,frame,thread,rip,address,size,src,dst,window_start,window_end,"
-                       "request_gfx_tick,request_compute_tick,window_gfx_tick,window_compute_tick,"
-                       "request_state,window_state,queue,wait_tick,copies,copy_bytes,duration_ns,flags\n", out);
-        }
-        return out;
-    }();
-    if (!file) {
-        return;
-    }
-    static u64 bytes = 0;
-    static u64 rows = 0;
-    static bool truncated = false;
-    const u64 now = Common::Perf::NowNs();
-    const u64 frame = Common::Perf::GuestFrameCounter().load(std::memory_order_relaxed);
-    const u64 thread = std::hash<std::thread::id>{}(std::this_thread::get_id());
-    char line[512];
-    const int result = std::snprintf(
-        line, sizeof(line),
-        "%s,%llu,%llu,%llu,0x%llx,0x%llx,%llu,0x%llx,0x%llx,0x%llx,0x%llx,"
-        "%llu,%llu,%llu,%llu,%u,%u,%u,%llu,%u,%llu,%llu,%u\n",
-        e.event, static_cast<unsigned long long>(now), static_cast<unsigned long long>(frame),
-        static_cast<unsigned long long>(thread), static_cast<unsigned long long>(e.rip),
-        static_cast<unsigned long long>(e.address), static_cast<unsigned long long>(e.size),
-        static_cast<unsigned long long>(e.src), static_cast<unsigned long long>(e.dst),
-        static_cast<unsigned long long>(e.window_start),
-        static_cast<unsigned long long>(e.window_end),
-        static_cast<unsigned long long>(e.request_gfx_tick),
-        static_cast<unsigned long long>(e.request_compute_tick),
-        static_cast<unsigned long long>(e.window_gfx_tick),
-        static_cast<unsigned long long>(e.window_compute_tick), e.request_state, e.window_state,
-        e.queue, static_cast<unsigned long long>(e.wait_tick), e.copies,
-        static_cast<unsigned long long>(e.copy_bytes),
-        static_cast<unsigned long long>(e.duration_ns), e.flags);
-    if (result <= 0 || static_cast<size_t>(result) >= sizeof(line)) {
-        return;
-    }
-    std::scoped_lock lock{mutex};
-    if (rows >= ReadbackDiagMaxRows || bytes + result > ReadbackDiagMaxBytes) {
-        if (!truncated) {
-            std::fputs("truncated\n", file);
-            std::fflush(file);
-            truncated = true;
-        }
-        return;
-    }
-    std::fwrite(line, 1, result, file);
-    bytes += result;
-    ++rows;
-    if ((rows & 4095) == 0) {
-        std::fflush(file);
-    }
-}
-
-u32 ReadbackDiagState(bool done, bool submitted, bool current) {
-    return (done ? 1U : 0U) | (submitted ? 2U : 0U) | (current ? 4U : 0U);
-}
 } // namespace
 
 thread_local BufferCache::ThreadQueueSelection BufferCache::thread_queue_selection{};
@@ -264,7 +133,6 @@ void BufferCache::NoteMappingChange(VAddr address, u64 size) noexcept {
         }
         if (cp_split_enabled) packet_hazards.InvalidateUnpublished();
     }
-    if (G4FeedbackProbeEnabled()) feedback_writer_probe.Invalidate(address, size);
 }
 
 bool BufferCache::PlanGuestAccess(VAddr address, u64 size, bool write,
@@ -573,41 +441,13 @@ static std::atomic<u64> g_prefetch_scan_skips{}, g_publish_repeat_skips{},
 
 u64 BufferCache::PublishGpuWrite(VAddr address, u64 size, u64 tick, u32 queue) {
     std::scoped_lock lock{coherence_mutex};
-    // ISS_PUBLISH_STATS=1 (diagnosis): how often a write repeats a range already published in the
+    // How often a write repeats a range already published in the
     // same submission (tick and queue), as the compute rings' many small dispatches may.
-    static const bool publish_stats = [] {
-        const char* p = std::getenv("ISS_PUBLISH_STATS");
-        return p && p[0] == '1';
-    }();
-    if (publish_stats) {
-        struct Entry { VAddr address; u64 size, tick; u32 queue; };
-        static std::array<Entry, 64> recent{};
-        static u32 next = 0;
-        static u64 calls = 0, repeats = 0, contained = 0, bytes = 0;
-        ++calls;
-        bytes += size;
-        for (const auto& e : recent) {
-            if (e.tick == tick && e.queue == queue && e.address <= address &&
-                address + size <= e.address + e.size) {
-                ++contained;
-                if (e.address == address && e.size == size) ++repeats;
-                break;
-            }
-        }
-        recent[next++ & 63] = {address, size, tick, queue};
-        if ((calls & ((1u << 17) - 1)) == 0)
-            std::fprintf(stderr, "PUBLISH_STATS calls=%llu same_range=%llu contained=%llu avg_bytes=%llu\n",
-                         (unsigned long long)calls, (unsigned long long)repeats,
-                         (unsigned long long)contained, (unsigned long long)(bytes / calls));
-    }
-    // ISS_PUBLISH_REPEAT_SKIP (default on, =0 off): the same range published again in the same
+    // The same range published again in the same
     // submission, with nothing subtracted from the set since, is already in it: the interval set
     // insert (3.7% of the command processor in the forest, 37% of the 200k publishes a second
     // being such repeats) is skipped. The write tick and the generation are updated as before.
-    static const bool repeat_skip = [] {
-        const char* p = std::getenv("ISS_PUBLISH_REPEAT_SKIP");
-        return !p || p[0] != '0';
-    }();
+    constexpr bool repeat_skip = true;
     auto& slot = publish_memo[((address >> 12) ^ (size >> 8)) & (publish_memo.size() - 1)];
     if (repeat_skip && slot.address == address && slot.size == size && slot.tick == tick &&
         slot.queue == queue && slot.subtracts == gpu_ranges_subtracts) {
@@ -620,13 +460,6 @@ u64 BufferCache::PublishGpuWrite(VAddr address, u64 size, u64 tick, u32 queue) {
         MappingGeneration(), memory->MappingEpoch());
     ++coherence_write_generation;
     return sequence;
-}
-
-// The rasterizer calls this at the actual DMA copy site, after choosing its queue and tick.
-// It is deliberately separate from ObtainBuffer's generic "is_written" mark.
-void RecordReadbackDma(VAddr dst, VAddr src, u64 size, u64 tick, u32 queue) {
-    LogReadbackDiag({.event = "dma_copy", .address = dst, .size = size, .src = src,
-                     .dst = dst, .queue = queue, .wait_tick = tick});
 }
 
 // Write fault window statistics (see InvalidateMemory), printed by TickFrame.
@@ -696,8 +529,8 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
     // iss: residency only grows: guest memory the GPU used stays in VRAM for good, and on 8 GB
     // cards it filled what the collector could not free (6.2 of 6.4 GB, RX 6600, 2026-10-22).
     // When VRAM is short, new ranges go to system memory instead, if the driver allows sparse
-    // binds there. ISS_ARENA_SPILL=0 off.
-    if (const char* p = std::getenv("ISS_ARENA_SPILL"); !p || p[0] != '0') {
+    // binds there.
+    {
         const auto& props = instance.GetMemoryProperties();
         for (u32 i = 0; i < props.memoryTypeCount; ++i) {
             const auto flags = props.memoryTypes[i].propertyFlags;
@@ -730,13 +563,6 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
     }
     upload_worker = std::make_unique<UploadWorker>(tracker);
     scheduler.SetSubmitDependency([this](u64 seq) { upload_worker->Wait(seq); });
-    if (const char* prewarm = std::getenv("ISS_PREWARM_LARGE_UPLOAD");
-        prewarm && prewarm[0] == '1') {
-        const u64 start_ns = Common::Perf::NowNs();
-        staging_pool.PrewarmLarge(256_MB, MemoryType::HostUncached, 2);
-        LOG_INFO(Render_Vulkan, "Prewarmed two 256 MiB upload buffers in {:.3f} ms",
-                 (Common::Perf::NowNs() - start_ns) / 1'000'000.0);
-    }
 }
 
 BufferCache::~BufferCache() {
@@ -1253,11 +1079,6 @@ void BufferCache::TickFrame() {
             static_cast<unsigned long long>(stats.stores),
             static_cast<unsigned long long>(stats.unstable));
     }
-    if (frame % 1800 == 0 && iss::phase::Enabled()) {
-        std::fprintf(stderr, "COMPUTE_PHASES barriers_skipped=%llu run_flushes=%llu\n",
-                     static_cast<unsigned long long>(iss::phase::g_skipped.exchange(0)),
-                     static_cast<unsigned long long>(iss::phase::g_flushed.exchange(0)));
-    }
     if (frame % 1800 == 0 && fault_window_faults.load(std::memory_order_relaxed) != 0) {
         std::fprintf(stderr, "FAULT_WINDOW faults=%llu streak_extends=%llu pages_unprotected=%llu\n",
                      static_cast<unsigned long long>(fault_window_faults.exchange(0)),
@@ -1283,14 +1104,12 @@ void BufferCache::OnGpuThreadWrite(VAddr device_addr, u64 size) {
         iss::unified::Add(iss::unified::CpWriteBytes, size);
         if (UnifiedTouched(device_addr, size)) iss::unified::Add(iss::unified::CpWritesTouched);
     }
-    if (G4FeedbackProbeEnabled()) feedback_writer_probe.Invalidate(device_addr, size);
     InvalidatePreparedPacketAccess(device_addr, size);
     NoteHostWrite();
     memory_tracker->OnGpuThreadWrite(device_addr, size);
 }
 
 void BufferCache::InvalidateMemory(VAddr device_addr, u64 size, bool assume_locks) {
-    if (G4FeedbackProbeEnabled()) feedback_writer_probe.Invalidate(device_addr, size);
     // Guest write faults arrive before the write. Invalidate physical aliases
     // before RegionManager can invoke a readback callback.
     InvalidatePreparedPacketAccess(device_addr, size);
@@ -1302,36 +1121,25 @@ void BufferCache::InvalidateMemory(VAddr device_addr, u64 size, bool assume_lock
             ReadMemory(device_addr, size, true, assume_locks);
         });
     if (is_fault && !assume_locks) {
-        // Write fault window (ISS_FAULT_WINDOW_KB, power of two, 0 off): the guest fills its
-        // per-frame buffers (the particle arena) sequentially, one fault per 4 KB page. The clean
-        // pages around the fault that hold no GPU data are unprotected with it.
-        static const u64 window = [] {
-            const char* setting = std::getenv("ISS_FAULT_WINDOW_KB");
-            const u64 kb = setting ? std::strtoull(setting, nullptr, 10) : 0;
-            const u64 bytes = kb >= 8 ? std::bit_floor(std::min<u64>(kb, 1024)) * 1024 : 0;
-            std::fprintf(stderr, "PORT_TUNING fault_window_bytes=%llu\n",
-                         static_cast<unsigned long long>(bytes));
-            return bytes;
-        }();
-        if (window != 0) {
+        // Write fault window: the guest fills its per-frame buffers (the particle arena)
+        // sequentially, one fault per 4 KB page. The clean pages around the fault that hold no
+        // GPU data are unprotected with it.
+        constexpr u64 window = 64_KB;
+        {
             const u32 pages =
                 memory_tracker->ExtendWriteFault(Common::AlignDown(device_addr, window), window);
             fault_window_faults.fetch_add(1, std::memory_order_relaxed);
             fault_window_pages.fetch_add(pages, std::memory_order_relaxed);
         }
-        // ISS_FAULT_STREAK_KB (default 256, 0 off): a guest thread writing on through pages it
+        // A guest thread writing on through pages it
         // faults on one after the other (a memcpy over memory the GPU wrote or owns, which the
         // window above leaves alone) gets the pages ahead invalidated now, exactly as their
         // faults would (snapshots for the merge, discards, CPU modified, unprotected), 4 pages
         // at a time as a fault does. Every ~2 s the game copies ~11 MB at 0x2093xxxxx-0x209Fxxxxx:
         // ~2870 faults, a 45 ms frame (the "mini frame skips", 2026-10-17). Pages with a
         // readback pending are left protected: they fault as before.
-        static const u64 streak_bytes = [] {
-            const char* setting = std::getenv("ISS_FAULT_STREAK_KB");
-            const u64 kb = setting ? std::strtoull(setting, nullptr, 10) : 256;
-            return std::min<u64>(kb, 4096) * 1024;
-        }();
-        if (streak_bytes != 0) {
+        constexpr u64 streak_bytes = 256_KB;
+        {
             thread_local u64 last_page = 0, next_page = 0, streak = 0;
             const u64 page = device_addr / BYTES_PER_PAGE;
             if (page == last_page + 1 || (next_page != 0 && page == next_page)) ++streak;
@@ -1490,25 +1298,8 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
         ASSERT_MSG(liverpool->AscOwnerPausedForGraphics(),
                    "G4 readback entered without an acknowledged C owner pause");
     const u64 request_ns = Common::Perf::NowNs();
-    static std::atomic<u64> trace_sequence{};
-    const auto trace_id=iss::timeline::enabled?trace_sequence.fetch_add(1,std::memory_order_relaxed)+1:0;
-    if(trace_id)iss::timeline::Emit("readback_begin",reinterpret_cast<u64>(this),trace_id,
-        device_addr,size,guest_rip,(is_write?1u:0u)|(assume_locks?2u:0u));
-    if (ReadbackDiagEnabled()) {
-        LogReadbackDiag({.event = "request_start", .rip = guest_rip, .address = device_addr,
-                         .size = size, .flags = (is_write ? 1U : 0U) |
-                                                  (assume_locks ? 2U : 0U)});
-    }
-    SCOPE_EXIT {
-        if(trace_id)iss::timeline::Emit("readback_end",reinterpret_cast<u64>(this),trace_id,
-            device_addr,size,guest_rip,0,Common::Perf::NowNs()-request_ns);
-        if (ReadbackDiagEnabled()) {
-            LogReadbackDiag({.event = "request_end", .rip = guest_rip,
-                             .address = device_addr, .size = size,
-                             .duration_ns = Common::Perf::NowNs() - request_ns,
-                             .flags = (is_write ? 1U : 0U) | (assume_locks ? 2U : 0U)});
-        }
-    };
+        SCOPE_EXIT {
+            };
     // Particle trace (Tuning::trace_reads): what the guest gets when it reads GPU written memory
     // in the traced range, logged once the read is complete.
     const auto& trace_tuning = Common::Perf::GetTuning();
@@ -1554,10 +1345,6 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
         // previous ones, the new ones land in guest memory once the GPU is done).
         liverpool->SendCommand<true>([&] {
             Common::Perf::Add(Common::Perf::ReadbackQueueNs, Common::Perf::NowNs() - request_ns);
-            LogReadbackDiag({.event = "guest_enqueue_done", .rip = guest_rip,
-                             .address = device_addr, .size = size,
-                             .duration_ns = Common::Perf::NowNs() - request_ns,
-                             .flags = 4U});
             BeginRelaxedReadback(device_addr, size);
         });
         return;
@@ -1571,9 +1358,6 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
         Vulkan::Semaphore* wait_semaphore = nullptr;
         liverpool->SendCommand<true>([&] {
             Common::Perf::Add(Common::Perf::ReadbackQueueNs, Common::Perf::NowNs() - request_ns);
-            LogReadbackDiag({.event = "guest_enqueue_done", .rip = guest_rip,
-                             .address = device_addr, .size = size,
-                             .duration_ns = Common::Perf::NowNs() - request_ns});
             wait_tick = BeginReadback(device_addr, size, is_write, wait_semaphore);
         });
         if (wait_tick == 0) {
@@ -1619,10 +1403,6 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
     const auto flush_request = [this, device_addr, size, is_write, request_ns, guest_rip] {
         // Time spent waiting for the command processor thread to pick up the request.
         Common::Perf::Add(Common::Perf::ReadbackQueueNs, Common::Perf::NowNs() - request_ns);
-        LogReadbackDiag({.event = "guest_enqueue_done", .rip = guest_rip,
-                         .address = device_addr, .size = size,
-                         .duration_ns = Common::Perf::NowNs() - request_ns,
-                         .flags = 8U});
         ReadbackSync(device_addr, size, is_write);
     };
     if (assume_locks) {
@@ -1634,10 +1414,6 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
 
 void BufferCache::WaitReadback(VAddr device_addr, Vulkan::Semaphore* semaphore, u64 tick) {
     const u64 wait_start = Common::Perf::NowNs();
-    iss::timeline::Emit("readback_wait_begin",reinterpret_cast<u64>(semaphore),tick,device_addr);
-    LogReadbackDiag({.event = "wait_start", .address = device_addr,
-                     .wait_tick = tick, .flags = readback_queue &&
-                         semaphore == &readback_queue->Semaphore() ? 1U : 0U});
     // A readback takes milliseconds: one still waiting after seconds is reported once (hang
     // diagnostics), then the wait goes on.
     if (!semaphore->WaitFor(tick, 2'000'000'000ULL)) {
@@ -1651,12 +1427,6 @@ void BufferCache::WaitReadback(VAddr device_addr, Vulkan::Semaphore* semaphore, 
         semaphore->Wait(tick);
     }
     Common::Perf::Add(Common::Perf::ReadbackAsyncWaitNs, Common::Perf::NowNs() - wait_start);
-    iss::timeline::Emit("readback_wait_end",reinterpret_cast<u64>(semaphore),tick,device_addr,
-        semaphore->KnownGpuTick(),0,0,Common::Perf::NowNs()-wait_start);
-    LogReadbackDiag({.event = "wait_end", .address = device_addr,
-                     .wait_tick = tick, .duration_ns = Common::Perf::NowNs() - wait_start,
-                     .flags = readback_queue &&
-                         semaphore == &readback_queue->Semaphore() ? 1U : 0U});
 }
 
 const BufferCache::PendingReadback* BufferCache::FirstUnfinishedReadback(VAddr device_addr,
@@ -1842,18 +1612,14 @@ u64 BufferCache::BeginReadback(VAddr device_addr, u64 size, bool is_write,
         // Guest reads (faults), not writes nor large invalidations such as unmaps.
         NoteHotWindow(window_start, window_end);
     }
-    // ISS_READBACK_REQUEST_PAGES (default on, =0 off): when the GPU is still writing other parts of the window but
+    // When the GPU is still writing other parts of the window but
     // the requested pages' writers are done, only those pages are downloaded (their data is
     // complete): the guest does not wait for writes it does not read. With the compute rings
     // native the next frame's particle writes are in flight sooner, and the engine's job threads
     // writing 8 bytes next to them waited ~2.3 ms each for them (rb-q-on 2026-10-18). Without the
     // native rings too: Aftermath 4.06 -> 0.76 ms a frame of readback waits, Parting 4.93 -> 1.39
     // (a2-*, same images).
-    static const bool request_pages = [] {
-        const char* p = std::getenv("ISS_READBACK_REQUEST_PAGES");
-        return !p || p[0] != '0';
-    }();
-    if (request_pages && !(cp_split_enabled && liverpool && liverpool->CpSplitActive())) {
+    if (!(cp_split_enabled && liverpool && liverpool->CpSplitActive())) {
         const VAddr page_start = std::max<VAddr>(window_start,
                                                  Common::AlignDown(device_addr, BYTES_PER_PAGE));
         const VAddr page_end = std::min<VAddr>(
@@ -1888,102 +1654,13 @@ u64 BufferCache::BeginReadback(VAddr device_addr, u64 size, bool is_write,
     }
     if (!g4_readback && compute_queue != nullptr && UseReadbackQueue() && !writers.submitted &&
         writers.ticks[1] != 0 && writers.ticks[0] <= scheduler.SubmittedTick()) {
-        static const bool compute_first = [] {
-            const char* p = std::getenv("ISS_ASC_READBACK");
-            return !p || p[0] != '0';
-        }();
-        if (compute_first) {
-            FlushComputeQueue();
-            compute_queue->scheduler->WaitSubmitted(writers.ticks[1]);
-            writers = WindowWritersOf(window_start, window_end - window_start);
-            Common::Perf::Add(Common::Perf::CrossQueueFlushes);
-        }
+        FlushComputeQueue();
+        compute_queue->scheduler->WaitSubmitted(writers.ticks[1]);
+        writers = WindowWritersOf(window_start, window_end - window_start);
+        Common::Perf::Add(Common::Perf::CrossQueueFlushes);
     }
     // Observation only. The first visit has no exact producer history and remains invalid.
-    if (G4FeedbackProbeEnabled() && !is_write && size == 8) {
-        const auto capture = feedback_writer_probe.WatchAndCapture(
-            device_addr, size, window_start, window_end, writers.ticks);
-        static const u64 start_frame = [] {
-            const char* p = std::getenv("ISS_G4_FEEDBACK_START_FRAME");
-            return p ? std::strtoull(p, nullptr, 10) : 0;
-        }();
-        const u64 frame = Common::Perf::GuestFrameCounter().load(std::memory_order_relaxed);
-        static std::atomic<u32> rows{};
-        if (capture.observed && frame >= start_frame &&
-            rows.fetch_add(1, std::memory_order_relaxed) < 4096) {
-            const auto& snap = capture.snapshot;
-            std::fprintf(stderr,
-                "G4_FEEDBACK_OBS ns=%llu addr=0x%llx exact_qid=%u exact_gen=%llu "
-                "exact_tick=%llu window_gfx_tick=%llu window_asc_tick=%llu "
-                "obs_epoch=%llu exact_seq=%llu tracker_seq=%llu current=%u submitted=%u\n",
-                static_cast<unsigned long long>(Common::Perf::NowNs()),
-                static_cast<unsigned long long>(device_addr), snap.exact.qid,
-                static_cast<unsigned long long>(snap.exact.generation),
-                static_cast<unsigned long long>(snap.exact.scheduler_tick),
-                static_cast<unsigned long long>(snap.window[0].scheduler_tick),
-                static_cast<unsigned long long>(snap.window[1].scheduler_tick),
-                static_cast<unsigned long long>(capture.observation_epoch),
-                static_cast<unsigned long long>(snap.write_sequence),
-                static_cast<unsigned long long>(memory_tracker->GetWriteSeq(device_addr, size)),
-                static_cast<unsigned>(writers.current), static_cast<unsigned>(writers.submitted));
-            const auto& e = capture.exact;
-            const auto& p = capture.page;
-            const auto& w = capture.word;
-            const auto& v = capture.window;
-            // Each tuple is sequence/tick/range start/range size/ObtainBuffer caller PC.
-            std::fprintf(stderr,
-                "G4_FEEDBACK_CAUSE frame=%llu addr=0x%llx "
-                "exact=%llu/%llu/0x%llx/%llu/0x%llx "
-                "page=%llu/%llu/0x%llx/%llu/0x%llx "
-                "word=%llu/%llu/0x%llx/%llu/0x%llx "
-                "window=%llu/%llu/0x%llx/%llu/0x%llx\n",
-                static_cast<unsigned long long>(frame),
-                static_cast<unsigned long long>(device_addr),
-                static_cast<unsigned long long>(e.sequence),
-                static_cast<unsigned long long>(e.token.scheduler_tick),
-                static_cast<unsigned long long>(e.start),
-                static_cast<unsigned long long>(e.size),
-                static_cast<unsigned long long>(e.caller_pc),
-                static_cast<unsigned long long>(p.sequence),
-                static_cast<unsigned long long>(p.token.scheduler_tick),
-                static_cast<unsigned long long>(p.start),
-                static_cast<unsigned long long>(p.size),
-                static_cast<unsigned long long>(p.caller_pc),
-                static_cast<unsigned long long>(w.sequence),
-                static_cast<unsigned long long>(w.token.scheduler_tick),
-                static_cast<unsigned long long>(w.start),
-                static_cast<unsigned long long>(w.size),
-                static_cast<unsigned long long>(w.caller_pc),
-                static_cast<unsigned long long>(v.sequence),
-                static_cast<unsigned long long>(v.token.scheduler_tick),
-                static_cast<unsigned long long>(v.start),
-                static_cast<unsigned long long>(v.size),
-                static_cast<unsigned long long>(v.caller_pc));
-        }
-    }
-    WindowWriters request_writers{};
-    if (ReadbackDiagEnabled()) {
-        request_writers = WindowWritersOf(device_addr, size);
-        LogReadbackDiag({.event = "begin_readback", .address = device_addr, .size = size,
-                         .window_start = window_start, .window_end = window_end,
-                         .request_gfx_tick = request_writers.ticks[0],
-                         .request_compute_tick = request_writers.ticks[1],
-                         .window_gfx_tick = writers.ticks[0],
-                         .window_compute_tick = writers.ticks[1],
-                         .request_state = ReadbackDiagState(request_writers.done,
-                                                            request_writers.submitted,
-                                                            request_writers.current),
-                         .window_state = ReadbackDiagState(writers.done, writers.submitted,
-                                                           writers.current),
-                         .queue = ActiveQueuePtr()->index, .flags = is_write ? 1U : 0U});
-    }
     if (!is_write && size <= BYTES_PER_PAGE) {
-        static const bool trace=[] {const char *p=std::getenv("ISS_FEEDBACK_TRACE");return p&&p[0]=='1';}();
-        if(trace){
-            const auto precise=WindowWritersOf(device_addr,size);
-            static std::FILE *file=[] {const char *p=std::getenv("ISS_DEPENDENCY_LOG");auto *f=p?std::fopen(p,"w"):nullptr;if(f)std::fputs("time_ns,address,size,window_start,window_end,window_gfx_tick,window_compute_tick,request_gfx_tick,request_compute_tick,window_done,window_submitted,window_current,request_done,request_submitted,request_current\n",f);return f;}();
-            if(file){std::fprintf(file,"%llu,0x%llx,%llu,0x%llx,0x%llx,%llu,%llu,%llu,%llu,%d,%d,%d,%d,%d,%d\n",(unsigned long long)Common::Perf::NowNs(),(unsigned long long)device_addr,(unsigned long long)size,(unsigned long long)window_start,(unsigned long long)window_end,(unsigned long long)writers.ticks[0],(unsigned long long)writers.ticks[1],(unsigned long long)precise.ticks[0],(unsigned long long)precise.ticks[1],writers.done,writers.submitted,writers.current,precise.done,precise.submitted,precise.current);std::fflush(file);}
-        }
         if (writers.done) {
             Common::Perf::Add(Common::Perf::ReadbackProducerDone);
         } else if (writers.submitted) {
@@ -2045,9 +1722,6 @@ u64 BufferCache::BeginReadback(VAddr device_addr, u64 size, bool is_write,
         // Nothing left to download in the window.
         memory_tracker->RemovePendingReadback(window_start, window_end);
         if (!overlapping) {
-            LogReadbackDiag({.event = "readback_nothing", .address = device_addr,
-                             .size = size, .window_start = window_start,
-                             .window_end = window_end, .queue = ActiveQueuePtr()->index});
             // Same as a synchronous readback.
             if (is_write) {
                 memory_tracker->MarkRegionAsCpuModified(device_addr, size);
@@ -2057,12 +1731,6 @@ u64 BufferCache::BeginReadback(VAddr device_addr, u64 size, bool is_write,
         if (overlapping->prefetch) {
             Common::Perf::Add(Common::Perf::ReadbackPrefetchHits);
         }
-        LogReadbackDiag({.event = "readback_reuse", .address = device_addr,
-                         .size = size, .window_start = window_start,
-                         .window_end = window_end, .queue = ActiveQueuePtr()->index,
-                         .wait_tick = overlapping->tick,
-                         .flags = (overlapping->prefetch ? 1U : 0U) |
-                                  (overlapping->on_readback_queue ? 2U : 0U)});
         wait_semaphore = overlapping->on_readback_queue ? &readback_queue->Semaphore()
                                                         : scheduler.GetWorkSemaphore();
         return overlapping->tick;
@@ -2091,38 +1759,6 @@ u64 BufferCache::BeginReadback(VAddr device_addr, u64 size, bool is_write,
     }
     Common::Perf::Add(Common::Perf::ReadbackSyncNs, Common::Perf::NowNs() - submit_start);
     const u64 wait_tick = readback.tick;
-    if(iss::timeline::enabled) {
-        iss::timeline::Emit("readback_copy",reinterpret_cast<u64>(this),wait_tick,
-            device_addr,reinterpret_cast<u64>(wait_semaphore),window_start,window_end,
-            Common::Perf::NowNs()-submit_start);
-        iss::timeline::Emit("readback_dependency",reinterpret_cast<u64>(this),wait_tick,
-            reinterpret_cast<u64>(&scheduler),writers.ticks[0],writers.ticks[1],use_queue);
-    }
-    if (ReadbackDiagEnabled()) {
-        u64 copy_bytes = 0;
-        for (const auto& copy : readback.copies) {
-            copy_bytes += copy.size;
-        }
-        LogReadbackDiag({.event = "readback_record", .address = device_addr,
-                         .size = size, .window_start = window_start,
-                         .window_end = window_end,
-                         .request_gfx_tick = request_writers.ticks[0],
-                         .request_compute_tick = request_writers.ticks[1],
-                         .window_gfx_tick = writers.ticks[0],
-                         .window_compute_tick = writers.ticks[1],
-                         .request_state = ReadbackDiagState(request_writers.done,
-                                                            request_writers.submitted,
-                                                            request_writers.current),
-                         .window_state = ReadbackDiagState(writers.done, writers.submitted,
-                                                           writers.current),
-                         .queue = ActiveQueuePtr()->index, .wait_tick = wait_tick,
-                         .copies = static_cast<u32>(readback.copies.size()),
-                         .copy_bytes = copy_bytes,
-                         .duration_ns = Common::Perf::NowNs() - submit_start,
-                         .flags = (use_queue ? 1U : 0U) |
-                                  (overlapping ? 2U : 0U) |
-                                  (is_write ? 4U : 0U)});
-    }
     pending_readbacks.push_back(std::move(readback));
     Common::Perf::Add(Common::Perf::ReadbackAsync);
     return wait_tick;
@@ -2177,25 +1813,13 @@ void BufferCache::PrefetchReadbacks() {
     if (hot_windows.empty()) {
         return;
     }
-    // ISS_PREFETCH_PER_SUBMIT=1 (default off): the windows are scanned again only once a
+    // The windows are scanned again only once a
     // submission went out since the last scan. The compute rings fence thousands of times a
     // second (the forest: ~110k scans for ~11k prefetches recorded, 5.6% of the command
     // processor), and without a new submission no new GPU result can be ready; a guest read of
     // data recorded since then faults and takes the precise path as before.
     // Measured 2026-10-18: CP -0.6 ms in the forest, but the guest waits for readbacks longer
     // where the prefetch matters (Aftermath 1.4 -> 4.8 ms a frame, Parting 3.1 -> 4.5): off.
-    static const bool per_submit = [] {
-        const char* p = std::getenv("ISS_PREFETCH_PER_SUBMIT");
-        return p && p[0] == '1';
-    }();
-    if (per_submit) {
-        const u64 current = scheduler.CurrentTick();
-        if (current == prefetch_scan_tick) {
-            g_prefetch_scan_skips.fetch_add(1, std::memory_order_relaxed);
-            return;
-        }
-        prefetch_scan_tick = current;
-    }
     const auto& tuning = Common::Perf::GetTuning();
     // Only precise readbacks keep the pages protected until the data is written.
     if (!tuning.async_readbacks.load(std::memory_order_relaxed) ||
@@ -2258,13 +1882,6 @@ void BufferCache::PrefetchReadbacks() {
         }
         const WindowWriters writers = WindowWritersOf(start, end - start);
         const bool on_queue = queue_enabled && writers.submitted;
-        LogReadbackDiag({.event = "prefetch_candidate", .address = start,
-                         .size = end - start, .window_start = start, .window_end = end,
-                         .window_gfx_tick = writers.ticks[0],
-                         .window_compute_tick = writers.ticks[1],
-                         .window_state = ReadbackDiagState(writers.done, writers.submitted,
-                                                           writers.current),
-                         .queue = ActiveQueuePtr()->index, .flags = on_queue ? 1U : 0U});
         const auto* arena = GetArena(start >> block_shift, (end - 1) >> block_shift);
         PendingReadback readback{
             .tick = tick,
@@ -2276,9 +1893,6 @@ void BufferCache::PrefetchReadbacks() {
         };
         if (!(on_queue ? CollectReadback(arena, readback) : RecordReadback(arena, readback))) {
             memory_tracker->RemovePendingReadback(start, end);
-            LogReadbackDiag({.event = "prefetch_nothing", .address = start,
-                             .size = end - start, .window_start = start,
-                             .window_end = end, .queue = ActiveQueuePtr()->index});
             continue;
         }
         prefetched_bytes += readback.download.size;
@@ -2300,33 +1914,6 @@ void BufferCache::PrefetchReadbacks() {
         scheduler.MarkReadbackSession();
         scheduler.Flush();
         Common::Perf::Add(Common::Perf::ReadbackPrefetchFlushes);
-    }
-    if (ReadbackDiagEnabled()) {
-        for (size_t i = first_queued; i < pending_readbacks.size(); ++i) {
-            const auto& readback = pending_readbacks[i];
-            if (readback.on_readback_queue) {
-                continue; // Its final tick comes from the queue submit below.
-            }
-            u64 copy_bytes = 0;
-            for (const auto& copy : readback.copies) {
-                copy_bytes += copy.size;
-            }
-            LogReadbackDiag({.event = "prefetch_record", .address = readback.window_start,
-                             .size = readback.window_end - readback.window_start,
-                             .window_start = readback.window_start,
-                             .window_end = readback.window_end,
-                             .queue = ActiveQueuePtr()->index, .wait_tick = readback.tick,
-                             .copies = static_cast<u32>(readback.copies.size()),
-                             .copy_bytes = copy_bytes});
-        }
-        LogReadbackDiag({.event = "prefetch_summary",
-                         .address = static_cast<u64>(hot_windows.size()),
-                         .request_state = skipped_inflight,
-                         .window_state = skipped_clean, .queue = skipped_sequence,
-                         .copies = static_cast<u32>(pending_readbacks.size() - first_queued),
-                         .copy_bytes = prefetched_bytes,
-                         .flags = (recorded_on_graphics ? 1U : 0U) |
-                                  (recorded_on_queue ? 2U : 0U)});
     }
     if (!recorded_on_queue) {
         return;
@@ -2358,19 +1945,6 @@ void BufferCache::PrefetchReadbacks() {
             if (window.start == readback.window_start && window.end == readback.window_end) {
                 window.prefetch_tick = queue_tick;
             }
-        }
-        if (ReadbackDiagEnabled()) {
-            u64 copy_bytes = 0;
-            for (const auto& copy : readback.copies) {
-                copy_bytes += copy.size;
-            }
-            LogReadbackDiag({.event = "prefetch_record", .address = readback.window_start,
-                             .size = readback.window_end - readback.window_start,
-                             .window_start = readback.window_start,
-                             .window_end = readback.window_end,
-                             .queue = ActiveQueuePtr()->index, .wait_tick = queue_tick,
-                             .copies = static_cast<u32>(readback.copies.size()),
-                             .copy_bytes = copy_bytes, .flags = 1U});
         }
     }
 }
@@ -2543,22 +2117,6 @@ void BufferCache::FinishReadback(size_t index) {
         staging_pool.FreeDeferred(readback.download);
     }
     Common::Perf::Add(Common::Perf::ReadbackSyncNs, Common::Perf::NowNs() - finish_start);
-    if (ReadbackDiagEnabled()) {
-        u64 copy_bytes = 0;
-        for (const auto& copy : readback.copies) {
-            copy_bytes += copy.size;
-        }
-        LogReadbackDiag({.event = "readback_finish", .address = readback.window_start,
-                         .size = readback.window_end - readback.window_start,
-                         .window_start = readback.window_start,
-                         .window_end = readback.window_end,
-                         .queue = ActiveQueuePtr()->index, .wait_tick = readback.tick,
-                         .copies = static_cast<u32>(readback.copies.size()),
-                         .copy_bytes = copy_bytes,
-                         .duration_ns = Common::Perf::NowNs() - finish_start,
-                         .flags = (readback.on_readback_queue ? 1U : 0U) |
-                                  (readback.prefetch ? 2U : 0U)});
-    }
 }
 
 void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 size) {
@@ -2668,66 +2226,9 @@ void BufferCache::PrefetchStreamSource(VAddr device_addr, u64 size) noexcept {
     }
 }
 
-// ISS_OBTAIN_CENSUS=1: ObtainBuffer outcomes on the command processor thread (calls, cycles,
-// bytes, and how many addresses lie in the command buffer segment being processed).
-namespace {
-bool ObtainCensusEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_OBTAIN_CENSUS");
-        return value && value[0] == '1';
-    }();
-    return enabled;
-}
-enum ObtainOutcome : u32 { OSmallMemo, OStreamReuse, OArenaClean, OStreamCopy, OLarge, ONum };
-struct ObtainCensus {
-    std::array<u64, ONum> calls{}, cycles{}, bytes{}, in_dcb{};
-    std::array<u64, ONum> written{};
-    u64 total{};
-};
-ObtainCensus g_obtain_census;
-struct ObtainTimer {
-    bool on;
-    u64 start;
-    VAddr address;
-    u32 size;
-    bool is_written;
-    u32 outcome = OLarge;
-    ObtainTimer(VAddr a, u32 s, bool w, bool enabled)
-        : on{enabled},
-          start{on ? __rdtsc() : 0}, address{a}, size{s}, is_written{w} {}
-    ~ObtainTimer() {
-        if (!on) {
-            return;
-        }
-        auto& c = g_obtain_census;
-        ++c.calls[outcome];
-        c.cycles[outcome] += __rdtsc() - start;
-        c.bytes[outcome] += size;
-        c.in_dcb[outcome] += address >= g_iss_dcb_lo && address < g_iss_dcb_hi;
-        c.written[outcome] += is_written;
-        if ((++c.total & ((1u << 20) - 1)) != 0) {
-            return;
-        }
-        static const char* const names[] = {"small_memo", "stream_reuse", "arena_clean",
-                                            "stream_copy", "large"};
-        for (u32 i = 0; i < ONum; ++i) {
-            std::fprintf(stderr,
-                         "OBTAIN_CENSUS %s calls=%llu cycles/call=%.0f bytes/call=%.0f "
-                         "in_dcb=%llu written=%llu\n",
-                         names[i], (unsigned long long)c.calls[i],
-                         c.calls[i] ? double(c.cycles[i]) / c.calls[i] : 0.0,
-                         c.calls[i] ? double(c.bytes[i]) / c.calls[i] : 0.0,
-                         (unsigned long long)c.in_dcb[i], (unsigned long long)c.written[i]);
-        }
-    }
-};
-} // namespace
-
 std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 size,
                                                         bool is_written, bool is_texel_buffer,
                                                         bool* known_unwritten) {
-    if (iss::repeat_census::enabled) [[unlikely]]
-        iss::repeat_census::Note(iss::repeat_census::ObtainBuffer, device_addr, size, is_written);
     if (iss::unified::enabled) [[unlikely]] {
         if (unified_end == 0 && !unified_failed) {
             EnableUnified();
@@ -2736,8 +2237,6 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
             return ObtainUnified(device_addr, size, is_written, known_unwritten);
         }
     }
-    ObtainTimer obtain_timer{device_addr, size, is_written,
-                             ObtainCensusEnabled() && liverpool && liverpool->IsCurrentCpThread()};
     auto& stream_copies = ComputeScratchActive() ? compute_scratch.stream_copies
                                                 : this->stream_copies;
     auto& stream_clean_sample = ComputeScratchActive() ? compute_scratch.stream_clean_sample
@@ -2745,10 +2244,7 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     auto& sync_memos = ComputeScratchActive() ? compute_scratch.sync_memos : this->sync_memos;
     auto& large_read_memos = ComputeScratchActive() ? compute_scratch.large_read_memos
                                                    : this->large_read_memos;
-    iss::diagnostics::Scope phase_scope(iss::diagnostics::ObtainBuffer);
     if (known_unwritten) *known_unwritten = false;
-    const u64 writer_caller_pc = G4FeedbackProbeEnabled() && is_written
-                                     ? reinterpret_cast<u64>(_ReturnAddress()) : 0;
     // Reuse the ordinary CPU-clean small arena binding across ALL shader
     // families. Keep current hazards live; never return a remembered "no write"
     // result after a later upload/draw touched the arena in this same tick.
@@ -2778,7 +2274,6 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
         if (const auto* cached = small_read_memo.Find(*small_read_before)) {
             if (!Rt().IsBufferAccessed(cached->handle, cached->offset, size)) {
                 small_read_memo.Hit();
-                obtain_timer.outcome = OSmallMemo;
                 Common::Perf::Add(Common::Perf::StreamArenaBinds);
                 if (known_unwritten) *known_unwritten = true;
                 return {cached->handle, cached->offset};
@@ -2806,7 +2301,6 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
                 reuse->epoch == epoch && reuse->host_write_gen == host_write_gen) {
                 Common::Perf::Add(Common::Perf::StreamReuses);
                 Common::Perf::Add(Common::Perf::StreamReuseBytes, size);
-                obtain_timer.outcome = OStreamReuse;
                 if (known_unwritten) *known_unwritten = true;
                 return {&Stream(), reuse->offset};
             }
@@ -2816,12 +2310,7 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
         // graphics uploads of neighbouring data and wait for the graphics queue (measured:
         // ~800 such waits per frame serialize the compute ring behind rendering). The guest
         // bytes are current here (no GPU data), so the copy has no cross queue dependency.
-        static const bool compute_copies = [] {
-            const char* p = std::getenv("ISS_ASC_STREAM_COPY");
-            return !p || p[0] != '0';
-        }();
-        if (tuning.stream_static.load(std::memory_order_relaxed) &&
-            !(compute_copies && OnComputeQueue())) {
+        if (tuning.stream_static.load(std::memory_order_relaxed) && !OnComputeQueue()) {
             if (!is_texel_buffer &&
                 memory_tracker->IsRegionCpuClean(device_addr, size, stable_frames)) {
                 // The GPU copy of these pages is up to date: no copy or upload is needed to read
@@ -2834,7 +2323,6 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
                 // place would need a full pipeline barrier, a copy needs none.
                 if (!Rt().IsBufferAccessed(arena, arena_offset, size)) {
                     Common::Perf::Add(Common::Perf::StreamArenaBinds);
-                    obtain_timer.outcome = OArenaClean;
                     EnsureResident(arena, first_block, last_block);
                     NoteQueueAccess(device_addr, size, false);
                     if (small_read_before) {
@@ -2857,7 +2345,6 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
         stream.Commit();
         Common::Perf::Add(Common::Perf::StreamCopies);
         Common::Perf::Add(Common::Perf::StreamCopyBytes, size);
-        obtain_timer.outcome = OStreamCopy;
         if (reuse) {
             // The copy stays valid until the command buffer it was committed in completes.
             *reuse = StreamCopy{
@@ -2955,18 +2442,6 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
         // Publish dirty bytes and their producer tick as one logical metadata update.
         const u64 write_seq = PublishGpuWrite(device_addr, size, Sched().CurrentTick(),
                                               ActiveQueuePtr()->index);
-        if (G4FeedbackProbeEnabled()) {
-            const auto identity = serial_producer_identity;
-            const bool matched = identity.generation != 0 && identity.qid < 57 &&
-                ((ActiveQueuePtr()->index == 0 && identity.owner == iss::g4::CpOwner::Graphics) ||
-                 (ActiveQueuePtr()->index == 1 && identity.owner == iss::g4::CpOwner::Asc1 &&
-                  identity.qid == 1));
-            feedback_writer_probe.Publish(device_addr, size,
-                iss::g4::ProducerToken{identity.owner, identity.qid,
-                                       matched ? identity.generation : 0,
-                                       Sched().CurrentTick()}, write_seq, ActiveQueuePtr()->index,
-                writer_caller_pc, is_texel_buffer);
-        }
     } else if (memo && have_versions) {
         // Versions read before the synchronization: a write during it changes them.
         Common::Perf::Add(Common::Perf::SyncMemoMisses);
@@ -3353,7 +2828,7 @@ namespace {
 // (residency only grows and is never freed), and the next chunk is allocated on its own thread
 // ahead of need: the command processor's vkAllocateMemory calls cost ~5-20 ms each when the
 // game reached new memory (frames of 27-49 ms in the city, 2026-10-19). Ranges of half a chunk
-// or more get their own allocation as before. ISS_RESIDENCY_POOL=0 off.
+// or more get their own allocation as before.
 struct ResidencyPool {
     static constexpr u64 ChunkSize = 64ull << 20;
     std::mutex mutex;
@@ -3363,23 +2838,19 @@ struct ResidencyPool {
     bool refilling{};
     u64 chunks{}, sync_allocations{};
 };
-// One pool per memory type: [0] VRAM, [1] system memory (ISS_ARENA_SPILL).
+// One pool per memory type: [0] VRAM, [1] system memory.
 ResidencyPool residency_pools[2];
 std::atomic<u64> arena_resident_bytes[2]{};
 
 std::pair<vk::DeviceMemory, u64> AllocateResidency(vk::Device device, u32 type_index, u64 size,
                                                    ResidencyPool& pool) {
-    static const bool enabled = [] {
-        const char* p = std::getenv("ISS_RESIDENCY_POOL");
-        return !p || p[0] != '0';
-    }();
     const auto allocate = [device, type_index](u64 bytes) {
         return Vulkan::Check(device.allocateMemory(vk::MemoryAllocateInfo{
             .allocationSize = bytes,
             .memoryTypeIndex = type_index,
         }));
     };
-    if (!enabled || size > ResidencyPool::ChunkSize / 2) {
+    if (size > ResidencyPool::ChunkSize / 2) {
         return {allocate(size), 0};
     }
     std::unique_lock lock{pool.mutex};
@@ -3528,7 +2999,6 @@ bool BufferCache::SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 
                                     bool is_written, bool is_texel_buffer) {
     auto& deferred_pages = ComputeScratchActive() ? compute_scratch.deferred_pages
                                                   : this->deferred_pages;
-    iss::diagnostics::Scope phase_scope(iss::diagnostics::SyncMemory);
     const auto& tuning = Common::Perf::GetTuning();
     const bool hash_hot_pages = tuning.hot_page_faults.load(std::memory_order_relaxed) != 0 &&
                                 tuning.hot_page_hash.load(std::memory_order_relaxed);
@@ -3773,7 +3243,6 @@ void BufferCache::NoteQueueUpload(VAddr device_addr, u64 size) {
 }
 
 void BufferCache::ProbeHostImport(VAddr address) {
-    iss::ProbeNativeFeedback(instance,scheduler);
     if (!instance.HasExternalMemoryHost()) {
         LOG_INFO(Render_Vulkan, "Host import probe: VK_EXT_external_memory_host not available");
         return;

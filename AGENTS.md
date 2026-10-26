@@ -52,7 +52,10 @@ artifact. Releases are uploaded by hand from a local build (`just build`, with P
 - Settings: `~/.config/iss-pc/settings.toml` (written on first start). Unknown keys are an error.
   Defaults and validation live in `pc-port/src/settings.c`; document new keys in `docs/settings.md`
   and add them to `tests/settings_test.c`. The launcher reads the same table.
-- Internal options are `ISS_*` / `BB_*` environment variables, or `[developer]` in `settings.toml`.
+- There are no internal options: everything is a key of `settings.toml`, with its default, its check
+  and its documentation in `pc-port/src/settings.c` and `pc-port/docs/settings.md`. The renderer's
+  tuned constants are compiled in. Only three variables are read from a run's environment:
+  `ISS_SETTINGS`, `ISS_USER_DIR` and `SHADPS4_FRAME_CSV`.
 - Game data, caches and logs of the AppImage: `~/.local/share/iss-pc/` (log: `logs/game.log`).
   When run from the build folder, they are in `pc-port/build/user/`.
 - `SHADPS4_FRAME_CSV=frames.csv` writes per-frame timings; summarise with
@@ -78,7 +81,7 @@ artifact. Releases are uploaded by hand from a local build (`just build`, with P
 
 ## Performance debugging
 
-Profile with the frame CSV (`SHADPS4_FRAME_CSV`) and `ISS_GPU_PROFILE=1`. Before blaming the code
+Profile with the frame CSV (`SHADPS4_FRAME_CSV`) and `gpu_profile = 1` in `perf_tuning.ini`. Before blaming the code
 for a slowdown, rule out the system (CPU scheduler, GPU clocks) and shader compilation
 (`AOT_COMPUTE ... compiled=N` in `game.log`; `compiled=0` means everything came from the cache).
 

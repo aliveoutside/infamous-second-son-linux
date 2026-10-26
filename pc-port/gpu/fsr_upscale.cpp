@@ -110,11 +110,6 @@ int EnvInt(const char* name, int fallback) {
     return v && v[0] ? std::atoi(v) : fallback;
 }
 
-float EnvFloat(const char* name, float fallback) {
-    const char* v = std::getenv(name);
-    return v && v[0] ? static_cast<float>(std::atof(v)) : fallback;
-}
-
 FfxVkPortableDeviceInfo DeviceInfo(const Vulkan::Instance& instance) {
     FfxVkPortableDeviceInfo device{};
     device.structSize = sizeof(device);
@@ -148,8 +143,8 @@ FfxVkPortableImage Convert(const Image& image, FfxVkPortableResourceState state)
 } // namespace
 
 namespace {
-std::atomic<bool> g_enabled{EnvInt("ISS_FSR", 0) == 1};
-std::atomic<bool> g_fg_enabled{EnvInt("ISS_FG", 0) == 1};
+std::atomic<bool> g_enabled{false};
+std::atomic<bool> g_fg_enabled{false};
 std::atomic<int> g_sharpness{std::clamp(EnvInt("ISS_FSR_SHARPNESS", 0), 0, 100)};
 std::atomic<bool> g_restart{}; // switched on again: the history is stale
 std::atomic<bool> g_fg_restart{}; // FG or FSR switched: what FG prepared before is stale
@@ -184,15 +179,11 @@ bool Prepare(const Vulkan::Instance& instance, u32 width, u32 height, Frame& fra
     if (g.failed) {
         return false;
     }
-    const bool debug = EnvInt("ISS_FSR_DEBUG", 0) != 0;
     if (!g.context) {
         const auto device = DeviceInfo(instance);
         FfxVkPortableUpscaleCreateInfo create{};
         create.structSize = sizeof(create);
         create.flags = FFX_VK_PORTABLE_CONTEXT_DEPTH_INVERTED | FFX_VK_PORTABLE_CONTEXT_DEPTH_INFINITE;
-        if (debug) {
-            create.flags |= FFX_VK_PORTABLE_CONTEXT_DEBUG_CHECKING;
-        }
         // fsr_mode below native: the picture is drawn smaller than the game's output
         // (native/ultrawide.cpp) and FSR scales it up to that.
         u32 out_w = width, out_h = height;
@@ -238,15 +229,15 @@ bool Prepare(const Vulkan::Instance& instance, u32 width, u32 height, Frame& fra
 
     // The game's own jitter: +-0.25 render px diagonally, by the SMAA T2x subsample index of the
     // frame. SMAA's reference pairs index 1 with (0.25, -0.25) in clip space (y up), +0.25 +0.25
-    // in FSR's pixels (y down). ISS_FSR_JITTER bit 0 flips x, bit 1 flips y.
-    const int combo = EnvInt("ISS_FSR_JITTER", 0);
-    const float amp = EnvFloat("ISS_FSR_JITTER_AMP", 0.25f);
+    // in FSR's pixels (y down).
+    constexpr int combo = 0;
+    constexpr float amp = 0.25f;
     const float j = frame.phase == 1 ? amp : -amp;
     frame.jitter[0] = (combo & 1) ? -j : j;
     frame.jitter[1] = (combo & 2) ? -j : j;
     // The game's vectors are UV, current minus previous; FSR wants pixels towards the previous
-    // position. ISS_FSR_MV bit 0 flips x, bit 1 flips y.
-    const int mv = EnvInt("ISS_FSR_MV", 0);
+    // position.
+    constexpr int mv = 0;
     frame.mv_scale[0] = ((mv & 1) ? 1.0f : -1.0f) * float(width);
     frame.mv_scale[1] = ((mv & 2) ? 1.0f : -1.0f) * float(height);
 
@@ -270,18 +261,10 @@ bool Prepare(const Vulkan::Instance& instance, u32 width, u32 height, Frame& fra
 
 namespace {
 
-float CameraNear() {
-    static const float v = EnvFloat("ISS_FSR_NEAR", 0.1f);
-    return v;
-}
-float CameraFar() {
-    static const float v = EnvFloat("ISS_FSR_FAR", 5000.0f);
-    return v;
-}
-float CameraFov() {
-    static const float v = EnvFloat("ISS_FSR_FOV", 1.0f);
-    return v;
-}
+// The game's own values; FSR builds its projection from them.
+float CameraNear() { return 0.1f; }
+float CameraFar() { return 5000.0f; }
+float CameraFov() { return 1.0f; }
 
 FfxVkPortableUpscaleDispatchInfo Fill(VkCommandBuffer cmdbuf, const Frame& frame) {
     FfxVkPortableUpscaleDispatchInfo d{};

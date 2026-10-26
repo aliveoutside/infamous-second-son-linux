@@ -12,14 +12,8 @@ struct Identity {
     std::uint64_t technique{}, geometry{}, material{}, item{};
     bool operator==(const Identity&) const = default;
 };
-inline bool Flag(const char* name) {
-    const auto* v = std::getenv(name);
-    return v && std::strcmp(v, "1") == 0;
-}
 inline bool Enabled() {
-    static const bool enabled = Flag("ISS_ENGINE_MARKERS") && Flag("ISS_NATIVE_ITEM_RANGES") &&
-        (Flag("ISS_NATIVE_ITEMS") || Flag("ISS_NATIVE_VERIFY"));
-    return enabled;
+    return false;
 }
 inline thread_local const Identity* current{};
 // Construct only around synchronous rasterizer recording, never across coroutine suspension.

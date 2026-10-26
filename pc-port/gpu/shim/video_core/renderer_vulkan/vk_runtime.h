@@ -105,7 +105,7 @@ private:
     std::unique_ptr<VideoCore::BlitHelper> blit_helper;
     StagingBufferPool staging_pool;
     /// Read ranges are only queried by a later write (Overlaps), far less often than added
-    /// (every bound buffer of every draw). ISS_LAZY_READ_RANGES=1: appended unsorted and merged
+    /// (every bound buffer of every draw). A lazy list is appended unsorted and merged
     /// into the sorted list on the next query; the set and every Overlaps answer are unchanged.
     struct LazyReadList {
         IntervalList<Interval> merged;

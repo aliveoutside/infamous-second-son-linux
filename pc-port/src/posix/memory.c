@@ -95,7 +95,7 @@ uint8_t *memory_backing(uint64_t address,uint64_t size){
         }}
     host_unlock_shared(&memory_lock);return p;
 }
-// Mapping index (ISS_MAPPING_INDEX=1): per thread, the mappings sorted by address, rebuilt when the
+// Mapping index: per thread, the mappings sorted by address, rebuilt when the
 // append-only table grew; looked up without the lock by binary search. Only used while no two
 // mappings overlap, so the containing mapping is the one the linear scan finds first.
 typedef struct {unsigned count,usable;uint64_t start[4096],end[4096];} MappingIndex;
@@ -104,11 +104,8 @@ static int index_order(const void *a,const void *b){
 }
 static int mapping_index_find(uint64_t address,uint64_t *available){
     static _Thread_local MappingIndex *index;
-    static int enabled;
-    if(!enabled){const char *value=getenv("ISS_MAPPING_INDEX");enabled=value&&value[0]=='1'?1:-1;}
-    if(enabled<0)return 0;
     const unsigned count=*(volatile unsigned *)&mapping_count;
-    if(!index){index=calloc(1,sizeof(*index));if(!index){enabled=-1;return 0;}}
+    if(!index){index=calloc(1,sizeof(*index));if(!index)return 0;}
     if(index->count!=count){
         static _Thread_local uint64_t pairs[4096][2];
         host_lock_shared(&memory_lock);
@@ -135,26 +132,14 @@ uint64_t memory_clamp(uint64_t address,uint64_t size){
     // cache misses. Add invalidation here before implementing unmap/replacement.
     typedef struct {uint64_t address,available;} ClampEntry;
     static _Thread_local ClampEntry cache[1024];
-    static _Thread_local int enabled;
-    static _Thread_local int cache_first;
-    if(!cache_first){const char *value=getenv("ISS_CLAMP_CACHE_FIRST");cache_first=value&&value[0]=='1'?1:-1;}
-    // Keep the original index-first route for A/B. With both approved mapping
-    // options on it otherwise returns before consulting or populating this cache.
-    if(cache_first<0){uint64_t available;if(mapping_index_find(address,&available))return available<size?available:size;}
-    if(!enabled){const char *value=getenv("ISS_MAPPING_CACHE");enabled=value&&value[0]=='1'?1:-1;}
+    uint64_t available;
+    if(mapping_index_find(address,&available))return available<size?available:size;
     ClampEntry *entry=&cache[((address>>4)*UINT64_C(0x9e3779b97f4a7c15))>>54];
-    if(enabled>0&&entry->available&&entry->address==address)return size<entry->available?size:entry->available;
-    if(cache_first>0){
-        uint64_t available;
-        if(mapping_index_find(address,&available)){
-            if(enabled>0&&available)*entry=(ClampEntry){address,available};
-            return available<size?available:size;
-        }
-    }
+    if(entry->available&&entry->address==address)return size<entry->available?size:entry->available;
     uint64_t n=0;host_lock_shared(&memory_lock);
     for(unsigned i=0;i<mapping_count;++i){Mapping *m=&mappings[i];if(address>=m->address&&address-m->address<m->size){n=m->size-(address-m->address);break;}}
     host_unlock_shared(&memory_lock);
-    if(enabled>0&&n)*entry=(ClampEntry){address,n};
+    if(n)*entry=(ClampEntry){address,n};
     return n<size?n:size;
 }
 void memory_visit(void (*visit)(uint64_t,uint64_t,uint8_t *)){

@@ -98,12 +98,12 @@ set(ISS_CXX_TESTS
   test_g4_dma_fallback test_g4_graphics_control test_g4_packet_hazards test_g4_readback_writers
   test_g4_record_ownership test_g4_scheduler_timeline_bridge test_g4_sparse_residency
   test_g4_texture_negative_index test_graphics_pipeline_reuse test_sparse_copy test_srt_write_watch
-  test_upload_parts texture_lookup_memo_test timeline_buffer_test
+  test_upload_parts texture_lookup_memo_test
   "native_draw_run_test:gpu/native_draw_run.cpp" "native_instanced_run_test:gpu/native_instanced_run.cpp"
   "native_geometry_batch_test:gpu/native_geometry_batch.cpp"
   "native_instanced_batch_test:gpu/native_instanced_batch.cpp"
   "test_g4_fallback_packet:gpu/g4_fallback_packet.cpp" "test_g4_liverpool_handoff:gpu/g4_fallback_packet.cpp"
-  "test_srt_walker_capture:gpu/srt_walker_capture.cpp" "visual_capture_test:gpu/visual_capture.cpp")
+  "test_srt_walker_capture:gpu/srt_walker_capture.cpp")
 foreach(entry IN LISTS ISS_CXX_TESTS)
   string(REPLACE ":" ";" parts "${entry}")
   list(POP_FRONT parts test)

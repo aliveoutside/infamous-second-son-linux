@@ -98,7 +98,7 @@ public:
 
     void Compile() override;
 
-    /// ISS_TIERED_GRAPHICS=1: a new pipeline is first created without driver optimizations
+    /// A new pipeline is first created without driver optimizations
     /// (drawn at once), its optimized variant replaces it once a compiler worker made it.
     bool NeedsBackgroundOptimization() const noexcept {
         return tiered;
@@ -108,7 +108,7 @@ public:
         return fetch_shader;
     }
 
-    /// The layout of the descriptor set (ISS_NATIVE_RECORDER allocates sets of it from its own
+    /// The layout of the descriptor set (the native recorder allocates sets of it from its own
     /// pools for pipelines without push descriptors).
     vk::DescriptorSetLayout GetDescriptorSetLayout() const noexcept {
         return *desc_layout;

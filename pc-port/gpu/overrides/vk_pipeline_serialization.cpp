@@ -73,11 +73,11 @@ struct RecipeStats {
     u32 made, matched, mismatched, failed, recovered;
 };
 std::array<RecipeStats, 6> recipe_stats{}; // by SwStage (WarmUp is serial)
-/// ISS_AOT_RECIPES: SPIR-V of recipe stages made in parallel before the (serial) preload.
+/// SPIR-V of recipe stages made in parallel before the (serial) preload.
 std::mutex recipe_mutex;
 std::unordered_map<u64, std::vector<u32>> recipe_spirv; // permutation hash -> SPIR-V
-/// ISS_AOT_RECIPE_VERIFY: the stages whose SPIR-V made from the game files is identical to the
-/// cached one (written to ISS_AOT_RECIPE_VERIFIED for make_recipes.py: recipes keep only those).
+/// The stages whose SPIR-V made from the game files is identical to the
+/// cached one (recipes keep only those).
 std::vector<u64> recipe_verified;
 } // Anonymous namespace
 
@@ -255,9 +255,7 @@ bool PipelineCache::LoadComputePipeline(Serialization::Archive& ar) {
 
     it.value() =
         std::make_unique<ComputePipeline>(instance, scheduler, desc_heap, profile, *pipeline_cache,
-                                          compute_key, *infos[0], modules[0], sdata, true,
-                                          parallel_preload);
-    if (parallel_preload) QueuePreload(it.value().get());
+                                          compute_key, *infos[0], modules[0], sdata, true, false);
 
     infos.fill(nullptr);
     modules.fill(nullptr);
@@ -329,8 +327,7 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar) {
 
     it.value() = std::make_unique<GraphicsPipeline>(
         instance, scheduler, desc_heap, profile, graphics_key, *pipeline_cache, infos,
-        runtime_infos, fetch_shader, modules, sdata, true, parallel_preload);
-    if (parallel_preload) QueuePreload(it.value().get());
+        runtime_infos, fetch_shader, modules, sdata, true, false);
 
     infos.fill(nullptr);
     modules.fill(nullptr);
@@ -368,15 +365,9 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage, 
         Storage::DataBase::Instance().Load(Storage::BlobType::ShaderBinary,
                                            fmt::format("{:#018x}_{}", program->info.pgm_hash, perm_idx), spv);
     }
-    // ISS_AOT_RECIPES / ISS_AOT_RECIPE_VERIFY: the stage's SPIR-V made from the game files.
-    static const bool recipes = [] {
-        const char* value = std::getenv("ISS_AOT_RECIPES");
-        return value && value[0] == '1';
-    }();
-    static const bool verify = [] {
-        const char* value = std::getenv("ISS_AOT_RECIPE_VERIFY");
-        return value && value[0] == '1';
-    }();
+    // The stage's SPIR-V made from the game files: checked against the library's.
+    static const bool recipes = false;
+    static const bool verify = false;
     if (recipes && spv.empty()) {
         std::scoped_lock lock{recipe_mutex};
         if (const auto it = recipe_spirv.find(expected_hash); it != recipe_spirv.end()) {
@@ -408,15 +399,6 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage, 
             recipe_verified.push_back(expected_hash);
         } else {
             ++st.mismatched;
-            if (const char* dir = std::getenv("ISS_AOT_RECIPE_DUMP"); dir && st.mismatched <= 6) {
-                const auto base = std::filesystem::path{dir} /
-                                  fmt::format("{}_{:#018x}_{}", stage, program->info.pgm_hash, perm_idx);
-                std::filesystem::create_directories(dir);
-                Common::FS::IOFile{base.string() + "_lib.spv", Common::FS::FileAccessMode::Create}
-                    .WriteSpan(std::span<const u32>{spv});
-                Common::FS::IOFile{base.string() + "_new.spv", Common::FS::FileAccessMode::Create}
-                    .WriteSpan(std::span<const u32>{*made});
-            }
         }
     }
     if (spv.empty()) {
@@ -598,7 +580,7 @@ void PipelineCache::WarmUp() {
     u32 num_total_pipelines{};
     const u64 preload_start = Common::Perf::NowNs();
     u64 last_progress = preload_start;
-    LOG_INFO(Render, "Pipeline preload started; parallel={}", parallel_preload);
+    LOG_INFO(Render, "Pipeline preload started");
     {
         // The loading screen's total: the cache's keys (files *.key under the cache folder, as
         // the launcher counts them) and the shader library's.
@@ -650,7 +632,8 @@ void PipelineCache::WarmUp() {
                 ++num_pipelines;
             }
         };
-    if (const char* value = std::getenv("ISS_AOT_RECIPES"); value && value[0] == '1' && library_ready) {
+    // A recipe pack carries the metadata, not the SPIR-V: make the missing stages first.
+    if (library_ready) {
         PrepareRecipeStages();
     }
     Storage::DataBase::Instance().ForEachBlob(Storage::BlobType::PipelineKey, preload_key);
@@ -658,27 +641,6 @@ void PipelineCache::WarmUp() {
     const u32 normal_total = num_total_pipelines;
     iss::pipeline_library::ForEachKey(preload_key);
 
-    if (parallel_preload) {
-        // ISS_PRELOAD_BACKGROUND=1 (with ISS_ASYNC_SKIP_DRAWS): the game starts once every
-        // pipeline is read; their compiles go on in the background, the draws of those not
-        // compiled yet skipped and the dispatches waiting for theirs as for any new one.
-        static const bool background = [] {
-            const char* value = std::getenv("ISS_PRELOAD_BACKGROUND");
-            return value && value[0] == '1';
-        }();
-        const double read_s = double(Common::Perf::NowNs() - preload_start) / 1e9;
-        if (background) {
-            LOG_INFO(Render, "Pipeline preload: read in {:.2f} s; compiles go on in the background",
-                     read_s);
-        } else {
-            LOG_INFO(Render,
-                     "Pipeline preload: read in {:.2f} s; finishing compiler work before starting "
-                     "the game",
-                     read_s);
-            iss::g_preload_phase.store(2, std::memory_order_relaxed);
-            WaitPreload();
-        }
-    }
     LOG_INFO(Render, "Preloaded {} pipelines", num_pipelines);
     for (int stage = 0; stage < 6; ++stage) {
         const auto& st = recipe_stats[stage];
@@ -689,10 +651,6 @@ void PipelineCache::WarmUp() {
                      stage, st.made, st.matched, st.recovered, st.mismatched, st.failed);
     }
     SaveAttribVariants();
-    if (const char* path = std::getenv("ISS_AOT_RECIPE_VERIFIED"); path && *path && !recipe_verified.empty()) {
-        Common::FS::IOFile file{std::filesystem::path{path}, Common::FS::FileAccessMode::Create};
-        file.WriteSpan(std::span<const u64>{recipe_verified});
-    }
     LOG_INFO(Render, "Pipeline preload finished in {:.2f} s; {} repeated stage loads avoided",
              double(Common::Perf::NowNs() - preload_start) / 1e9, preload_stage_hits);
     if (num_total_pipelines > num_pipelines) {

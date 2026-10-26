@@ -4,14 +4,9 @@
 std::size_t Rasterizer::TryNativeIndexedRun(const GraphicsPipeline* pipeline,
                                            std::span<const u32> following_commands, std::size_t packet_budget) {
     namespace ng = iss::native_geometry;
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_NATIVE_INDEXED_BATCH");
-        const bool on = value && value[0] == '1';
-        if (on) std::fputs("NATIVE_INDEXED_BATCH enabled: exact pipeline, bounded DCB runs\n", stderr);
-        return on;
-    }();
+    static constexpr bool enabled = false;
     if (!enabled || cp_split_enabled || draw_pipe_state || OnDrawWorker() || DrawQueue() != 0 ||
-        iss::command_trace::enabled || IsDumping() || host_markers_enabled ||
+        IsDumping() || host_markers_enabled ||
         guest_markers_enabled || GpuCrashDiag::Enabled() || EmulatorSettings.IsPatchShaders() ||
         scheduler.HasPriorPendingOperations()) return 0;
     auto& regs = DrawRegs();

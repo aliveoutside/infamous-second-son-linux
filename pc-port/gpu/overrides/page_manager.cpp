@@ -27,8 +27,6 @@
 #include "video_core/page_manager.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "srt_write_watch.h"
-#include "repeat_census.h"
-#include "feedback_join.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 
 #include <sys/mman.h>
@@ -150,17 +148,11 @@ struct PageManager::Impl {
         locks.reserve(start_page, end_page);
     }
 
-    // ISS_SRT_DIRECT_FAST=1: no SRT write watch is ever armed (arming fails, which its callers,
+    // No SRT write watch is ever armed (arming fails, which its callers,
     // the G4 snapshot paths, treat as an unusable snapshot), so a direct guest write has none
     // to invalidate and takes no lock (two global mutexes per fence or readback write).
     static bool SrtDirectFast() {
-        static const bool enabled = [] {
-            const char* value = std::getenv("ISS_SRT_DIRECT_FAST");
-            const bool on = value && value[0] == '1';
-            std::fprintf(stderr, "PORT_TUNING srt_direct_fast=%d\n", on ? 1 : 0);
-            return on;
-        }();
-        return enabled;
+        return false;
     }
 
     bool ArmSrtWriteWatch(VAddr address, PageManager::SrtWatchToken& token) {
@@ -727,7 +719,7 @@ public:
 };
 #endif // __linux__
 
-// ISS_FAULT_BURST_LOG (default on): a guest frame with more than 1000 write faults (each a
+// A guest frame with more than 1000 write faults (each a
 // Windows exception, ~10 us) is summarized on stderr: the 1 MB regions, the guest code writing,
 // whether images live there. The periodic 45 ms frames of 2026-10-17 had ~2875 faults each.
 struct FaultBurst {
@@ -742,10 +734,7 @@ struct FaultBurst {
 static FaultBurst g_fault_burst;
 static void NoteWriteFault(u64 addr, u64 rip, Vulkan::Rasterizer* rasterizer, bool srt,
                            u64 caller) {
-    static const bool enabled = [] {
-        const char* p = std::getenv("ISS_FAULT_BURST_LOG");
-        return !p || p[0] != '0';
-    }();
+    static const bool enabled = true;
     if (!enabled) return;
     auto& b = g_fault_burst;
     const u64 frame = Common::Perf::GuestFrameCounter().load(std::memory_order_relaxed);
@@ -854,8 +843,6 @@ struct SignalImpl : public PageManager::Impl {
                    "Attempted to protect region as write-only which is not a valid permission");
         Common::Perf::ScopedTimer protect_timer{Common::Perf::ProtectCalls,
                                                 Common::Perf::ProtectNs};
-        if (iss::repeat_census::enabled) [[unlikely]]
-            iss::repeat_census::Note(iss::repeat_census::Protect, address, size, u32(perms));
         impl.Protect(address, size, perms);
     }
 
@@ -878,15 +865,9 @@ struct SignalImpl : public PageManager::Impl {
             return handled || handled_srt;
         } else {
             const u64 rip = reinterpret_cast<u64>(Common::GetRip(context));
-            iss::feedback_join::ReadTicket feedback_ticket{};
             const bool handled = rasterizer->ReadMemory(addr, size, is_gpu_thread, rip);
-            if (feedback_ticket.id) {
-                iss::feedback_join::EndRead(feedback_ticket, handled,
-                    rasterizer->GetBufferCache().MappingGeneration());
-            }
             if (handled) {
                 Common::Perf::Add(Common::Perf::FaultReads);
-                Core::PerfSampler::RecordReadback(addr, rip);
             }
             return handled;
         }

@@ -540,7 +540,7 @@ public:
     void EndRendering();
 
     /// Starts a rendering scope whose contents are secondary command buffers
-    /// (ISS_NATIVE_RECORDER): ended before the next inline command.
+    /// : ended before the next inline command.
     void BeginSecondaryRendering(const RenderState& new_state);
 
     /// Starts a new session.
@@ -556,7 +556,7 @@ public:
 
     /// Sets a function to be called on every scheduler submission.
     /// Called first when a session is submitted, on the submitting thread, before its cross
-    /// queue waits are taken and with no lock held (ISS_ASC_NATIVE_QUEUE: the compute work
+    /// queue waits are taken and with no lock held (the asynchronous compute queue: the work
     /// recorded so far is submitted and waited for).
     void SetBeforeSubmitCallback(std::function<void()> callback) {
         on_before_submit = std::move(callback);
@@ -1400,7 +1400,7 @@ struct Context {
     u64 depth_uid;       ///< Image uid of the depth target.
 };
 
-/// GPU black box: on (ISS_GPU_BLACKBOX, default) and the marker buffer exists.
+/// GPU black box: on and the marker buffer exists.
 bool Blackbox();
 
 /// GPU black box: marks a command of the scheduler `owner` (its queue's order).

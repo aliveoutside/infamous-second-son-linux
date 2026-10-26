@@ -24,10 +24,7 @@ namespace Vulkan {
 using Shader::Backend::SPIRV::AuxShaderType;
 
 static bool TieredGraphicsEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_TIERED_GRAPHICS");
-        return value && value[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 
@@ -139,7 +136,7 @@ GraphicsPipeline::GraphicsPipeline(
                 build->modules.begin());
     build->pipeline_cache = pipeline_cache;
     build->discard_fragment = discard_fragment;
-    // ISS_TIERED_GRAPHICS with deferred compiles (ISS_LAZY_PIPELINES): the compiler worker (or the
+    // Tiered graphics with deferred compiles: the compiler worker (or the
     // recording thread that needs it) builds the fast variant, the optimized one is queued behind
     // every pending compile (PipelineCache: compiler->SubmitLow).
     tiered = !preloading && TieredGraphicsEnabled();

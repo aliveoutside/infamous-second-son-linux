@@ -11,7 +11,7 @@
 #include <windows.h>
 #include <execinfo.h>
 #include <stdexcept>
-// Ahead-of-time shader threads (vk_pipeline_cache.cpp, ISS_AOT_COMPUTE) translate shaders with no
+// Ahead-of-time shader threads (vk_pipeline_cache.cpp) translate shaders with no
 // game state bound: a failed assertion there drops that shader instead of ending the game.
 namespace iss {thread_local bool assert_throws=false;
 // The shader stage a recipe regeneration works on (RegenerateRecipeSpirv): named when it ends the

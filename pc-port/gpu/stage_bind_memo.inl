@@ -14,39 +14,29 @@
 // stage do not depend on the pipeline: only on the shader, its first binding indices and the
 // descriptors read.
 
-static bool StageMemoFlag(const char* name) {
-    const char* value = std::getenv(name);
-    return value && value[0] == '1';
-}
-
 static bool StageMemoEnabled() {
-    static const bool enabled = StageMemoFlag("ISS_STAGE_MEMO");
-    return enabled;
+    return true;
 }
 
 static bool StageMemoVerify() {
-    static const bool verify = StageMemoFlag("ISS_STAGE_MEMO_VERIFY");
-    return verify;
+    return false;
 }
 
-// ISS_STAGE_MEMO_LOOSE=1: the stage memo ignores Rasterizer::bind_epoch. That counter exists
+// The stage memo ignores Rasterizer::bind_epoch. That counter exists
 // for the fast draw (the recorded command buffer state: pipeline, push descriptors, render
 // pass); a resolved descriptor is invalidated by what the other fields count (uploads, CPU and
 // GPU writes, barriers and transitions, mappings, arenas, images, samplers).
 static bool StageMemoLoose() {
-    static const bool loose = StageMemoFlag("ISS_STAGE_MEMO_LOOSE");
-    return loose;
+    return false;
 }
 
-// ISS_STAGE_MEMO_TEXEL=1: stages reading formatted (texel) buffers are remembered too.
+// Stages reading formatted (texel) buffers are remembered too.
 static bool StageMemoTexel() {
-    static const bool texel = StageMemoFlag("ISS_STAGE_MEMO_TEXEL");
-    return texel;
+    return true;
 }
 
 static bool StageMemoCycles() {
-    static const bool cycles = StageMemoFlag("ISS_STAGE_MEMO_CYCLES");
-    return cycles;
+    return false;
 }
 
 Rasterizer::StageMemo& Rasterizer::StageMemoEntry(u32 slot, const Shader::Info& stage,
@@ -111,16 +101,14 @@ Rasterizer::StageMemoStamp Rasterizer::CaptureStageMemoStamp() const noexcept {
 }
 
 bool Rasterizer::StageMemoContextEligible() const noexcept {
-    static const bool observers = StageMemoFlag("ISS_FEEDBACK_IDENTITY") ||
-                                  StageMemoFlag("ISS_CP_OWNER_QID1_STAGE1");
+    static constexpr bool observers = false;
     // The draw pipe worker owns the caches while it records (the command processor drains it
-    // before any other access): ISS_DRAW_PIPE_FAST lets it use the memo.
-    static const bool pipe_fast = StageMemoFlag("ISS_DRAW_PIPE_FAST");
+    // before any other access): lets it use the memo.
+    static constexpr bool pipe_fast = false;
     if (observers || cp_split_enabled || (OnDrawWorker() && !pipe_fast) || DrawQueue() != 0 ||
         active_record_context != nullptr || active_runtime != &runtime ||
         active_scheduler != &scheduler || buffer_cache.HasComputeQueue() ||
-        iss::hazard_probe::Enabled() || g_num_traced_ranges != 0 || g_dump.frames_left != 0 ||
-        iss::feedback_join::enabled || iss::command_trace::enabled) {
+        g_num_traced_ranges != 0 || g_dump.frames_left != 0) {
         return false;
     }
     return Common::Perf::GetTuning().trace_shaders[0].load(std::memory_order_relaxed) == 0;
@@ -131,7 +119,7 @@ bool Rasterizer::StageMemoStageEligible(const Shader::Info& stage) noexcept {
         stage.samplers.size() > StageMemo::MaxSamplers) {
         return false;
     }
-    // Formatted (texel) buffers read only (ISS_STAGE_MEMO_TEXEL): their lookup only differs by
+    // Formatted (texel) buffers read only: their lookup only differs by
     // SynchronizeMemoryFromImage, which copies an image or clears a meta range starting at the
     // buffer's base. That changes the stamp during the lookup (the result is not stored), and an
     // image created there later changes the texture generation (stamp).

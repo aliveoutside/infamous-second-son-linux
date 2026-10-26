@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// ISS_NATIVE_GBUFFER=1: the G-buffer drawn from the engine's material ranges instead of their PM4.
+// The G-buffer drawn from the engine's material ranges instead of their PM4.
 //
 // The G-buffer technique (vtable 0xD0FAC8) draws its instanced items through the generic material
 // range routine (eboot 0x1A2030, slot 6; contract out/experimental/20261015-gbuffer/
@@ -69,7 +69,7 @@ struct Batch {
 bool Enabled();
 int Install(std::uint64_t image_base);
 
-// ISS_NATIVE_RECORDER=1: the engine thread that wrote a range records it into Vulkan right away
+// The engine thread that wrote a range records it into Vulkan right away
 // (native_recorder.inl), from the registers it knows at the range start: those its command
 // buffer wrote since the last baseline the command processor published, the baseline for the
 // others. The command processor checks them against its own before using the recording.
@@ -98,7 +98,7 @@ std::uint32_t LatestGeneration();
 /// much like the previous one), instead of the latest baseline.
 void PublishSpanStart(const std::uint32_t* span, const std::uint32_t* reg_array,
                       std::uint32_t index_type, std::uint32_t instances);
-/// ISS_NATIVE_RECORDER_TECH_START=1, command processor: its registers at the first range of a
+/// Command processor: its registers at the first range of a
 /// command buffer, by the technique that wrote the range. An engine thread whose tracking of a
 /// command buffer starts over (a new chunk) starts from them when its first range is of that
 /// technique, then applies what the chunk wrote: command buffer addresses are reused by other

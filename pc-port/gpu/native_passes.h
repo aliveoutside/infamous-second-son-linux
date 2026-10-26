@@ -63,7 +63,7 @@ struct Segment {
     /// Compute: the last dispatch's dimensions and initiator (the command processor's registers
     /// after the segment).
     u32 last_dims[3]{}, last_dispatch_initiator{};
-    /// ISS_NATIVE_INDIRECT: the indirect argument table (SET_BASE) after the segment.
+    /// The indirect argument table (SET_BASE) after the segment.
     bool has_indirect_base{};
     u64 final_indirect_base{};
     /// What the engine thread assumed at the first draw (the command processor compares).
@@ -91,12 +91,12 @@ struct DrawArgs {
     u64 index_address{};
     /// DRAW_INDEX_AUTO: a non-indexed draw of index_count vertices (no index buffer).
     bool autod{};
-    /// ISS_NATIVE_INDIRECT: DRAW_INDEX_INDIRECT, its arguments (VkDrawIndexedIndirectCommand) at
+    /// DRAW_INDEX_INDIRECT, its arguments (VkDrawIndexedIndirectCommand) at
     /// args_address; the index buffer is the lane's (INDEX_BASE, INDEX_BUFFER_SIZE).
     bool indirect{};
     u64 args_address{};
 };
-/// ISS_NATIVE_INDIRECT: DRAW_INDEX_INDIRECT packets recorded into segments.
+/// DRAW_INDEX_INDIRECT packets recorded into segments.
 bool IndirectEnabled();
 /// The render state key of an indexed indirect draw: its pipeline also depends on the user data
 /// registers the command processor writes the base vertex and instance to (packet words 2 and 3).
@@ -140,7 +140,7 @@ struct Callbacks {
     bool (*unlearnable)(u64 key);
     /// Periodic report (any thread).
     void (*report)();
-    /// Compute (ISS_NATIVE_COMPUTE): the key of the compute registers (words CsBase.. of the
+    /// Compute: the key of the compute registers (words CsBase.. of the
     /// lane's registers: the command processor's ComputeProgram; nullptr: off), and the
     /// recording of one DISPATCH_DIRECT packet into a Kind::Compute segment.
     u64 (*compute_key)(void* regs);
@@ -158,24 +158,24 @@ void Finish(Segment& segment, bool executed, u64 tick);
 /// lane that starts (over) at that address assumes them for what it has not written.
 void PublishSpanStart(const u32* span, const u32* reg_array);
 /// Engine submit (gnmdriver), before the command processor gets the command buffers. Draw time
-/// mode: every open segment is closed. ISS_NATIVE_PASSES_SUBMIT=1: the segments of these
+/// mode: every open segment is closed. In submit mode the segments of these
 /// command buffers are recorded now, from the exact registers at each of their draws (a scan of
 /// the register writes of every command buffer in submission order, from where the previous
 /// submission left them), on a pool of threads; the call returns when they are recorded.
 void BeforeSubmit(u32 count, const u32* const* dcbs, const u32* sizes_in_bytes);
-/// ISS_NATIVE_PASSES_SUBMIT: whether the register scan must start from the command processor's
+/// Whether the register scan must start from the command processor's
 /// registers now (once, when recording starts: the caller waits for the GPU to be idle first).
 bool NeedsSeed();
 /// cs_words: the graphics queue's compute registers (its ComputeProgram, from COMPUTE 0x200).
 void Seed(const u32* reg_array, const u32* cs_words, u32 cs_count);
-/// ISS_NATIVE_PASSES_SUBMIT: packets the driver submits on its own (the init sequence).
+/// Packets the driver submits on its own (the init sequence).
 void ScanOnly(const u32* dcb, u32 dwords);
 bool SubmitMode();
-/// ISS_NATIVE_PASSES_SUBMIT, command processor: waits until the recording of the command buffer
+/// Command processor: waits until the recording of the command buffer
 /// at `dcb` is done (the submission returns before it is; the pool records while the command
 /// processor works through the earlier command buffers).
 void WaitRecorded(const u32* dcb);
-/// ISS_NATIVE_PASSES_JOB_WAIT (default on, =0: WaitRecorded waits for the whole command buffer):
+/// The job wait (on):
 /// WaitRecorded waits for the first job only; the command processor calls WaitRecordedAt with each
 /// packet it reaches, which waits for the job recording that packet once it crosses into it.
 extern thread_local std::uintptr_t next_job_boundary; // constant-initialized: no TLS init wrapper
@@ -183,7 +183,7 @@ void WaitRecordedSlow(const u32* packet);
 inline void WaitRecordedAt(const u32* packet) {
     if (reinterpret_cast<std::uintptr_t>(packet) >= next_job_boundary) WaitRecordedSlow(packet);
 }
-/// ISS_NATIVE_ASC=1 (with ISS_NATIVE_PASSES_SUBMIT and ISS_NATIVE_COMPUTE): the dispatches of
+/// The dispatches of
 /// the asynchronous compute queues recorded as the graphics queue's are.
 bool AscEnabled();
 /// A DingDong of compute queue `qid` (the ring span the command processor will process; cp_cs:
@@ -191,7 +191,7 @@ bool AscEnabled();
 /// indirect buffers from the queue's compute registers, has the pool record their dispatches and
 /// waits for it (bounded): the command processor claims the segments at their first dispatch.
 void BeforeAscSubmit(u32 qid, const u32* ring, u32 dwords, const u32* cp_cs, u32 cp_words);
-/// ISS_NATIVE_ASC_ASYNC=1: whether the pool has recorded the compute submission at ring (true
+/// Whether the pool has recorded the compute submission at ring (true
 /// when none is pending, or after waiting 50 ms: its dispatches then take the full path).
 bool AscRecorded(const u32* ring);
 /// Command processor, at a learn request: which registers the lane assumed differently.

@@ -5,21 +5,13 @@ std::size_t Rasterizer::TryNativeInstancedRun(const GraphicsPipeline* pipeline,
                                              std::span<const u32> following_commands,
                                              std::size_t packet_budget) {
     namespace ng = iss::native_geometry;
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_NATIVE_INSTANCED_BATCH");
-        return value && value[0] == '1';
-    }();
-    static const bool verified_spirv = [] {
-        const char* value = std::getenv("ISS_SECONDARY_SPV_VERIFIED");
-        return value && value[0] == '1';
-    }();
+    static const bool enabled = false;
+    static const bool verified_spirv = false;
     if (!enabled || !verified_spirv || cp_split_enabled || draw_pipe_state ||
-        OnDrawWorker() || DrawQueue() != 0 || iss::command_trace::enabled ||
+        OnDrawWorker() || DrawQueue() != 0 ||
         IsDumping() || host_markers_enabled || guest_markers_enabled ||
         GpuCrashDiag::Enabled() || EmulatorSettings.IsPatchShaders() ||
         scheduler.HasPriorPendingOperations()) return 0;
-    if (const char* probe = std::getenv("ISS_SECONDARY_BATCH_PROBE");
-        probe && probe[0] == '1') return 0;
     auto& regs = DrawRegs();
     if (u32(regs.primitive_type) != 4 || regs.index_buffer_type.raw != 0 ||
         regs.num_instances.NumInstances() == 0 ||

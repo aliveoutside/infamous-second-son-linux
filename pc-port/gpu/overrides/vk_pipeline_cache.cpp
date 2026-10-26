@@ -1,4 +1,3 @@
-#include "deep_profile.h"
 #include "gpu_blackbox.h"
 #include "pipeline_library.h"
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
@@ -57,7 +56,7 @@ extern std::atomic<int> g_preload_phase;
 
 namespace Vulkan {
 
-/// ISS_AOT_COMPUTE state (StartAotCompute, below).
+/// Ahead-of-time compute state (StartAotCompute, below).
 struct AotCompute {
     struct Entry {
         u64 hash;
@@ -214,18 +213,10 @@ struct PipelineCache::PreTranslation {
 };
 
 static bool ParallelTranslateEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_PARALLEL_TRANSLATE");
-        return value && value[0] == '1';
-    }();
-    return enabled;
+    return false;
 }
 static bool ParallelTranslateVerify() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_PARALLEL_TRANSLATE_VERIFY");
-        return value && value[0] == '1';
-    }();
-    return enabled;
+    return false;
 }
 static std::atomic<u64> g_pre_started{}, g_pre_used{}, g_pre_unused{}, g_pre_verified{},
     g_pre_mismatches{};
@@ -243,20 +234,12 @@ static void NotePreTranslation() {
 }
 
 
-// ISS_SPEC_TRANSLATE=1: translations of new programs started by the scout (see SpecTranslator).
+// Translations of new programs started by the scout (see SpecTranslator).
 static bool SpecTranslateEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_SPEC_TRANSLATE");
-        return value && value[0] == '1';
-    }();
-    return enabled;
+    return true;
 }
 static bool SpecTranslateVerify() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_SPEC_TRANSLATE_VERIFY");
-        return value && value[0] == '1';
-    }();
-    return enabled;
+    return false;
 }
 static std::atomic<u64> g_spec_requested{}, g_spec_translated{}, g_spec_adopted{},
     g_spec_waited{}, g_spec_cancelled{}, g_spec_evicted{}, g_spec_verified{},
@@ -437,19 +420,12 @@ private:
     std::vector<std::jthread> workers;
 };
 
-// ISS_ASYNC_SKIP_DRAWS=1 (gow3_pc style): with draws of compiling pipelines skipped, a new vertex
+// With draws of compiling pipelines skipped, a new vertex
 // or pixel program is not translated on the command processor either: the speculative translator
 // does it and the draws using it are skipped until it is done (cold cache: the command processor
 // translated 47 shaders, 134 ms, in one frame; cold2 2026-10-18).
 static bool AsyncSkipDraws() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_ASYNC_SKIP_DRAWS");
-        // ISS_ASYNC_TRANSLATE=1 too (off by default): in a cold standing scene it doubled the
-        // pipelines (762 -> 1659) and the >50 ms frames (5 -> 23), cturn-a/b 2026-10-18.
-        const char* translate = std::getenv("ISS_ASYNC_TRANSLATE");
-        return value && value[0] == '1' && translate && translate[0] == '1';
-    }();
-    return enabled;
+    return false;
 }
 static std::atomic<u64> g_async_pending{}, g_async_requested{};
 
@@ -503,11 +479,7 @@ void PipelineCache::RequestComputeSpecTranslation(const AmdGpu::ComputeProgram& 
 }
 
 static bool LazyPipelines() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_LAZY_PIPELINES");
-        return value && value[0] == '1';
-    }();
-    return enabled;
+    return false;
 }
 
 class PipelineCompiler {
@@ -535,7 +507,7 @@ public:
         work_cv.notify_one();
     }
 
-    /// Background work (ISS_TIERED_GRAPHICS optimized variants): taken only when no pipeline the
+    /// Background work (the optimized variants of tiered graphics): taken only when no pipeline the
     /// game waits for is queued. Not counted in `pending` (WaitIdle and WaitFor ignore it).
     void SubmitLow(Pipeline* pipeline) {
         {
@@ -558,7 +530,7 @@ public:
         return done_cv.wait_for(lk, timeout, [pipeline] { return pipeline->IsReady(); });
     }
 
-    /// A queued pipeline whose draw was just skipped goes to the front (ISS_ASYNC_SKIP_DRAWS):
+    /// A queued pipeline whose draw was just skipped goes to the front:
     /// what is on screen appears first.
     void Prioritize(const Pipeline* pipeline) {
         std::scoped_lock lk{mutex};
@@ -758,11 +730,7 @@ static void BuildComputeRuntimeInfoFrom(Shader::RuntimeInfo& info,
 }
 
 static bool SpecComputeEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_SPEC_COMPUTE");
-        return !value || value[0] != '0';
-    }();
-    return enabled;
+    return true;
 }
 
 void PipelineCache::FillColorBuffers(
@@ -1084,7 +1052,7 @@ void PipelineCache::ScoutDraw(const AmdGpu::Regs& regs, AmdGpu::ScoutDraw& draw,
         if (program == nullptr) {
             // Not compiled yet: the command processor compiles it, and only it knows the
             // bindings of the stages after it. Its translation (independent of the bindings)
-            // can start now (ISS_SPEC_TRANSLATE).
+            // can start now.
             if (SpecTranslateEnabled() &&
                 (stage_in == HwStage::Fragment || stage_in == HwStage::Vertex)) {
                 Shader::RuntimeInfo spec_runtime_info{};
@@ -1276,15 +1244,9 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
     // Each recompiler option changing compute shaders has its own bit: cached shaders compiled
     // with other options are compiled again once.
     const bool lds_multi_wave = profile.needs_lds_barriers && profile.lds_barriers_multi_wave;
-    // ISS_DYNAMIC_STRIDE=1 (and ISS_AOT_COMPUTE, which needs it): compute shaders read buffer
-    // strides from their V#. Modules cached with a compiled-in stride are compiled again once.
-    {
-        const char* dynamic = std::getenv("ISS_DYNAMIC_STRIDE");
-        const char* aot = std::getenv("ISS_AOT_COMPUTE");
-        const char* stats = std::getenv("ISS_AOT_FORMAT_STATS"); // Reads the cache as it is.
-        Shader::dynamic_buffer_stride = (dynamic && dynamic[0] == '1') ||
-                                        (aot && aot[0] != '\0' && !(stats && stats[0] == '1'));
-    }
+    // Compute shaders read buffer strides from their V#. Modules cached with a compiled-in stride
+    // are compiled again once.
+    Shader::dynamic_buffer_stride = true;
     SetComputeShaderVariant((lds_multi_wave ? 1u : 0u) | (profile.wave_memory_barriers ? 2u : 0u) |
                             (Shader::dynamic_buffer_stride ? 4u : 0u));
     LOG_INFO(Render_Vulkan,
@@ -1322,26 +1284,19 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
     pipeline_cache = std::move(cache);
     u32 num_compilers = std::clamp(std::thread::hardware_concurrency() / 4, 2U, 8U);
     if (LazyPipelines()) {
-        // A burst of new pipelines compiles in parallel (ISS_PIPELINE_COMPILERS overrides).
+        // A burst of new pipelines compiles in parallel, one compiler per two cores or so.
         num_compilers = std::clamp(std::thread::hardware_concurrency() * 5 / 8, 2U, 12U);
-    }
-    if (const char* value = std::getenv("ISS_PIPELINE_COMPILERS"); value && *value) {
-        num_compilers = std::clamp<u32>(std::atoi(value), 1U, 32U);
     }
     compiler = std::make_unique<PipelineCompiler>(num_compilers);
     if (SpecTranslateEnabled()) {
         spec_translator = std::make_unique<SpecTranslator>(profile, 4);
     }
-    const char* preload_option = std::getenv("SHADPS4_PARALLEL_PRELOAD");
-    parallel_preload = preload_option && preload_option[0] == '1';
     WarmUp();
     LOG_INFO(Render_Vulkan, "Pipelines can be compiled by {} worker threads", num_compilers);
     if (Storage::DataBase::Instance().IsOpened()) {
         Storage::DataBase::Instance().SetBeforeClose([this] { SaveDriverCache(); });
     }
-    if (const char* aot_index = std::getenv("ISS_AOT_COMPUTE"); aot_index && *aot_index) {
-        StartAotCompute(aot_index);
-    }
+
 }
 
 PipelineCache::~PipelineCache() {
@@ -1360,12 +1315,13 @@ PipelineCache::~PipelineCache() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// ISS_AOT_COMPUTE: ahead-of-time compute shaders (Claude, 2026-10-19).
+// Ahead-of-time compute shaders (Claude, 2026-10-19).
 //
 // The index (scripts/aot_index.py, made from the player's own game files) gives every compute
 // shader of the game: its code (pack and offset) and the registers the game dispatches it with.
 // Worker threads at low priority translate each shader the way GetProgram would for a new
-// program, with no game state bound (every V# reads as null: with ISS_DYNAMIC_STRIDE the module of
+// program, with no game state bound (every V# reads as null: with the stride read from the V#
+// the module of
 // a buffers-only shader does not depend on any V# field the specialization does not check), emit
 // its SPIR-V, create its module and compile its pipeline. The command processor adopts the
 // finished ones between dispatches (DrainAot): program, permutation 0, pipeline and the cache
@@ -1499,7 +1455,7 @@ static bool BuildShaderIndex(const std::filesystem::path& game_dir, const std::f
     return file.IsOpen() && file.WriteSpan(std::span<const u8>{bytes}) == bytes.size() && count > 0;
 }
 
-/// ISS_AOT_COMPUTE / ISS_AOT_INDEX = "auto": the index in the shader cache folder, made from the
+/// The index in the shader cache folder, made from the
 /// game files the first time (the loading screen says so); any other value is the index path.
 std::string ResolveShaderIndex(const char* value) {
     if (!value || std::string_view{value} != "auto") return value ? value : "";
@@ -1526,40 +1482,6 @@ std::string ResolveShaderIndex(const char* value) {
 void PipelineCache::StartAotCompute(const char* index_value) {
     const std::string index_string = ResolveShaderIndex(index_value);
     const char* index_path = index_string.c_str();
-    if (const char* value = std::getenv("ISS_AOT_TRACE"); value && value[0] == '1') {
-    }
-    if (const char* value = std::getenv("ISS_AOT_FORMAT_STATS"); value && value[0] == '1') {
-        // The formats of the formatted buffers of the compute permutations preloaded: what the
-        // game binds to them (per shader and over all).
-        std::map<std::tuple<u32, u32, u32, u32>, u32> formats;
-        u32 programs = 0, formatted_programs = 0, varying = 0;
-        std::shared_lock lock{program_cache_mutex};
-        for (const auto& [hash, program] : program_cache) {
-            if (program->info.hw_stage != HwStage::Compute) continue;
-            ++programs;
-            std::set<std::vector<u32>> per_program;
-            for (const auto& module : program->modules) {
-                std::vector<u32> key;
-                for (size_t i = 0; i < module.spec.buffers.size(); ++i) {
-                    const auto& b = module.spec.buffers[i];
-                    if (!b.is_formatted) continue;
-                    u32 swizzle{};
-                    std::memcpy(&swizzle, &b.dst_select, std::min(sizeof(swizzle), sizeof(b.dst_select)));
-                    ++formats[{b.data_format, b.num_format, swizzle, u32(b.num_conversion)}];
-                    key.insert(key.end(), {u32(i), b.data_format, b.num_format});
-                }
-                if (!key.empty()) per_program.insert(key);
-            }
-            formatted_programs += !per_program.empty();
-            varying += per_program.size() > 1;
-        }
-        std::fprintf(stderr, "AOT_FORMAT_STATS compute programs=%u with formatted=%u varying=%u\n",
-                     programs, formatted_programs, varying);
-        for (const auto& [f, n] : formats) {
-            std::fprintf(stderr, "AOT_FORMAT dfmt=%u nfmt=%u swizzle=%#x conv=%u count=%u\n",
-                         std::get<0>(f), std::get<1>(f), std::get<2>(f), std::get<3>(f), n);
-        }
-    }
     std::vector<u8> bytes;
     {
         Common::FS::IOFile file{std::filesystem::path{index_path}, Common::FS::FileAccessMode::Read};
@@ -1621,18 +1543,12 @@ void PipelineCache::StartAotCompute(const char* index_value) {
         state->packs.emplace(state->entries[i].pack, std::pair{i, end});
         i = end;
     }
-    // ISS_AOT_WAIT=1: the game starts once every compute shader is compiled (the first run
+    // The game starts once every compute shader is compiled (the first run
     // after installing or after a driver update; later runs preload them from the cache), with
     // every core; otherwise a few low priority threads compile them while the game runs.
-    const bool wait = [] {
-        const char* value = std::getenv("ISS_AOT_WAIT");
-        return value && value[0] == '1';
-    }();
+    const bool wait = false;
     u32 threads = wait ? std::max(1U, std::thread::hardware_concurrency() - 1)
                        : std::clamp(std::thread::hardware_concurrency() / 4, 2U, 6U);
-    if (const char* value = std::getenv("ISS_AOT_THREADS"); value && *value) {
-        threads = std::clamp<u32>(std::atoi(value), 1U, 16U);
-    }
     state->start_ns = Common::Perf::NowNs();
     std::fprintf(stderr, "AOT_COMPUTE start: %zu shaders to compile, %llu already cached, %u threads\n",
                  state->entries.size(), (unsigned long long)state->known.load(), threads);
@@ -1644,14 +1560,6 @@ void PipelineCache::StartAotCompute(const char* index_value) {
             if (!wait) Common::SetCurrentThreadPriority(Common::ThreadPriority::Low);
             Shader::Info::aot_translation = true;
             iss::assert_throws = true;
-            static const bool trace = [] {
-                const char* value = std::getenv("ISS_AOT_TRACE");
-                return value && value[0] == '1';
-            }();
-            if (trace) {
-                std::fprintf(stderr, "AOT_COMPUTE thread %u tid=%lu dll_fn=%p\n", t,
-                             GetCurrentThreadId(), (void*)&BuildComputeRuntimeInfoFrom);
-            }
             static const std::array<u32, Shader::NUM_USER_DATA_REGS> no_user_data{};
             std::FILE* pack = nullptr;
             std::string pack_path;
@@ -1688,10 +1596,6 @@ void PipelineCache::StartAotCompute(const char* index_value) {
                 const Shader::ShaderParams params{
                     .user_data = no_user_data, .code = code, .hash = e.hash};
                 AotCompute::Result r{};
-                if (trace) {
-                    std::fprintf(stderr, "AOT_BEGIN %llx tid=%lu\n", (unsigned long long)e.hash,
-                                 GetCurrentThreadId());
-                }
                 try {
                     const u64 t0 = Common::Perf::NowNs();
                     r.program = std::make_unique<Program>(HwStage::Compute, SwStage::Compute, params);
@@ -1798,12 +1702,12 @@ void PipelineCache::StartAotCompute(const char* index_value) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// ISS_AOT_RECIPES: a pipeline recipe (its .key and the .meta of its stages: specialization,
+// A pipeline recipe (its .key and the .meta of its stages: specialization,
 // runtime info and the shader's resource layout, no code) turned into SPIR-V from the player's
 // own game files. The V#/T#/S# words the specialization implies are written over the null
 // flattened buffer, the vertex attribute V#s into tables the user data points at, and the fetch
 // shader data comes from the recipe (the game builds fetch shaders at run time). With
-// ISS_AOT_RECIPE_VERIFY=1 every stage that has its SPIR-V is regenerated and compared with it.
+// Every stage that has its SPIR-V is regenerated and compared with it.
 // ---------------------------------------------------------------------------------------------
 namespace {
 struct ShaderLoc {
@@ -1816,13 +1720,12 @@ std::unordered_map<u64, ShaderLoc> g_locs;
 
 const std::unordered_map<u64, ShaderLoc>& ShaderLocations() {
     std::call_once(g_locs_once, [] {
-        const char* index = std::getenv("ISS_AOT_INDEX");
-        if (!index || !*index) index = std::getenv("ISS_AOT_COMPUTE");
         static std::string resolved; // "auto": the cache folder's (ResolveShaderIndex)
+        const char* index = "auto";
         resolved = ResolveShaderIndex(index);
         index = resolved.c_str();
         const char* game_dir = std::getenv("ISS_GAME_DIR");
-        if (!index || !*index || !game_dir) return;
+        if (!*index || !game_dir) return;
         Common::FS::IOFile file{std::filesystem::path{index}, Common::FS::FileAccessMode::Read};
         if (!file.IsOpen()) return;
         std::vector<u8> bytes(file.GetSize());
@@ -2032,7 +1935,7 @@ std::optional<std::vector<u32>> RegenerateRecipeSpirv(const Shader::Profile& pro
 }
 
 /// The attribute formats of a vertex stage whose recipe lacks them, found from the stage's SPIR-V
-/// (recipe building, ISS_AOT_RECIPE_VERIFY): per float-class attribute the variant whose code
+/// (recipe building): per float-class attribute the variant whose code
 /// gets closest (opcode histogram), until the SPIR-V is identical.
 std::optional<std::vector<u8>> RecoverAttribVariants(const Shader::Profile& profile,
                                                      const Shader::Info& meta,
@@ -2059,20 +1962,13 @@ std::optional<std::vector<u8>> RecoverAttribVariants(const Shader::Profile& prof
         return d;
     };
     static std::atomic<u32> attempts{0};
-    static const u32 limit = [] {
-        const char* value = std::getenv("ISS_AOT_RECIPE_RECOVER_LIMIT");
-        return value ? u32(std::atoi(value)) : ~0u;
-    }();
+    static const u32 limit = ~0u;
     if (attempts.fetch_add(1) >= limit) return std::nullopt;
     std::vector<u8> choice(spec.vs_attribs.size(), 0);
     auto made = RegenerateRecipeSpirv(profile, meta, spec, choice);
     {
         std::string classes;
         for (const auto& va : spec.vs_attribs) classes += fmt::format("{}", u32(va.num_class));
-        if (std::getenv("ISS_AOT_TRACE")) std::fprintf(stderr, "AOT_RECOVER begin %llx attribs=%zu fetch_attribs=%zu classes=%s made=%d dist=%llu\n",
-                     (unsigned long long)meta.pgm_hash, spec.vs_attribs.size(),
-                     spec.fetch_shader_data.attributes.size(), classes.c_str(), made ? 1 : 0,
-                     made ? (unsigned long long)distance(*made) : 0ull);
     }
     if (!made) return std::nullopt;
     if (*made == reference) return choice;
@@ -2117,8 +2013,6 @@ std::optional<std::vector<u8>> RecoverAttribVariants(const Shader::Profile& prof
                         text += fmt::format(" a{}=n{}d{}c{}", k, u32(nf), u32(df),
                                             u32(spec.vs_attribs[k].num_class));
                     }
-                    if (std::getenv("ISS_AOT_TRACE")) std::fprintf(stderr, "AOT_RECIPE_ATTRIBS %llx%s\n",
-                                 (unsigned long long)meta.pgm_hash, text.c_str());
                     return trial;
                 }
                 if (const u64 d = distance(*spv); d < best) {
@@ -2129,24 +2023,10 @@ std::optional<std::vector<u8>> RecoverAttribVariants(const Shader::Profile& prof
         }
     }
     static std::atomic<u32> dumped{0};
-    if (const char* dir = std::getenv("ISS_AOT_RECIPE_DUMP"); dir && dumped.fetch_add(1) < 6) {
-        std::string tag;
-        for (const u8 v : choice) tag += fmt::format("-{}", v);
-        if (auto spv = RegenerateRecipeSpirv(profile, meta, spec, choice)) {
-            Common::FS::IOFile{(std::filesystem::path{dir} /
-                                fmt::format("best_{:#018x}{}.spv", meta.pgm_hash, tag)),
-                               Common::FS::FileAccessMode::Create}
-                .WriteSpan(std::span<const u32>{*spv});
-            Common::FS::IOFile{(std::filesystem::path{dir} /
-                                fmt::format("best_{:#018x}_lib.spv", meta.pgm_hash)),
-                               Common::FS::FileAccessMode::Create}
-                .WriteSpan(std::span<const u32>{reference});
-        }
-    }
     return std::nullopt;
 }
 
-/// Recipe side table: attribute variants per vertex stage permutation (ISS_AOT_RECIPE_ATTRS).
+/// Recipe side table: attribute variants per vertex stage permutation.
 namespace {
 std::mutex g_attrib_mutex;
 std::map<u64, std::vector<u8>> g_attrib_variants;
@@ -2154,15 +2034,10 @@ bool g_attrib_loaded{};
 void LoadAttribVariants() {
     if (g_attrib_loaded) return;
     g_attrib_loaded = true;
-    const char* path = std::getenv("ISS_AOT_RECIPE_ATTRS");
-    std::filesystem::path file_path;
-    if (path && *path) {
-        file_path = path;
-    } else if (const char* library = std::getenv("ISS_PIPELINE_LIBRARY"); library && *library) {
-        file_path = std::filesystem::path{library} / "attribs.bin"; // A recipe pack's (make_recipes.py).
-    } else {
-        return;
-    }
+    const char* library = std::getenv("ISS_PIPELINE_LIBRARY");
+    if (!library || !*library) return;
+    const std::filesystem::path file_path =
+        std::filesystem::path{library} / "attribs.bin"; // A recipe pack's (make_recipes.py)
     Common::FS::IOFile file{file_path, Common::FS::FileAccessMode::Read};
     if (!file.IsOpen()) return;
     std::vector<u8> bytes(file.GetSize());
@@ -2198,8 +2073,11 @@ void RememberAttribVariants(u64 perm_hash, std::vector<u8> variants) {
 
 void SaveAttribVariants() {
     std::scoped_lock lock{g_attrib_mutex};
-    const char* path = std::getenv("ISS_AOT_RECIPE_ATTRS");
-    if (!path || !*path || g_attrib_variants.empty()) return;
+    if (g_attrib_variants.empty()) return;
+    const char* library = std::getenv("ISS_PIPELINE_LIBRARY");
+    if (!library || !*library) return;
+    const std::filesystem::path path =
+        std::filesystem::path{library} / "attribs.bin";
     std::vector<u8> out(12);
     std::memcpy(out.data(), "ISSATR01", 8);
     const u32 count = u32(g_attrib_variants.size());
@@ -2319,12 +2197,10 @@ void PipelineCache::CompileAsync(Pipeline* pipeline) {
     }
 }
 
-void PipelineCache::QueuePreload(Pipeline* pipeline) { compiler->Submit(pipeline); }
 void PipelineCache::PrioritizeCompile(const Pipeline* pipeline) { compiler->Prioritize(pipeline); }
 bool PipelineCache::CompileNowIfQueued(const Pipeline* pipeline) {
     return compiler->RunIfQueued(pipeline);
 }
-void PipelineCache::WaitPreload() { compiler->WaitIdle(); }
 
 iss::pipeline_reuse::Stamp PipelineCache::GraphicsReuseStamp() const {
     return {liverpool->ContextRegChanges(), VideoCore::CurrentUploadEpoch(),
@@ -2548,20 +2424,9 @@ const GraphicsPipeline* PipelineCache::TryReuseGraphicsState() {
 }
 
 const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectParams params) {
-    iss::diagnostics::Scope phase_scope(iss::diagnostics::GraphicsPipeline);
     draw_indirect_params = params;
-    static const bool state_reuse = [] {
-        const char* value = std::getenv("ISS_PIPELINE_STATE_REUSE");
-        return value && value[0] == '1';
-    }();
-    static const bool verify_reuse = [] {
-        const char* value = std::getenv("ISS_PIPELINE_STATE_REUSE_VERIFY");
-        return value && value[0] == '1';
-    }();
-    static const bool reuse_stats = [] {
-        const char* value = std::getenv("ISS_PIPELINE_STATE_REUSE_STATS");
-        return value && value[0] == '1';
-    }();
+    static const bool state_reuse = false;
+    static const bool reuse_stats = false;
     if (state_reuse) {
         ++graphics_reuse_checks;
         if (reuse_stats && (graphics_reuse_checks & ((1u << 18) - 1)) == 0) {
@@ -2571,17 +2436,6 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
                          static_cast<unsigned long long>(graphics_reuse_verified));
         }
         if (const auto* reused = TryReuseGraphicsState()) {
-            if (verify_reuse) {
-                const auto expected_key = graphics_key;
-                const auto expected_infos = infos;
-                const auto expected_modules = modules;
-                const auto* expected_fetch = fetch_shader;
-                ASSERT_MSG(RefreshGraphicsKey() && graphics_key == expected_key &&
-                               infos == expected_infos && modules == expected_modules &&
-                               fetch_shader == expected_fetch,
-                           "PIPELINE_STATE_REUSE disagrees with the full graphics lookup");
-                ++graphics_reuse_verified;
-            }
             ++graphics_reuse_hits;
             return reused;
         }
@@ -2614,10 +2468,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
                              (unsigned long long)pipeline_hash);
 
         const u64 start_ns = Common::Perf::NowNs();
-        static const bool lazy = [] {
-            const char* value = std::getenv("ISS_LAZY_PIPELINES");
-            return value && value[0] == '1';
-        }();
+        static const bool lazy = false;
         const bool defer =
             lazy || Common::Perf::GetTuning().async_pipelines.load(std::memory_order_relaxed) >= 1;
         GraphicsPipeline::SerializationSupport sdata{};
@@ -2686,7 +2537,6 @@ const ComputePipeline* PipelineCache::GetComputePipelineFromSnapshot(
 }
 
 const ComputePipeline* PipelineCache::GetComputePipeline(iss::g4::CpOwner owner) {
-    iss::diagnostics::Scope phase_scope(iss::diagnostics::ComputePipeline);
     if (aot && owner == iss::g4::CpOwner::Graphics && !active_compute_snapshot) {
         DrainAot();
     }
@@ -2960,7 +2810,7 @@ bool PipelineCache::RefreshGraphicsStages() {
     modules.fill(nullptr);
     taken_scout_infos.fill(nullptr);
 
-    // ISS_PARALLEL_TRANSLATE: a new material usually brings a new pixel and a new vertex
+    // A new material usually brings a new pixel and a new vertex
     // program; the vertex one is translated by a helper thread meanwhile (its runtime info only
     // depends on the registers), the command processor emits it in binding order after.
     std::unique_ptr<PreTranslation> pre;
@@ -3115,17 +2965,11 @@ bool PipelineCache::RefreshComputeKey(iss::g4::CpOwner owner) {
     return true;
 }
 
-// Where shader compilation spends its time (ISS_SHADER_SPLIT=1): translate, emit, module, register.
+// Where shader compilation spends its time: translate, emit, module, register.
 static std::array<std::atomic<u64>, 5> g_shader_split_ns{};
 static std::atomic<u64> g_new_programs{}, g_new_permutations{}, g_scouted_new_perm{};
 static void NoteShaderSplit(const std::array<u64, 5>& t) {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_SHADER_SPLIT");
-        return value && value[0] == '1';
-    }();
-    if (!enabled) {
-        return;
-    }
+    return;
     for (u32 i = 0; i < 4; ++i) {
         g_shader_split_ns[i].fetch_add(t[i + 1] - t[i], std::memory_order_relaxed);
     }
@@ -3245,7 +3089,7 @@ u64 SpecializationKey(const InfoT& info, const Shader::RuntimeInfo& runtime_info
         words.push_back(static_cast<u32>(address >> 32));
         words.insert(words.end(), code, code + count);
     }
-    // ISS_DYNAMIC_STRIDE: the stride is no part of the permutation either.
+    // The stride is no part of the permutation either.
     const u32 dw1_mask =
         Shader::dynamic_buffer_stride && info.sw_stage == Shader::SwStage::Compute
             ? ~(0xFFu | (0x3FFFu << 16))
@@ -3333,12 +3177,7 @@ PipelineCache::Result PipelineCache::GetProgram(iss::g4::CpOwner owner, HwStage 
     ASSERT_MSG(owner == iss::g4::CpOwner::Graphics ||
                    (hw_stage == HwStage::Compute && sw_stage == SwStage::Compute),
                "ASC pipeline partition accepts compute stages only");
-    static const bool fast_lookup = [] {
-        const char* value = std::getenv("SHADPS4_FAST_STAGE_LOOKUP");
-        const bool enabled = value && value[0] == '1';
-        LOG_INFO(Render_Vulkan, "Fast stage lookup: {}", enabled);
-        return enabled;
-    }();
+    static const bool fast_lookup = true;
     Common::Perf::Add(Common::Perf::SpecCalls);
     // Scout: the stage lookup precomputed for this draw, if its inputs are those of the draw
     // the command processor is at (the scout decides from its own copy of the registers).
@@ -3418,7 +3257,7 @@ PipelineCache::Result PipelineCache::GetProgram(iss::g4::CpOwner owner, HwStage 
                 pre = nullptr; // The serial translation is used.
             }
         }
-        // ISS_ASYNC_SKIP_DRAWS: not translated here; the speculative translator does it while
+        // Not translated here; the speculative translator does it while
         // the draws using it are skipped.
         if (pre == nullptr && spec_translator && AsyncSkipDraws() &&
             owner == iss::g4::CpOwner::Graphics && !active_compute_snapshot &&
@@ -3447,7 +3286,7 @@ PipelineCache::Result PipelineCache::GetProgram(iss::g4::CpOwner owner, HwStage 
                 }
             }
         }
-        // ISS_SPEC_TRANSLATE: the translation the scout started for this program and the
+        // The translation the scout started for this program and the
         // same runtime info (built the same way from these registers).
         std::shared_ptr<SpecTranslation> spec_entry;
         if (pre == nullptr && spec_translator && owner == iss::g4::CpOwner::Graphics &&

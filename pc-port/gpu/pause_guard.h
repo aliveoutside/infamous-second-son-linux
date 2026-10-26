@@ -3,10 +3,10 @@
 
 // Global pause guard. While the game is paused (eboot counter at +0x1D1F7FC: sub_27DB10
 // increments it, sub_27E210 decrements it; it is also 1 in the start menus) and for
-// ISS_PAUSE_GUARD_HOLD_MS (3000) after it, every native path is off and the command processor
+// Three seconds after it, every native path is off and the command processor
 // draws everything as the original engine does. Native work executed in the pause hung the GPU
 // (TDR), see out/experimental/20261017-native-passes-v2/CORRECAO-HANG-PAUSE.md.
-// ISS_PAUSE_GUARD=0 turns it off (diagnostics only: it hangs the GPU).
+// The guard must stay on: native work in the pause hangs the GPU.
 
 #include <atomic>
 #include <chrono>
@@ -30,11 +30,6 @@ inline std::int64_t NowMs() {
 }
 
 inline void Install(std::uint64_t image_base) {
-    if (const char* v = std::getenv("ISS_PAUSE_GUARD"); v && v[0] == '0') {
-        std::fprintf(stderr, "PAUSE_GUARD off (ISS_PAUSE_GUARD=0): native paths run in the pause\n");
-        return;
-    }
-    if (const char* v = std::getenv("ISS_PAUSE_GUARD_HOLD_MS")) hold_ms = std::strtoll(v, nullptr, 10);
     counter = reinterpret_cast<const volatile std::uint32_t*>(image_base + CounterOffset);
     std::fprintf(stderr, "PAUSE_GUARD on: counter eboot+0x%llx = %u, hold %lld ms\n",
                  (unsigned long long)CounterOffset, *counter, (long long)hold_ms);

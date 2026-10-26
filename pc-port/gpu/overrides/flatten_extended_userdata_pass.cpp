@@ -907,7 +907,7 @@ void SimplifyReadConstAddressAdd(IR::Inst& inst) {
 
 void FlattenExtendedUserdataPass(IR::Program& program) {
     // The walker code generator and registry are shared: shaders translated on two threads
-    // (ISS_PARALLEL_TRANSLATE) take turns here.
+    // take turns here.
     std::scoped_lock srt_codegen_lock{g_srt_mutex};
     auto& post_order = program.post_order_blocks;
     PassInfo pass_info;

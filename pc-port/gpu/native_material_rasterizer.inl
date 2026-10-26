@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Included in namespace Vulkan, before native_gbuffer_rasterizer.inl.
 //
-// ISS_NATIVE_MATERIALS=1 (with ISS_NATIVE_GBUFFER=1): engine materials as prebuilt Vulkan
+// Engine materials as prebuilt Vulkan
 // templates (native renderer, step 1).
 //
 // The first draw of a material in a render state takes the full path (pipeline lookup, texture
@@ -27,22 +27,16 @@ namespace NativeMaterial {
 namespace ng = iss::native_gbuffer;
 
 static bool Enabled() {
-    static const bool enabled = [] {
-        const char* p = std::getenv("ISS_NATIVE_MATERIALS");
-        return p && p[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 
-// ISS_NATIVE_GBUFFER_SETS=1: pipelines with more bindings than the device pushes (the long one
+// Pipelines with more bindings than the device pushes (the long one
 // color item path range, eboot technique 0xCD84F0) take the native paths too, with descriptor
 // sets: the command processor's from the descriptor heap (Pipeline::BindResources), the engine
 // threads' from their own pools (NativeRecorder::Worker).
 static bool SetsEnabled() {
-    static const bool enabled = [] {
-        const char* p = std::getenv("ISS_NATIVE_GBUFFER_SETS");
-        return p && p[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 
@@ -102,19 +96,10 @@ static u64 ContextHash(const AmdGpu::Regs& regs, const std::vector<u32>& state_r
         if (reg >= CtxFirst && reg < CtxFirst + CtxCount) words[reg - CtxFirst] = 0;
         else if (reg >= ShFirst && reg < ShFirst + ShCount) words[CtxCount + reg - ShFirst] = 0;
     }
-    // ISS_NATIVE_MATERIALS_LOOSE_TARGETS=1: the render target and depth addresses leave the
+    // The render target and depth addresses leave the
     // context (formats stay): a recording does not depend on them (the command processor
     // attaches the real targets and compares the formats), and alternating targets otherwise
     // make every engine thread's key one frame stale.
-    static const bool loose_targets = [] {
-        const char* p = std::getenv("ISS_NATIVE_MATERIALS_LOOSE_TARGETS");
-        return p && p[0] == '1';
-    }();
-    if (loose_targets) {
-        for (const u32 reg : {0x005u, 0x012u, 0x013u, 0x014u, 0x015u}) words[reg] = 0;
-        for (u32 n = 0; n < 8; ++n)
-            for (const u32 field : {0u, 7u, 9u}) words[0x318 + n * 15 + field] = 0;
-    }
     words[CtxCount + ShCount] = u32(regs.primitive_type);
     return XXH3_64bits(words.data(), sizeof(words));
 }
@@ -209,7 +194,7 @@ static void Refresh(const GraphicsPipeline& pipeline) {
 } // namespace NativeMaterial
 
 
-// A learned material. Immutable once published (the engine threads of ISS_NATIVE_RECORDER read
+// A learned material. Immutable once published (the native recorder's engine threads read
 // it while the command processor learns others), except the texture cache generation it was
 // last validated at.
 struct Rasterizer::NativeMaterialTemplate {
@@ -302,7 +287,6 @@ static bool TexturesValid(VideoCore::TextureCache& cache, const T& t, bool& stal
 } // namespace NativeMaterial
 
 const Rasterizer::NativeMaterialTemplate* Rasterizer::NativeMaterialFind(u64 state_key) {
-    const iss::cp_path::Scope cp_path_scope{iss::cp_path::MaterialFind};
     using namespace NativeMaterial;
     auto& tables = State();
     auto& c = Counters();
@@ -334,7 +318,6 @@ void Rasterizer::NativeMaterialDrop(u64 key) {
 }
 
 bool Rasterizer::NativeMaterialBind(const NativeMaterialTemplate& t) {
-    const iss::cp_path::Scope cp_path_scope{iss::cp_path::MaterialBind};
     using namespace NativeMaterial;
     auto& c = Counters();
     if (!t.pipeline->IsReady() && SkipUnreadyDraws()) return false;

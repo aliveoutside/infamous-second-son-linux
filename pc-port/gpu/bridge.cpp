@@ -4,14 +4,9 @@
 #include "native_gbuffer.h"
 #include "native_passes.h"
 #include "pause_guard.h"
-#include "repeat_census.h"
-namespace iss::native_gbuffer { int InstallCensus(std::uint64_t base); }
 #include "sparse_copy.h"
 #include "readback_hint.h"
-#include "deep_profile.h"
-#include "compute_phase.h"
 #include "infamous_renderer/feedback_identity_registry.h"
-#include "runtime_timeline.h"
 #include <SDL3/SDL.h>
 #include <atomic>
 // The shader preload's progress (vk_pipeline_serialization.cpp): entries read, phase
@@ -56,7 +51,6 @@ namespace iss { extern std::atomic<unsigned> g_preload_entries, g_preload_total;
 #include "video_core/renderdoc.h"
 #include "video_core/cache_storage.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
-namespace iss::diagnostics {void RecordReadbackTime(u64 rip,u64 address,u64 elapsed,unsigned kind);}
 
 Frontend::WindowSDL *g_window=nullptr;
 namespace Libraries::GnmDriver {void RegisterLib(Core::Loader::SymbolsResolver*);}
@@ -69,14 +63,7 @@ IssGpuCallbacks host{};
 struct HostAliasMapping {u64 guest{}, size{}, physical{};};
 thread_local std::vector<HostAliasMapping>* alias_visit_output{};
 ReadbackHints readback_hints;
-bool precise_reduction_site{};
-bool precise_feedback_site{};
 std::atomic<bool> explicit_readback_hints{};
-bool FeedbackIdentityEnabled(){
-    static const bool enabled=[]{const char* flag=std::getenv("ISS_FEEDBACK_IDENTITY");
-        return flag&&flag[0]=='1';}();
-    return enabled;
-}
 struct Symbol {std::string nid,library,module;uintptr_t pointer;};
 std::vector<Symbol> symbols;
 std::mutex mappings_mutex;
@@ -85,12 +72,6 @@ std::thread window_thread;
 std::mutex ready_mutex;
 std::condition_variable ready_cv;
 int ready=0;
-/// ISS_THREAD_PRIORITY=1: the process runs above normal priority (as the emulator did) and the
-/// threads that translate and present the graphics run one level above the game threads, so that
-/// other programs and the game's own threads delay them less. Pipeline compilers stay low.
-bool thread_priority_enabled(){static const bool on=[]{const char *p=std::getenv("ISS_THREAD_PRIORITY");return p&&p[0]=='1';}();return on;}
-// The threads keep their default nice value; raising priority needs privileges on Linux.
-void raise_gpu_threads(){}
 }
 namespace Core::Loader {
 void SymbolsResolver::AddSymbol(const char *nid,const char *library,const char *module,SymbolType,u64 address){symbols.push_back({nid,library,module,address});}
@@ -187,12 +168,8 @@ bool MemoryManager::WithMappingReadLock(const std::function<bool(u64)>& publish)
         throw;
     }
 }
-u64 MemoryManager::PreferredReadbackWindow(VAddr address,u64 fallback){return precise_reduction_site||precise_feedback_site||explicit_readback_hints.load(std::memory_order_relaxed)?readback_hints.WindowFor(address,fallback):fallback;}
+u64 MemoryManager::PreferredReadbackWindow(VAddr address,u64 fallback){return explicit_readback_hints.load(std::memory_order_relaxed)?readback_hints.WindowFor(address,fallback):fallback;}
 void MemoryManager::CopySparseMemory(VAddr address,u8 *dest,u64 size){
-    static const bool bulk=[] {const char *p=std::getenv("ISS_BULK_COPY");return !p||p[0]!='0';}();
-    if(!bulk){while(size){const u64 part=std::min<u64>(size,16384-(address&16383));
-        if(auto *source=host.backing(address,part))std::memcpy(dest,source,part);else std::memset(dest,0,part);
-        address+=part;dest+=part;size-=part;}return;}
     iss_copy_sparse(address,dest,size,host.backing);
 }
 u64 MemoryManager::HashSparseMemory(VAddr address,u64 size){std::vector<u8> bytes(size);CopySparseMemory(address,bytes.data(),size);return XXH3_64bits(bytes.data(),bytes.size());}
@@ -239,14 +216,6 @@ s32 PS4_SYSV_ABI sceKernelIsNeoMode(){return 0;}
 s32 PS4_SYSV_ABI sceKernelUsleep(u32 us){std::this_thread::sleep_for(std::chrono::microseconds(us));return 0;}
 }
 namespace Libraries::SystemService {bool IsSplashVisible(){return false;}}
-namespace Core::PerfSampler {
-void PollTuning(){iss::diagnostics::Poll();}
-void RecordReadback(unsigned long long address,unsigned long long rip){
-    static const bool trace=[] {const char *p=std::getenv("ISS_TRACE_READBACK");return p&&p[0]=='1';}();if(!trace)return;
-    static std::mutex mutex;static std::map<unsigned long long,unsigned long long> counts;
-    std::scoped_lock guard{mutex};if(counts.size()>=64&&!counts.contains(rip))return;
-    auto count=++counts[rip];if(count<=4||(count&(count-1))==0)std::fprintf(stderr,"READBACK_SITE rip=0x%llx address=0x%llx count=%llu\n",rip,address,count);
-}}
 namespace VideoCore {
 static std::atomic<u32> screenshot_requests,overlay_screenshot_requests;
 void LoadRenderDoc(){}void StartCapture(){}void EndCapture(){}void TriggerCapture(){}
@@ -266,58 +235,24 @@ bool ValidatePath(const std::filesystem::path& path){return !path.empty();}
 std::string PathToUTF8String(const std::filesystem::path& path){auto s=path.u8string();return std::string(s.begin(),s.end());}
 }
 extern "C" void iss_gpu_map(uint64_t address,uint64_t size,uint8_t *backing){
-    if(FeedbackIdentityEnabled())
-        iss::game::feedback::IdentityRegistry::Instance().Invalidate(address,size);
     auto *memory=Core::Memory::Instance();memory->GetAddressSpace().Register(address,size,backing);
     if(auto *r=memory->GetRasterizer()){r->RegisterMemory(address,size);r->MapMemory(address,size);}
-}
-extern "C" void iss_gpu_feedback_identity(uint64_t owner_object,uint64_t shader_object,
-                                           uint64_t record_address){
-    if(FeedbackIdentityEnabled()) {
-        iss::game::feedback::IdentityRegistry::Instance().Publish(
-            owner_object,shader_object,record_address);
-        static std::atomic<uint64_t> events{};
-        const auto count=++events;
-        if(count<=8||(count&(count-1))==0)
-            std::fprintf(stderr,"FB_IDENTITY_EBOOT count=%llu owner=0x%llx shader_object=0x%llx record=0x%llx\n",
-                         static_cast<unsigned long long>(count),
-                         static_cast<unsigned long long>(owner_object),
-                         static_cast<unsigned long long>(shader_object),
-                         static_cast<unsigned long long>(record_address));
-    }
 }
 extern "C" int iss_gpu_readback(uint64_t address,uint64_t size){
     if(!size||!host.backing(address,size))return 0;
     auto *renderer=Core::Memory::Instance()->GetRasterizer();if(!renderer)return 0;
     readback_hints.Remember(address);explicit_readback_hints.store(true,std::memory_order_relaxed);
-    const auto start=iss::diagnostics::Enabled()?Common::Perf::NowNs():0;
-    renderer->ReadMemory(address,size,false,0);
-    if(start)iss::diagnostics::RecordReadbackTime(0,address,Common::Perf::NowNs()-start,2);return 1;
+    renderer->ReadMemory(address,size,false,0);return 1;
 }
 extern "C" int iss_gpu_invalidate(uint64_t address,uint64_t size){
-    // ISS_RUNTIME_WRITE_INVALIDATE=0 leaves file reads to their page faults (one per 4 KB page:
-    // the game streams ~5 MB of textures every ~2 s, ~1470 exceptions, part of the periodic
-    // 45 ms frames of 2026-10-17).
-    static const bool enabled=[]{const char *p=std::getenv("ISS_RUNTIME_WRITE_INVALIDATE");return !p||p[0]!='0';}();
-    if(!enabled||size<0x1000||!host.backing(address,size))return 0;
+    // File reads are invalidated here instead of left to their page faults (one per 4 KB page:
+    // the game streams ~5 MB of textures every ~2 s, ~1470 exceptions).
+    if(size<0x1000||!host.backing(address,size))return 0;
     auto *renderer=Core::Memory::Instance()->GetRasterizer();if(!renderer)return 0;
     return renderer->InvalidateMemory(address,size,false)?1:0;
 }
 extern "C" int iss_gpu_fault(void *context,void *address){
-    if(precise_feedback_site&&!Common::IsWriteError(context)&&
-       reinterpret_cast<uintptr_t>(Common::GetRip(context))==host.image_base+0x3f3eff)
-        readback_hints.Remember(reinterpret_cast<uintptr_t>(address));
-    // Register the hint before ReadMemory schedules its first copy/prefetch.
-    if(precise_reduction_site&&!Common::IsWriteError(context)){
-        const auto rip=reinterpret_cast<uintptr_t>(Common::GetRip(context));
-        if(rip>=host.image_base){const auto offset=rip-host.image_base;
-            if(offset==0x1717c0||offset==0x171800)readback_hints.Remember(reinterpret_cast<uintptr_t>(address));}}
-    if(iss::repeat_census::enabled)[[unlikely]]
-        iss::repeat_census::Note(iss::repeat_census::Fault,reinterpret_cast<uintptr_t>(address)&~uintptr_t{0xfff},0x1000,Common::IsWriteError(context)?1:0);
-    const auto start=iss::diagnostics::Enabled()?Common::Perf::NowNs():0;
-    const bool handled=Core::Signals::Instance()->DispatchAccessViolation(context,address);
-    if(start&&handled)iss::diagnostics::RecordReadbackTime(reinterpret_cast<uintptr_t>(Common::GetRip(context)),reinterpret_cast<uintptr_t>(address),Common::Perf::NowNs()-start,Common::IsWriteError(context)?1:0);
-    return handled;
+    return Core::Signals::Instance()->DispatchAccessViolation(context,address);
 }
 extern "C" uintptr_t iss_gpu_resolve(const char *identity){
     std::string id(identity);std::vector<std::string> parts;size_t start=0;
@@ -336,111 +271,34 @@ namespace MemoryPatcher {extern u64 g_eboot_address;}
 extern "C" int iss_gpu_initialize(const IssGpuCallbacks *callbacks){
     if(!callbacks||callbacks->struct_size!=sizeof(host)||!callbacks->backing||!callbacks->clamp||!callbacks->visit_mappings||!callbacks->protect||!callbacks->mapping_epoch||!callbacks->mapping_lock_shared||!callbacks->mapping_unlock_shared)return -1;
     host=*callbacks;
-    iss::timeline::Emit("gpu_initialize",0,0,host.image_base);
     // The renderer reports guest code addresses as eboot offsets (readback_relaxed_sites).
     MemoryPatcher::g_eboot_address=host.image_base;
     // The executing image (as native/engine_draw.cpp patches it), not a backing view.
     if(iss::native_shadow::Enabled())
         iss::native_shadow::Install(host.image_base,reinterpret_cast<const unsigned char*>(host.image_base+0x43D590));
-    iss::native_gbuffer::InstallCensus(host.image_base);
     iss::native_gbuffer::Install(host.image_base);
     iss::pause_guard::Install(host.image_base);
     iss::native_passes::Install(host.image_base);
     Core::Emulator::Configure();
-    if(const char *p=std::getenv("ISS_FEEDBACK_PAGE_READBACK");p&&p[0]=='1'){
-        const unsigned char signature[]={0x8b,0x40,0x04,0x49,0x8b,0x8f,0xe8,0,0,0,0x89,0x41,0x08};
-        const auto *code=host.backing(host.image_base+0x3f3eff,sizeof(signature));
-        precise_feedback_site=code&&!std::memcmp(code,signature,sizeof(signature));
-        std::fprintf(stderr,"FEEDBACK_READBACK verified=%d window=4096\n",precise_feedback_site);
-    }
-    if(const char *p=std::getenv("ISS_PRECISE_REDUCTION_READBACK");p&&p[0]=='1'){
-        const unsigned char signature[]={0xc4,0xc1,0x7c,0x58,0x45,0xe0,0xc4,0xc1,0x74,0x58,0x4d,0x00};
-        const auto *code=host.backing(host.image_base+0x1717c0,sizeof(signature));
-        precise_reduction_site=code&&!std::memcmp(code,signature,sizeof(signature));
-        std::fprintf(stderr,"REDUCTION_READBACK verified=%d window=4096 image_base=0x%llx\n",precise_reduction_site,(unsigned long long)host.image_base);
-    }
     for(int i=0;i<=static_cast<int>(Common::FS::PathType::LicensesDir);++i){
         auto type=static_cast<Common::FS::PathType>(i);Common::FS::SetUserPath(type,std::filesystem::path(host.user_dir)/("gpu-"+std::to_string(i)));}
     Common::FS::SetUserPath(Common::FS::PathType::UserDir,host.user_dir);
-    // Isolate shader/driver caches for cold/warm comparisons without changing
-    // the user's ordinary cache, saves or any other user directory.
-    if (const char* cache_root = std::getenv("ISS_PIPELINE_CACHE_ROOT"); cache_root && *cache_root) {
-        const auto path = std::filesystem::absolute(std::filesystem::u8path(cache_root));
-        std::filesystem::create_directories(path);
-        Common::FS::SetUserPath(Common::FS::PathType::CacheDir, path);
-        std::fprintf(stderr, "PORT_TUNING pipeline_cache_root=%s\n", path.string().c_str());
-    }
     Common::Perf::GetTuning().async_pipelines=0; // Never skip a draw while compiling its pipeline.
-    const bool render_reuse=[] {const char *p=std::getenv("ISS_RENDER_REUSE");return p&&p[0]=='1';}();
     auto& tuning=Common::Perf::GetTuning();
-    if(const char *p=std::getenv("ISS_PROBE_HOST_IMPORT");p&&p[0]=='1')tuning.probe_host_import=1;
-    if(const char *p=std::getenv("ISS_NATIVE_FEEDBACK_PROBE");p&&p[0]=='1')tuning.probe_host_import=1;
-    tuning.stream_dedup=render_reuse;tuning.stream_static=render_reuse;
-    tuning.sync_memo=render_reuse;tuning.spec_memo=render_reuse;
-    tuning.region_summary=render_reuse;tuning.tex_memo=render_reuse;
-    tuning.skip_redundant_binds=render_reuse;tuning.shader_params_memo=render_reuse;
-    tuning.skip_empty_draws=render_reuse;tuning.pipeline_key_memo=render_reuse;
-    tuning.rt_memo=render_reuse;tuning.reuse_buffer_checks=render_reuse;
-    const bool descriptor_fast=[] {const char *p=std::getenv("ISS_DESCRIPTOR_FAST_PATH");return p&&p[0]=='1';}();
-    tuning.large_read_memo=descriptor_fast;
-    std::fprintf(stderr,"PORT_TUNING large_read_memo=%d\n",descriptor_fast);
-    const bool occlusion=[] {const char *p=std::getenv("ISS_REAL_OCCLUSION");return p&&p[0]=='1';}();
-    tuning.real_occlusion=occlusion;
-    const char *readback_setting=std::getenv("ISS_READBACK_WINDOW_KB");
-    const long readback_kb=readback_setting?std::strtol(readback_setting,nullptr,10):512;
-    tuning.readback_window_bytes=(readback_kb==64||readback_kb==128)?u64(readback_kb)*1024:512*1024;
-    std::fprintf(stderr,"PORT_TUNING readback_window_bytes=%llu\n",(unsigned long long)tuning.readback_window_bytes.load());
-    const bool parallel_render=[] {const char *p=std::getenv("ISS_PARALLEL_RENDER");return p&&p[0]=='1';}();
-    tuning.threaded_recording=parallel_render;tuning.recorder_spin_us=parallel_render?20:0;tuning.readback_queue=parallel_render;
-    const bool compute_fairness=[] {const char *p=std::getenv("ISS_COMPUTE_FAIRNESS");return p&&p[0]=='1';}();
-    tuning.asc_yield_packets=compute_fairness?16:0;
-    const bool async_compute=[] {const char *p=std::getenv("ISS_ASYNC_COMPUTE");return p&&p[0]=='1';}();
-    tuning.asc_queue=async_compute;
-    std::fprintf(stderr,"PORT_TUNING asc_queue=%d\n",async_compute);
-    std::fprintf(stderr,"PORT_TUNING asc_yield_packets=%u\n",compute_fairness?16:0);
-    std::fprintf(stderr,"PORT_TUNING threaded_recording=%d readback_queue=%d recorder_spin_us=%u\n",parallel_render,parallel_render,parallel_render?20:0);
-    std::fprintf(stderr,"PORT_TUNING render_reuse=%d real_occlusion=%d\n",render_reuse,occlusion);
-    const bool upload_worker=[] {const char *p=std::getenv("ISS_UPLOAD_WORKER");return p&&p[0]=='1';}();
-    Common::Perf::GetTuning().async_uploads=upload_worker;
-    std::fprintf(stderr,"PORT_TUNING async_uploads=%d async_pipelines=0\n",upload_worker);
-    if(const char *p=std::getenv("ISS_GPU_PROFILE");p&&(p[0]=='1'||p[0]=='2'))Common::Perf::GetTuning().gpu_profile=p[0]-'0';
-    {const char *p=std::getenv("ISS_COMPUTE_PHASES");iss::phase::g_enabled=p&&p[0]=='1';
-     std::fprintf(stderr,"PORT_TUNING compute_phases=%d\n",iss::phase::Enabled()?1:0);}
-    // ISS_TIMER_1MS=1 (off by default, the user's choice): 1 ms timer resolution for this
-    // process. Without it a timed wait of 1-2 ms (the game's condition variables, event flags and
-    // semaphores with a timeout, every Sleep(1)) lasts ~15.6 ms on Windows 11 (measured Sleep(1) =
-    // 15.1 ms). Scripted city A/B (ab2, 2026-10-18 night, 2 runs each): no measurable difference.
-    // ISS_TUNING="name=value,...": existing renderer toggles for A/B tests, applied last.
-    if(const char *p=std::getenv("ISS_TUNING")){
-        const auto set=[](auto& field,const std::string& value){field=static_cast<std::remove_reference_t<decltype(field.load())>>(std::strtoull(value.c_str(),nullptr,0));};
-        std::string all=p;size_t at=0;
-        while(at<all.size()){
-            size_t end=all.find(',',at);if(end==std::string::npos)end=all.size();
-            const std::string item=all.substr(at,end-at);at=end+1;
-            const size_t eq=item.find('=');if(eq==std::string::npos)continue;
-            const std::string name=item.substr(0,eq),value=item.substr(eq+1);bool known=true;
-            if(name=="late_protect")set(tuning.late_protect,value);
-            else if(name=="parallel_protect")set(tuning.parallel_protect,value);
-            else if(name=="bind_prefetch")set(tuning.bind_prefetch,value);
-            else if(name=="scout")set(tuning.scout,value);
-            else if(name=="scout_fast")set(tuning.scout_fast,value);
-            else if(name=="hot_page_faults")set(tuning.hot_page_faults,value);
-            else if(name=="async_written_uploads")set(tuning.async_written_uploads,value);
-            else if(name=="async_uploads")set(tuning.async_uploads,value);
-            else if(name=="readback_write_discard")set(tuning.readback_write_discard,value);
-            else if(name=="readback_write_merge")set(tuning.readback_write_merge,value);
-            else if(name=="gpu_threads_priority")set(tuning.gpu_threads_priority,value);
-            else if(name=="asc_yield_packets")set(tuning.asc_yield_packets,value);
-            else if(name=="recorder_spin_us")set(tuning.recorder_spin_us,value);
-            else if(name=="tiered_compute_pipelines")set(tuning.tiered_compute_pipelines,value);
-            // relaxed_site=<eboot offset> (repeatable, up to 8): reads of GPU written memory from
-            // that 256 byte block of the game's code do not wait for the GPU (readback_relaxed_sites).
-            else if(name=="relaxed_site"){const u32 n=tuning.num_relaxed_sites.load();if(n<Common::Perf::Tuning::MaxRelaxedSites){tuning.relaxed_sites[n]=std::strtoull(value.c_str(),nullptr,0)&~0xFFull;tuning.num_relaxed_sites.store(n+1);}}
-            else if(name=="relaxed_all")tuning.relaxed_all=std::strtoull(value.c_str(),nullptr,0)!=0;
-            else known=false;
-            std::fprintf(stderr,"PORT_TUNING %s=%s%s\n",name.c_str(),value.c_str(),known?"":" (unknown, ignored)");
-        }
-    }
+    tuning.stream_dedup=true;tuning.stream_static=true;
+    tuning.sync_memo=true;tuning.spec_memo=true;
+    tuning.region_summary=true;tuning.tex_memo=true;
+    tuning.skip_redundant_binds=true;tuning.shader_params_memo=true;
+    tuning.skip_empty_draws=true;tuning.pipeline_key_memo=true;
+    tuning.rt_memo=true;tuning.reuse_buffer_checks=true;
+    tuning.large_read_memo=true;
+    tuning.real_occlusion=true;
+    tuning.readback_window_bytes=512*1024;
+    tuning.threaded_recording=true;tuning.recorder_spin_us=20;tuning.readback_queue=true;
+    tuning.asc_yield_packets=0;
+    tuning.asc_queue=false;
+    tuning.async_uploads=true;
+    tuning.async_written_uploads=1;tuning.scout=1;tuning.scout_fast=1;tuning.bind_prefetch=1;
     window_thread=std::thread([]{
         try{
             g_window=new Frontend::WindowSDL(host.width,host.height,host.title);
@@ -477,7 +335,7 @@ extern "C" int iss_gpu_initialize(const IssGpuCallbacks *callbacks){
                         const unsigned entries=iss::g_preload_entries.load(std::memory_order_relaxed);
                         const unsigned total=iss::g_preload_total.load(std::memory_order_relaxed);
                         const int phase=iss::g_preload_phase.load(std::memory_order_relaxed);
-                        // Phase 4: the first run compiles the game's compute shaders (ISS_AOT_WAIT).
+                        // Phase 4: the first run compiles the game's compute shaders.
                         std::string status=phase==0?"Starting...":
                             phase==1?"Loading shaders  "+std::to_string(entries)+(total?" / "+std::to_string(total):""):
                             phase==4?"Preparing shaders (first run only)  "+std::to_string(entries)+" / "+std::to_string(total):
@@ -496,25 +354,21 @@ extern "C" int iss_gpu_initialize(const IssGpuCallbacks *callbacks){
                 if(init_state.load()<0)throw std::runtime_error(init_error);
             }
             auto *renderer=Core::Memory::Instance()->GetRasterizer();
-            const bool checkpoints=[] {const char *v=std::getenv("ISS_PIPELINE_CHECKPOINT");return !v||v[0]!='0';}();
-            if(renderer&&checkpoints)renderer->GetPipelineCache().CheckpointDriverCache();
+            if(renderer)renderer->GetPipelineCache().CheckpointDriverCache();
             {std::scoped_lock guard{ready_mutex};ready=1;}ready_cv.notify_all();
-            const char *stop_path=std::getenv("ISS_STOP_FILE");
             auto last_checkpoint=std::chrono::steady_clock::now(),last_stop_check=last_checkpoint;
             auto last_priority=last_checkpoint-std::chrono::seconds(8);
             for(;;){
-                bool stop=!g_window->PollEvents();auto now=std::chrono::steady_clock::now();
-                if(stop_path&&now-last_stop_check>std::chrono::milliseconds(100)){std::error_code ec;stop|=std::filesystem::exists(stop_path,ec);last_stop_check=now;}
+                const bool stop=!g_window->PollEvents();auto now=std::chrono::steady_clock::now();
                 if(stop){
-                    if(renderer&&checkpoints)renderer->GetPipelineCache().CheckpointDriverCache();
+                    if(renderer)renderer->GetPipelineCache().CheckpointDriverCache();
                     // Our atomic checkpoint replaces the old destructor-only snapshot.
                     Storage::DataBase::Instance().SetBeforeClose({});Storage::DataBase::Instance().Close();
                     std::fputs("PORT_STOP cache writes drained; closing all guest threads and audio\n",stderr);std::fflush(nullptr);
                     ::TerminateProcess(::GetCurrentProcess(),0);return;
                 }
-                if(thread_priority_enabled()&&now-last_priority>std::chrono::seconds(10)){raise_gpu_threads();last_priority=now;}
                 // Off the window thread: a changed driver cache takes ~120 ms to write.
-                if(checkpoints&&renderer&&now-last_checkpoint>std::chrono::seconds(30)){
+                if(renderer&&now-last_checkpoint>std::chrono::seconds(30)){
                     std::thread([renderer]{renderer->GetPipelineCache().CheckpointDriverCache();}).detach();last_checkpoint=now;}
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
             }
@@ -523,7 +377,7 @@ extern "C" int iss_gpu_initialize(const IssGpuCallbacks *callbacks){
     std::unique_lock guard{ready_mutex};ready_cv.wait(guard,[]{return ready!=0;});return ready==1?0:-1;
 }
 
-// ISS_CP_CPU=L: the command processor thread limits the frame rate while several guest threads
+// The command processor thread limits the frame rate while several guest threads
 // spin on rdtsc waiting for it. The physical core of logical processor L is taken out of the
 // process default CPU sets (no other thread of the process runs there, its SMT sibling stays
 // idle) and the command processor is given logical processor L alone.
@@ -535,7 +389,7 @@ extern "C" void __gcov_reset(void);
 #endif
 void IssPinCommandProcessor() {
 #ifdef ISS_PGO_GENERATE
-    // ISS_PGO=generate builds: write the profile every 20 s (merged into the existing files).
+    // PGO=generate builds: write the profile every 20 s (merged into the existing files).
     static std::once_flag pgo_once;
     std::call_once(pgo_once, [] {
         std::thread([] {
@@ -547,9 +401,7 @@ void IssPinCommandProcessor() {
         }).detach();
     });
 #endif
-    const char* value = std::getenv("ISS_CP_CPU");
-    if (!value || !*value) return;
-    // ISS_CP_CPU=auto: the core the firmware ranks fastest (ACPI CPPC highest_perf, the
+    // The core the firmware ranks fastest (ACPI CPPC highest_perf, the
     // "preferred core" that boosts highest), first logical processor of it.
     const auto read_long = [](const std::string& path, long fallback) {
         long v = fallback;
@@ -561,18 +413,14 @@ void IssPinCommandProcessor() {
     };
     const long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
     long wanted = -1;
-    if (std::strcmp(value, "auto") == 0) {
-        long best = -1;
-        for (long c = 0; c < ncpu; ++c) {
-            const std::string base = "/sys/devices/system/cpu/cpu" + std::to_string(c);
-            const long perf = read_long(base + "/acpi_cppc/highest_perf", -1);
-            const long first = read_long(base + "/topology/core_cpus_list", c);
-            if (perf > best && first == c) { best = perf; wanted = c; }
-        }
-        if (wanted < 0) wanted = ncpu > 2 ? 1 : 0;
-    } else {
-        wanted = std::strtol(value, nullptr, 10);
+    long best = -1;
+    for (long c = 0; c < ncpu; ++c) {
+        const std::string base = "/sys/devices/system/cpu/cpu" + std::to_string(c);
+        const long perf = read_long(base + "/acpi_cppc/highest_perf", -1);
+        const long first = read_long(base + "/topology/core_cpus_list", c);
+        if (perf > best && first == c) { best = perf; wanted = c; }
     }
+    if (wanted < 0) wanted = ncpu > 2 ? 1 : 0;
     if (wanted < 0 || wanted >= ncpu || ncpu < 4) return;
     // The core's logical processors (SMT siblings), e.g. "1,7" or "2-3".
     cpu_set_t core;
@@ -601,16 +449,13 @@ void IssPinCommandProcessor() {
     for (long c = 0; c < ncpu && c < CPU_SETSIZE; ++c)
         if (!CPU_ISSET(int(c), &core)) CPU_SET(int(c), &others);
     const pid_t self = static_cast<pid_t>(syscall(SYS_gettid));
-    int moved = 0;
     for (const auto& entry : std::filesystem::directory_iterator("/proc/self/task")) {
         const pid_t tid = static_cast<pid_t>(std::strtol(entry.path().filename().c_str(), nullptr, 10));
-        if (tid > 0 && tid != self && sched_setaffinity(tid, sizeof(others), &others) == 0) ++moved;
+        if (tid > 0 && tid != self) sched_setaffinity(tid, sizeof(others), &others);
     }
     cpu_set_t set;
     CPU_ZERO(&set);
     CPU_SET(int(wanted), &set);
-    const int rc = pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
-    std::fprintf(stderr, "PORT_TUNING cp_cpu=%ld thread=%d others_moved=%d\n", wanted,
-                 int(rc == 0), moved);
+    pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
     return;
 }

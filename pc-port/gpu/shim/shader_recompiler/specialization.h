@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Override of shader_recompiler/specialization.h (ISS_DYNAMIC_STRIDE: the stride comparison).
+// Override of shader_recompiler/specialization.h (the stride comparison).
 
 #pragma once
 
@@ -37,7 +37,7 @@ struct BufferSpecialization {
         return SameExceptStride(other) && stride == other.stride;
     }
 
-    /// With ISS_DYNAMIC_STRIDE the shader reads the stride from the V#: not part of the module.
+    /// The shader reads the stride from the V#: not part of the module.
     bool SameExceptStride(const BufferSpecialization& other) const {
         return is_formatted == other.is_formatted &&
                swizzle_enable == other.swizzle_enable &&

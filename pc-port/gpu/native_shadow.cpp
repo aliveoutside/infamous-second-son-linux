@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// ISS_NATIVE_SHADOW: the engine side (native_shadow.h). Runs on the engine's threads.
+// The engine side (native_shadow.h). Runs on the engine's threads.
 #include "native_shadow.h"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -310,10 +310,7 @@ void CaptureIndexed(const u32* packet, u32 count, u64 address, u32 initiator) {
 }
 
 bool Enabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_NATIVE_SHADOW");
-        return value && value[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 
@@ -358,9 +355,6 @@ int Install(u64 base, const unsigned char* code) {
     }
     std::fprintf(stderr, "NATIVE_SHADOW installed at eboot+0x%llx (technique vtable 0x%llx)\n",
                  (unsigned long long)RoutineOffset, (unsigned long long)ShadowVtable);
-    if (const char* outer = std::getenv("ISS_NATIVE_SHADOW_OUTER"); outer && outer[0] == '1')
-        std::fprintf(stderr, "NATIVE_SHADOW_OUTER install=%s offset=0x198bc0\n",
-                     InstallBuckets() ? "ok" : "rejected");
     return 1;
 }
 

@@ -89,10 +89,7 @@ std::string WallClock() {
 }
 
 bool Enabled() {
-    static const bool on = [] {
-        const char* p = std::getenv("ISS_GPU_BLACKBOX");
-        return !(p && p[0] == '0');
-    }();
+    static const bool on = false;
     return on;
 }
 
@@ -486,24 +483,9 @@ void Watch() {
     std::array<u32, NativeSlot> last{};
     std::array<double, NativeSlot> since{};
     std::array<u32, NativeSlot> reported{};
-    // ISS_GPU_BLACKBOX_TEST_S=N: one report N s after the first mark, without a hang (to check
-    // the report itself).
-    // The test report stalls the game ~350 ms (measured 2026-10-19, at the same second in every
-    // scene): only in a diagnostic session, not from the play flags.
-    static const double test_at = [] {
-        const char* p = std::getenv("ISS_GPU_BLACKBOX_TEST_S");
-        const char* diagnostic = std::getenv("ISS_DIAGNOSTIC_SESSION");
-        return p && diagnostic && diagnostic[0] == '1' ? std::atof(p) : 0.0;
-    }();
-    const double first = Now();
-    bool tested = test_at <= 0.0;
     while (!g_crashed.load(std::memory_order_relaxed)) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         const double now = Now();
-        if (!tested && now - first >= test_at) {
-            tested = true;
-            Dump("TESTE: retrato da caixa-preta (sem travamento)", "gpu-blackbox-test");
-        }
         for (u32 s = 0; s < NativeSlot; ++s) {
             if (!g_owner[s].load(std::memory_order_relaxed)) continue;
             const u64 submitted = g_submitted[s].load(std::memory_order_relaxed);
@@ -608,10 +590,8 @@ void BlackboxCrash(const char* where) {
         box::Dump(reason, "gpu-crash");
         // The device is lost: end the process now (no assert dialog, no more submissions to a
         // resetting driver, which can cascade into resets that need a reboot).
-        if (const char* p = std::getenv("ISS_GPU_BLACKBOX_KEEP_ALIVE"); !(p && p[0] == '1')) {
-            std::fflush(nullptr);
-            std::_Exit(3);
-        }
+        std::fflush(nullptr);
+        std::_Exit(3);
     });
 }
 

@@ -66,7 +66,7 @@ void EmitControlFlowGraph(IR::Program& program, Pools& pools, Gcn::CFG& cfg,
     program.post_order_blocks = Shader::IR::PostOrder(program.blocks.front());
 }
 
-// ISS_SHADER_PASSES=1: milliseconds per step of TranslateProgram (averaged, printed every 64).
+// Milliseconds per step of TranslateProgram (averaged, printed every 64).
 namespace {
 struct PassTimes {
     static constexpr u32 Max = 32;
@@ -76,10 +76,7 @@ struct PassTimes {
 };
 PassTimes g_pass_times;
 bool PassTimingEnabled() {
-    static const bool enabled = [] {
-        const char* value = std::getenv("ISS_SHADER_PASSES");
-        return value && value[0] == '1';
-    }();
+    static const bool enabled = false;
     return enabled;
 }
 struct PassClock {

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// ISS_UNIFIED_MEMORY (unified_memory.h): flag, heap range and statistics.
+// The unified heap (unified_memory.h): flag, range and statistics.
 #include "unified_memory.h"
 #include "common/perf_stats.h"
 #include <array>
@@ -18,22 +18,7 @@ using u64 = std::uint64_t;
 struct Range {
     u64 base = 0x20000000ull, size = 0x20000000ull;
 };
-const Range range = [] {
-    Range r;
-    // ISS_UNIFIED_RANGE=base:size (hexadecimal or decimal).
-    if (const char* p = std::getenv("ISS_UNIFIED_RANGE")) {
-        char* end{};
-        const u64 base = std::strtoull(p, &end, 0);
-        if (end && *end == ':') {
-            const u64 size = std::strtoull(end + 1, nullptr, 0);
-            if (size) r = {base, size};
-        }
-    }
-    if (enabled)
-        std::fprintf(stderr, "PORT_TUNING unified_memory base=0x%llx size=0x%llx\n",
-                     (unsigned long long)r.base, (unsigned long long)r.size);
-    return r;
-}();
+constexpr Range range{};
 std::array<std::atomic<u64>, StatCount> stats{};
 constexpr const char* names[StatCount] = {
     "reads",         "untouched_reads", "writes",          "image_sources",
