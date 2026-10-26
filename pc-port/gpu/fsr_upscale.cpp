@@ -229,10 +229,10 @@ bool Prepare(const Vulkan::Instance& instance, u32 width, u32 height, Frame& fra
 
     // The game's own jitter: +-0.25 render px diagonally, by the SMAA T2x subsample index of the
     // frame. SMAA's reference pairs index 1 with (0.25, -0.25) in clip space (y up), +0.25 +0.25
-    // in FSR's pixels (y down).
+    // in FSR's pixels (y down). SMAA 1x (phase 0) is not jittered.
     constexpr int combo = 0;
     constexpr float amp = 0.25f;
-    const float j = frame.phase == 1 ? amp : -amp;
+    const float j = frame.phase == 1 ? amp : frame.phase == 2 ? -amp : 0.0f;
     frame.jitter[0] = (combo & 1) ? -j : j;
     frame.jitter[1] = (combo & 2) ? -j : j;
     // The game's vectors are UV, current minus previous; FSR wants pixels towards the previous

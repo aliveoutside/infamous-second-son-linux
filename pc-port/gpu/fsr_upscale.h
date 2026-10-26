@@ -40,7 +40,7 @@ struct Frame {
     float mv_scale[2]{};
     float frame_ms{};
     u64 frame_id{};
-    int phase{}; // the game's SMAA T2x subsample index, 1 or 2 (set by the caller)
+    int phase{}; // the game's SMAA subsample index: 1 or 2 (T2x), 0 (1x, no jitter) (set by the caller)
     bool reset{}; // the history is dropped (set by the caller, or the first frame)
 };
 

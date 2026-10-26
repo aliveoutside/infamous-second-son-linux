@@ -1302,7 +1302,9 @@ struct FsrScene {
     u32 color_generation{};
     u32 depth_generation{};
     int dst_sel[4]{};
-    int phase{}; // SMAA T2x subsample index of the frame: 1 or 2, 0 unknown
+    // SMAA subsample index of the frame: 1 or 2 (T2x, jittered), 0 (SMAA 1x, not jittered), -1
+    // not seen yet.
+    int phase{-1};
     int frames{}; // SMAA blend weights draws since the last resolve
     // The motion vectors the resolve reads, learned at the resolve.
     VideoCore::ImageId motion{};
@@ -1372,7 +1374,7 @@ void Rasterizer::FsrDispatch() {
         FsrSkip(0); // the first frames, before an edges draw
         return;
     }
-    if (!g_fsr_scene.phase) {
+    if (g_fsr_scene.phase < 0) {
         FsrSkip(1);
         return;
     }
@@ -1658,6 +1660,8 @@ std::size_t Rasterizer::Draw(bool is_indexed, u32 index_offset,
             // SMAA blend weights: its constants hold the frame's subsample indices (1,1,1 or
             // 2,2,2 at dword 12), the game's own jitter phase. Frames without a resolve (the
             // game draws SMAA twice then) advance it too, so a resolve count would drift.
+            // Any other index is SMAA 1x, drawn without jitter: FSR still runs on it, with
+            // none, or the game's own picture would be shown and FG would start over.
             const auto sharp = ps->buffers[0].GetSharp(*ps);
             if (sharp.base_address >= 0x10000 && sharp.GetSize() >= 13 * sizeof(float)) {
                 float index;
