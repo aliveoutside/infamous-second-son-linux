@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // The in-game menu (F1): settings that switch while playing and a live debug view, drawn over the
 // game window with ImGui's draw list like the touchpad panel (pad_panel_ui.cpp). GRAPHICS: FSR 3
-// anti-aliasing, the render size (fsr_mode, taken at the next start), sharpening and frame
-// generation (fsr_upscale.h); a change is saved to settings.toml by
+// anti-aliasing, sharpening and frame generation (fsr_upscale.h); a change is saved to settings.toml by
 // src/pad.c, which takes it through iss_gpu_menu_take. DEBUG: real and shown frame rates, what
 // FSR and FG did, the last hitch. While it is up src/pad.c frees the mouse (iss_gpu_menu_shown).
 #include <SDL3/SDL.h>
@@ -23,23 +22,9 @@
 namespace iss::save_ui { ImFont* UiFont(bool bold); }
 namespace iss::menu_ui {
 namespace {
-enum { B_CLOSE, B_FSR, B_MODE, B_SHARP_DOWN, B_SHARP_UP, B_FG, B_COUNT };
-constexpr int ROWS = 4;
+enum { B_CLOSE, B_FSR, B_SHARP_DOWN, B_SHARP_UP, B_FG, B_COUNT };
+constexpr int ROWS = 3;
 constexpr float W = 460, TITLE = 30, ROW = 38, H = 444 + (ROWS - 2) * ROW;
-// fsr_mode: settings.toml value, label, the output size divided by.
-struct Mode { const char* key; const char* label; double scale; };
-constexpr Mode kModes[] = {{"native", "Native", 1.0}, {"quality", "Quality", 1.5},
-                           {"balanced", "Balanced", 1.7}, {"performance", "Performance", 2.0},
-                           {"ultra_performance", "Ultra perf.", 3.0}};
-constexpr int kModeCount = int(sizeof(kModes) / sizeof(kModes[0]));
-int StartMode() {
-    const char* v = iss::Setting("fsr_mode");
-    const double scale = v && *v ? std::atof(v) : 1.0;
-    for (int i = 0; i < kModeCount; ++i)
-        if (std::fabs(kModes[i].scale - scale) < 0.01) return i;
-    return 0;
-}
-
 struct Rect { float l, t, r, b; };
 struct State {
     std::mutex mutex;
@@ -47,7 +32,6 @@ struct State {
     int pressed = -1, hover = -1;
     float k = 1, ox = 0, oy = 0, drag_x = 0, drag_y = 0;
     std::vector<std::pair<std::string, std::string>> changes; // settings.toml key, value
-    int start_mode = StartMode(), mode = start_mode; // the render size the game runs with, chosen
     // The rates, sampled every half second.
     u64 sample_ns = 0, flips = 0, presents = 0, generated = 0;
     double real_fps = 0, shown_fps = 0, generated_fps = 0;
@@ -58,10 +42,9 @@ Rect base_rect(int b) {
     switch (b) {
     case B_CLOSE: return {W - 36, 3, W - 6, TITLE - 3};
     case B_FSR: return {W - 112, 74, W - 12, 74 + ROW - 8};
-    case B_MODE: return {W - 152, 74 + ROW, W - 12, 74 + 2 * ROW - 8};
-    case B_SHARP_DOWN: return {W - 152, 74 + 2 * ROW, W - 112, 74 + 3 * ROW - 8};
-    case B_SHARP_UP: return {W - 52, 74 + 2 * ROW, W - 12, 74 + 3 * ROW - 8};
-    default: return {W - 112, 74 + 3 * ROW, W - 12, 74 + 4 * ROW - 8};
+    case B_SHARP_DOWN: return {W - 152, 74 + ROW, W - 112, 74 + 2 * ROW - 8};
+    case B_SHARP_UP: return {W - 52, 74 + ROW, W - 12, 74 + 2 * ROW - 8};
+    default: return {W - 112, 74 + 2 * ROW, W - 12, 74 + 3 * ROW - 8};
     }
 }
 Rect screen_rect(const State& s, Rect r) { return {s.ox + r.l * s.k, s.oy + r.t * s.k, s.ox + r.r * s.k, s.oy + r.b * s.k}; }
@@ -90,10 +73,6 @@ void press(State& s, int b) {
         s.changes.emplace_back("fsr_aa", on ? "on" : "off");
         break;
     }
-    case B_MODE:
-        s.mode = (s.mode + 1) % kModeCount;
-        s.changes.emplace_back("fsr_mode", kModes[s.mode].key);
-        break;
     case B_SHARP_DOWN:
     case B_SHARP_UP: {
         const int now = iss::fsr::Sharpness();
@@ -204,7 +183,7 @@ void Draw(float width, float height) {
 
     heading(44, "GRAPHICS");
     const bool fsr = iss::fsr::Enabled(), fgen = iss::fsr::FgEnabled();
-    const char* names[B_COUNT] = {"", "FSR 3 anti-aliasing", "Render size", "Sharpening (FSR 3)", "",
+    const char* names[B_COUNT] = {"", "FSR 3 anti-aliasing", "Sharpening (FSR 3)", "",
                                   "Frame generation (FSR 3)"};
     const auto centered = [&](Rect r, ImU32 c, const char* t) {
         const ImVec2 sz = font->CalcTextSizeA(fs, 1e9f, 0.f, t);
@@ -213,19 +192,6 @@ void Draw(float width, float height) {
     for (int b = 0; b < B_COUNT; ++b) {
         const Rect r = screen_rect(s, base_rect(b));
         const bool hot = s.pressed == b || s.hover == b;
-        if (b == B_MODE) {
-            dl->AddText(font, fs, {s.ox + 12 * k, (r.t + r.b - fs) / 2}, fg, names[b]);
-            const auto [gw, gh] = DebugState.game_resolution;
-            char note[64];
-            if (s.mode != s.start_mode)
-                std::snprintf(note, sizeof(note), "after a restart");
-            else
-                std::snprintf(note, sizeof(note), "%ux%u", gw, gh);
-            dl->AddText(font, small, {s.ox + 120 * k, (r.t + r.b - small) / 2}, dim, note);
-            dl->AddRectFilled({r.l, r.t}, {r.r, r.b}, hot ? C(58, 63, 74) : off, 8 * k);
-            centered(r, fg, kModes[s.mode].label);
-            continue;
-        }
         if (b == B_SHARP_DOWN || b == B_SHARP_UP) {
             if (b == B_SHARP_DOWN) {
                 dl->AddText(font, fs, {s.ox + 12 * k, (r.t + r.b - fs) / 2}, fsr ? fg : dim, names[B_SHARP_DOWN]);

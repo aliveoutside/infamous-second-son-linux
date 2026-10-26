@@ -46,8 +46,8 @@ int main(void) {
     CHECK(fsr_aa >= 0 && !strcmp(values[fsr_aa], "off") && settings_valid(fsr_aa, "on") && !settings_valid(fsr_aa, "yes"));
     CHECK(fg >= 0 && !strcmp(values[fg], "off") && settings_valid(fg, "on") && !settings_valid(fg, "2x"));
     CHECK(index_of("fsr") < 0);
-    const int mode = index_of("fsr_mode"), sharp = index_of("fsr_sharpness");
-    CHECK(mode >= 0 && !strcmp(values[mode], "native") && settings_valid(mode, "performance") && !settings_valid(mode, "fast"));
+    const int sharp = index_of("fsr_sharpness");
+    CHECK(index_of("fsr_mode") < 0);
     CHECK(sharp >= 0 && !strcmp(values[sharp], "0") && settings_valid(sharp, "100") && !settings_valid(sharp, "101"));
     const int sens = index_of("mouse_sensitivity");
     CHECK(sens >= 0 && !strcmp(values[sens], "100") && settings_valid(sens, "300") && !settings_valid(sens, "5") && !settings_valid(sens, "x"));

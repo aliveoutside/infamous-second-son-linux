@@ -327,9 +327,6 @@ void DisplayTab() {
           {{"Unlimited", "0"}, {"30", "30"}, {"40", "40"}, {"50", "50"}, {"60", "60"}, {"75", "75"}, {"90", "90"},
            {"100", "100"}, {"120", "120"}, {"144", "144"}, {"165", "165"}, {"240", "240"}});
     Combo("Anti-aliasing (FSR 3)", "fsr_aa", kOnOff);
-    Combo("Render size (FSR 3)", "fsr_mode",
-          {{"Native", "native"}, {"Quality (1/1.5)", "quality"}, {"Balanced (1/1.7)", "balanced"},
-           {"Performance (1/2)", "performance"}, {"Ultra performance (1/3)", "ultra_performance"}});
     Label("Sharpening (FSR 3)");
     int sharpness = std::atoi(Value("fsr_sharpness"));
     if (sharpness < 0 || sharpness > 100) sharpness = 0;

@@ -25,8 +25,6 @@ static const char *const shader_choices[] = {"wait=0", "parallel=1", "skip=2", N
 static const char *const precompile_choices[] = {"on=auto", "off=", NULL};
 static const char *const perf_choices[] = {"off=off", "low=low", "office=office", NULL};
 static const char *const hint_choices[] = {"auto=auto", "always=always", "off=off", NULL};
-static const char *const fsr_mode_choices[] = {"native=1.0", "quality=1.5", "balanced=1.7",
-                                               "performance=2.0", "ultra_performance=3.0", NULL};
 static const char *const hud_choices[] = {"16:9=1.7778", "21:9=2.3704", "full=0", NULL};
 static const char *const language_choices[] = {
     "english=1", "french=2", "spanish=3", "german=4", "italian=5", "dutch=6", "portuguese=7",
@@ -43,10 +41,6 @@ const Setting settings_entries[] = {
     {"fsr_aa", "off",
      "on: FSR 3 replaces the game's own anti-aliasing (SMAA T2x), at the render size. Also in the F1 menu.",
      on_off},
-    {"fsr_mode", "native",
-     "The 3D picture's size, the output size divided by: native (1), quality (1.5), balanced (1.7), "
-     "performance (2) or ultra_performance (3). With fsr_aa FSR 3 scales it up, without it the game "
-     "does. Read at start. Also in the F1 menu.", fsr_mode_choices},
     {"fsr_sharpness", "0",
      "FSR 3 sharpening in percent (0 = off, 100 = strongest), with fsr_aa. Also in the F1 menu.", NULL},
     {"frame_generation", "off",
@@ -95,8 +89,9 @@ const Setting settings_entries[] = {
 };
 enum { setting_count = sizeof(settings_entries) / sizeof(settings_entries[0]) };
 // Settings that no longer exist, skipped without an error (the next save drops them). fsr: the
-// FSR 1 window upscaling, removed.
-static const char *const retired_keys[] = {"fsr", NULL};
+// FSR 1 window upscaling, removed; fsr_mode: FSR 3 below the output size, removed (FSR 3 is
+// anti-aliasing only).
+static const char *const retired_keys[] = {"fsr", "fsr_mode", NULL};
 static int retired(const char *key) {
     for (const char *const *r = retired_keys; *r; ++r)
         if (!strcmp(*r, key)) return 1;

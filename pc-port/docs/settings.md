@@ -13,7 +13,6 @@ defaults back.
 | `vsync` | `mailbox` | `on`, `off`, `mailbox` |
 | `fps_limit` | `60` | `0` = unlimited |
 | `fsr_aa` | `off` | `on`: FSR 3 replaces the game's SMAA T2x resolve at the render size. Switched in the F1 menu too, which saves it here |
-| `fsr_mode` | `native` | The 3D picture at the output size divided by `native` 1, `quality` 1.5, `balanced` 1.7, `performance` 2, `ultra_performance` 3. With `fsr_aa` FSR 3 scales it up to the output size, without it the game does; the HUD stays sharp. Read at start; F1 menu too |
 | `fsr_sharpness` | `0` | FSR 3 sharpening, 0 to 100 percent. F1 menu too, live |
 | `frame_generation` | `off` | `on`: FSR 3 frame generation, one frame shown between two real ones, paced half a frame apart (needs `fsr_aa`). Skipped after a hitch (over 2.5 times the usual frame, at least 50 ms) or a frame the game rendered twice. F1 menu too |
 | `mangohud` | `off` | Launcher only: run the game under MangoHud, if installed |
