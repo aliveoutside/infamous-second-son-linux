@@ -1,4 +1,5 @@
 #include "fsr_upscale.h"
+#include "settings_value.h"
 #include <shared_mutex>
 #include <algorithm>
 #include <execution>
@@ -1162,16 +1163,28 @@ static void NoteDrawCensus(const RenderState& state, u32 path, const GraphicsPip
                            const AmdGpu::Regs& regs);
 
 namespace {
-// Time stamp counter cycles of each phase of the direct draw path, and of the
-// command processor work between draws, reported per draw every 65536 draws.
+// shaders = parallel or skip (settings.toml): new graphics pipelines compile on the compiler
+// workers (vk_pipeline_cache.cpp) instead of on the command processor.
+int ShaderMode() {
+    static const int mode = [] {
+        const char* value = iss::Setting("shaders");
+        return value ? std::atoi(value) : 0;
+    }();
+    return mode;
+}
 bool LazyPipelinesEnabled() {
-    return false;
+    return ShaderMode() >= 1;
 }
 // A graphics draw whose pipeline is still
 // compiling is skipped instead of waited for (no stall on new shaders; the object or effect
 // appears a few frames later). Dispatches still wait: their results are read afterwards.
 bool AsyncSkipDrawsEnabled() {
-    return false;
+    static const bool on = [] {
+        if (ShaderMode() >= 2)
+            std::fprintf(stderr, "ASYNC_SKIP_DRAWS on: draws of compiling pipelines are skipped\n");
+        return ShaderMode() >= 2;
+    }();
+    return on;
 }
 bool SkipUnreadyDraws() {
     return !LazyPipelinesEnabled() || AsyncSkipDrawsEnabled();

@@ -479,8 +479,15 @@ void PipelineCache::RequestComputeSpecTranslation(const AmdGpu::ComputeProgram& 
     RequestSpecTranslation(Shader::HwStage::Compute, Shader::SwStage::Compute, params, runtime_info);
 }
 
+// shaders = parallel or skip (settings.toml): a new graphics pipeline is compiled by the compiler
+// workers, more of them, while the command processor goes on; it waits on the bind (parallel) or
+// skips the draw (skip, vk_rasterizer.cpp).
 static bool LazyPipelines() {
-    return false;
+    static const bool enabled = [] {
+        const char* value = iss::Setting("shaders");
+        return value && std::atoi(value) >= 1;
+    }();
+    return enabled;
 }
 
 class PipelineCompiler {
@@ -1297,7 +1304,10 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
     if (Storage::DataBase::Instance().IsOpened()) {
         Storage::DataBase::Instance().SetBeforeClose([this] { SaveDriverCache(); });
     }
-
+    // shader_precompile = on (settings.toml): "auto", the index in the shader cache folder.
+    if (const char* index = iss::Setting("shader_precompile"); index && *index) {
+        StartAotCompute(index);
+    }
 }
 
 PipelineCache::~PipelineCache() {
@@ -1495,7 +1505,7 @@ void PipelineCache::StartAotCompute(const char* index_value) {
     }
     const char* game_dir = iss::Setting("game_dir");
     if (bytes.size() < 12 || std::memcmp(bytes.data(), "ISSAOT01", 8) != 0 || !game_dir) {
-        std::fprintf(stderr, "AOT_COMPUTE index unusable (or ISS_GAME_DIR unset)\n");
+        std::fprintf(stderr, "AOT_COMPUTE index unusable (or game_dir unset)\n");
         return;
     }
     auto state = std::make_unique<AotCompute>();
@@ -2469,9 +2479,8 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
                              (unsigned long long)pipeline_hash);
 
         const u64 start_ns = Common::Perf::NowNs();
-        static const bool lazy = false;
         const bool defer =
-            lazy || Common::Perf::GetTuning().async_pipelines.load(std::memory_order_relaxed) >= 1;
+            LazyPipelines() || Common::Perf::GetTuning().async_pipelines.load(std::memory_order_relaxed) >= 1;
         GraphicsPipeline::SerializationSupport sdata{};
         it.value() = std::make_unique<GraphicsPipeline>(
             instance, scheduler, desc_heap, profile, graphics_key, *pipeline_cache, infos,
