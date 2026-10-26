@@ -11,6 +11,19 @@ code runs directly on your CPU. Its rendering goes to Vulkan through a renderer 
 
 [▶ Video showcase](https://youtu.be/V8LJlxHLb_Q)
 
+## Features
+
+- The game's own x86-64 code runs directly on your CPU. The system libraries and the GPU side are replaced.
+- Vulkan renderer based on shadPS4, with a shader cache.
+- Mouse look and aim like in a PC shooter. Keyboard, Xbox and PlayStation controllers and the
+  Steam Deck work too.
+- FSR 3 anti-aliasing and frame generation.
+- Resolution, FOV, vsync and frame limit settings, ultrawide support.
+- Performance mode for slower machines.
+- MangoHud support and a built-in FPS overlay (F9).
+- All game languages.
+- AppImage with a launcher. Pick your game folder and press PLAY.
+
 ## Build and run
 
 You need [just](https://github.com/casey/just), podman or docker, python3 and a Vulkan driver.
