@@ -56,9 +56,9 @@ static uint16_t touch_coord(float v,unsigned maximum){if(!isfinite(v)||v<0)v=0;i
 // layout (Options, the real touchpad; Share/Create does nothing, as on the console). The names
 // are source_names and the targets below.
 enum {SRC_A,SRC_B,SRC_X,SRC_Y,SRC_LB,SRC_RB,SRC_LT,SRC_RT,SRC_LS,SRC_RS,SRC_VIEW,SRC_MENU,SRC_GUIDE,SRC_SHARE,
-      SRC_UP,SRC_DOWN,SRC_LEFT,SRC_RIGHT,SRC_COUNT};
+      SRC_UP,SRC_DOWN,SRC_LEFT,SRC_RIGHT,SRC_L4,SRC_L5,SRC_R4,SRC_R5,SRC_COUNT};
 static const char *const source_names[SRC_COUNT]={"a","b","x","y","lb","rb","lt","rt","ls","rs","view","menu","guide","share",
-    "up","down","left","right"};
+    "up","down","left","right","l4","l5","r4","r5"}; // l4 l5 r4 r5: the Steam Deck's back buttons, paddles on other pads
 enum {T_NONE,T_CROSS,T_CIRCLE,T_SQUARE,T_TRIANGLE,T_L1,T_R1,T_L2,T_R2,T_L3,T_R3,T_OPTIONS,T_PS,T_UP,T_DOWN,T_LEFT,T_RIGHT,
       T_TOUCH,T_TOUCH_LEFT,T_TOUCH_RIGHT,T_SWIPE_UP,T_SWIPE_DOWN,T_SWIPE_LEFT,T_SWIPE_RIGHT,T_COUNT};
 // L2/R2 carry the trigger's analog value; their button bits follow it (pad_read, above 30).
@@ -134,7 +134,8 @@ static int read_sdl(PadData *out,int contacts[2],uint16_t xy[2][2]){
         SDL_GAMEPAD_BUTTON_NORTH,SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER,SDL_GAMEPAD_BUTTON_INVALID,
         SDL_GAMEPAD_BUTTON_INVALID,SDL_GAMEPAD_BUTTON_LEFT_STICK,SDL_GAMEPAD_BUTTON_RIGHT_STICK,SDL_GAMEPAD_BUTTON_BACK,
         SDL_GAMEPAD_BUTTON_START,SDL_GAMEPAD_BUTTON_GUIDE,SDL_GAMEPAD_BUTTON_MISC1,SDL_GAMEPAD_BUTTON_DPAD_UP,
-        SDL_GAMEPAD_BUTTON_DPAD_DOWN,SDL_GAMEPAD_BUTTON_DPAD_LEFT,SDL_GAMEPAD_BUTTON_DPAD_RIGHT};
+        SDL_GAMEPAD_BUTTON_DPAD_DOWN,SDL_GAMEPAD_BUTTON_DPAD_LEFT,SDL_GAMEPAD_BUTTON_DPAD_RIGHT,SDL_GAMEPAD_BUTTON_LEFT_PADDLE1,
+        SDL_GAMEPAD_BUTTON_LEFT_PADDLE2,SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1,SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2};
     stick(SDL_GetGamepadAxis(sdl_pad,SDL_GAMEPAD_AXIS_LEFTX),SDL_GetGamepadAxis(sdl_pad,SDL_GAMEPAD_AXIS_LEFTY),stick_dead_left,&out->lx,&out->ly);
     stick(SDL_GetGamepadAxis(sdl_pad,SDL_GAMEPAD_AXIS_RIGHTX),SDL_GetGamepadAxis(sdl_pad,SDL_GAMEPAD_AXIS_RIGHTY),stick_dead_right,&out->rx,&out->ry);
     int l=SDL_GetGamepadAxis(sdl_pad,SDL_GAMEPAD_AXIS_LEFT_TRIGGER),r=SDL_GetGamepadAxis(sdl_pad,SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
@@ -268,7 +269,9 @@ static void toggle_mouse_mode(int mode,SDL_Window *window){
 static uint8_t axis(int16_t v){return (uint8_t)(((int)v+32768)>>8);}
 static int32_t error(unsigned n){return (int32_t)(UINT32_C(0x80920000)|n);}
 static int32_t GUEST_ABI pad_init(void){
-    if(!initialized){SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS,"1");SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS4,"1");
+    // The Steam Deck's own controller (gyro, back buttons) is read directly, when Steam Input is off for the game.
+    if(!initialized){if(settings_steam_deck())SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_STEAMDECK,"1");
+        SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS,"1");SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS4,"1");
         sdl_ready=SDL_InitSubSystem(SDL_INIT_GAMEPAD);if(sdl_ready){SDL_SetGamepadEventsEnabled(false);SDL_SetJoystickEventsEnabled(false);}
         else fprintf(stderr,"PAD SDL init failed: %s\n",SDL_GetError());}
     if(!initialized)load_controls();

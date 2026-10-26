@@ -29,3 +29,8 @@ StartupWMClass=iss-launcher
 DESKTOP
 command -v update-desktop-database >/dev/null && update-desktop-database "$apps" >/dev/null 2>&1 || true
 echo "Added $apps/iss-pc.desktop"
+# Steam Deck, Desktop Mode: a Desktop icon too (Add to Steam in the menu or, for Game Mode, see docs/steam-deck.md).
+if [[ -d "$HOME/Desktop" && "$(cat /sys/devices/virtual/dmi/id/board_vendor 2>/dev/null)" == Valve* ]]; then
+  cp "$apps/iss-pc.desktop" "$HOME/Desktop/iss-pc.desktop" && chmod +x "$HOME/Desktop/iss-pc.desktop"
+  echo "Added $HOME/Desktop/iss-pc.desktop"
+fi

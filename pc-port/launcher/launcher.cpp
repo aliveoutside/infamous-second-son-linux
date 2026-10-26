@@ -348,7 +348,7 @@ void GraphicsTab() {
             const std::string size = std::to_string(w) + "x" + std::to_string(h);
             presets.push_back({"Desktop (" + size + ")", size});
         }
-        for (const char *p : {"1280x720 (16:9)", "1600x900 (16:9)", "1920x1080 (16:9)", "2560x1440 (16:9)",
+        for (const char *p : {"1280x800 (16:10, Steam Deck)", "1280x720 (16:9)", "1600x900 (16:9)", "1920x1080 (16:9)", "2560x1440 (16:9)",
                               "3840x2160 (16:9)", "1920x1200 (16:10)", "2560x1600 (16:10)", "2560x1080 (21:9)",
                               "3440x1440 (21:9)", "3840x1600 (24:10)", "3840x1080 (32:9)", "5120x1440 (32:9)"})
             presets.push_back({p, std::string(p, std::strchr(p, ' '))});
@@ -419,7 +419,9 @@ const PadName kSources[] = {
     {"a", "A"}, {"b", "B"}, {"x", "X"}, {"y", "Y"}, {"lb", "LB"}, {"rb", "RB"}, {"lt", "LT"}, {"rt", "RT"},
     {"ls", "Left stick press"}, {"rs", "Right stick press"}, {"view", "View"}, {"menu", "Menu"},
     {"guide", "Guide (Xbox button)"}, {"share", "Share"}, {"up", "D-pad up"}, {"down", "D-pad down"},
-    {"left", "D-pad left"}, {"right", "D-pad right"}};
+    {"left", "D-pad left"}, {"right", "D-pad right"},
+    {"l4", "L4 (Steam Deck back, left upper)"}, {"l5", "L5 (Steam Deck back, left lower)"},
+    {"r4", "R4 (Steam Deck back, right upper)"}, {"r5", "R5 (Steam Deck back, right lower)"}};
 const PadName kTargets[] = {
     {"none", "Nothing"}, {"cross", "Cross"}, {"circle", "Circle"}, {"square", "Square"}, {"triangle", "Triangle"},
     {"l1", "L1"}, {"r1", "R1"}, {"l2", "L2"}, {"r2", "R2"}, {"l3", "L3"}, {"r3", "R3"}, {"options", "Options"},
@@ -429,7 +431,7 @@ const PadName kTargets[] = {
     {"swipe_left", "Swipe left"}, {"swipe_right", "Swipe right"}};
 constexpr int kSourceCount = int(std::size(kSources)), kTargetCount = int(std::size(kTargets));
 // pad.c's default layout: the PS4 one, View / Menu the touchpad sides, Guide Options.
-const int kDefaultMap[kSourceCount] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 18, 19, 11, 0, 13, 14, 15, 16};
+const int kDefaultMap[kSourceCount] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 18, 19, 11, 0, 13, 14, 15, 16, 0, 0, 0, 0};
 
 void ParseMap(const char *text, int *map) {
     std::copy(kDefaultMap, kDefaultMap + kSourceCount, map);

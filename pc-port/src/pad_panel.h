@@ -13,7 +13,7 @@ typedef struct {
 // The physical controller as it is now, for the panel to show (src/pad.c fills it every read).
 typedef struct {
     int connected;
-    uint32_t sources;             // bit i: button i of the pad pressed (A B X Y LB RB LT RT L3 R3 View Menu Guide Share Up Down Left Right)
+    uint32_t sources;             // bit i: button i of the pad pressed (A B X Y LB RB LT RT L3 R3 View Menu Guide Share Up Down Left Right L4 L5 R4 R5)
     uint8_t lx,ly,rx,ry,lt,rt;    // sticks (128 = centre) and triggers, as the controller reports them
     int contacts[2];uint16_t xy[2][2]; // the touchpad fingers the game gets (1920 x 942), from any source
     int click;                         // the touchpad is pressed

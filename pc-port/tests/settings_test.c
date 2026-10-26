@@ -56,6 +56,14 @@ int main(void) {
     CHECK(settings_valid(dead, "0") && settings_valid(dead, "50") && !settings_valid(dead, "51") && !settings_valid(dead, "-1"));
     CHECK(settings_valid(dead_right, "25") && !settings_valid(dead_right, "abc"));
 
+    // The Steam Deck's defaults for a new file: 16:10 fullscreen, Options on Menu, the back buttons.
+    static char deck[64][SETTINGS_VALUE_SIZE];
+    settings_load(deck);
+    settings_apply_deck_defaults(deck);
+    CHECK(!strcmp(deck[resolution], "1280x800") && !strcmp(deck[index_of("fullscreen")], "on"));
+    CHECK(!strcmp(deck[pad], "menu=options,l4=touch_right,l5=touch,r4=l3,r5=r3"));
+    CHECK(settings_valid(resolution, deck[resolution]) && !strcmp(values[resolution], "1920x1080"));
+
     // What the code reads (settings_get): a choice's code value, empty is NULL, a bad value is refused.
     CHECK(settings_get("fsr_aa") == NULL);
     CHECK(settings_set("fsr_aa", "on") == 0 && !strcmp(settings_get("fsr_aa"), "1"));

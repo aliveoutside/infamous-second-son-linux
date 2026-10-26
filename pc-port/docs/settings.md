@@ -2,7 +2,8 @@
 
 Players set everything in `~/.config/iss-pc/settings.toml` (or `$XDG_CONFIG_HOME/iss-pc/`). The
 first start writes it with every setting, its default and a comment. Delete it to get the
-defaults back.
+defaults back. On a Steam Deck the new file starts with `1280x800`, `fullscreen = "on"` and a
+`pad_map` for the Deck ([steam-deck.md](steam-deck.md)).
 
 | Setting | Default | Values |
 |---|---|---|
@@ -29,7 +30,7 @@ defaults back.
 | `hints` | `auto` | On-screen help for the touchpad (hold Alt) and the spray can: `auto` (in full the first 3 times per mode, then a small label; count in `<data>/hints-seen`), `always`, `off`. Also switched in the F5 panel, which saves it here |
 | `deadzone_left` | `10` | Left stick dead zone, 0 to 50 percent |
 | `deadzone_right` | `10` | Right stick dead zone, 0 to 50 percent |
-| `pad_map` | | Controller layout for pads without a touchpad |
+| `pad_map` | | Controller layout for pads without a touchpad. Sources include the Deck's back buttons `l4` `l5` `r4` `r5` |
 
 ## Launcher
 

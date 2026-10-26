@@ -98,6 +98,31 @@ static int retired(const char *key) {
     return 0;
 }
 const int settings_entry_count = setting_count;
+
+// A Steam Deck (LCD: Jupiter, OLED: Galileo), by the board the firmware reports.
+int settings_steam_deck(void) {
+    static int deck = -1;
+    if (deck < 0) {
+        char vendor[64] = "", product[64] = "";
+        FILE *f = fopen("/sys/devices/virtual/dmi/id/board_vendor", "r");
+        if (f) { if (!fgets(vendor, sizeof(vendor), f)) vendor[0] = 0; fclose(f); }
+        f = fopen("/sys/devices/virtual/dmi/id/board_name", "r");
+        if (f) { if (!fgets(product, sizeof(product), f)) product[0] = 0; fclose(f); }
+        deck = !strncmp(vendor, "Valve", 5) && (!strncmp(product, "Jupiter", 7) || !strncmp(product, "Galileo", 7));
+    }
+    return deck;
+}
+
+// The Deck's own defaults, for a settings file that does not exist yet: its 16:10 screen in
+// fullscreen, and the buttons the PS4 pad has that the Deck lacks (Options on Menu, the back
+// buttons on the touchpad's right side and centre and on the stick clicks).
+void settings_apply_deck_defaults(char (*values)[SETTINGS_VALUE_SIZE]) {
+    static const char *const deck[][2] = {{"resolution", "1280x800"}, {"fullscreen", "on"},
+        {"pad_map", "menu=options,l4=touch_right,l5=touch,r4=l3,r5=r3"}};
+    for (int i = 0; i < setting_count; ++i)
+        for (unsigned d = 0; d < sizeof(deck) / sizeof(deck[0]); ++d)
+            if (!strcmp(settings_entries[i].key, deck[d][0])) snprintf(values[i], SETTINGS_VALUE_SIZE, "%s", deck[d][1]);
+}
 // settings_get's values: the code value of each key, empty for the code's own default.
 static char current[setting_count][SETTINGS_VALUE_SIZE];
 
@@ -224,7 +249,10 @@ int settings_load(char (*values)[SETTINGS_VALUE_SIZE]) {
     char path[4096];
     settings_path(path, sizeof(path));
     FILE *f = fopen(path, "r");
-    if (!f) return -1;
+    if (!f) {
+        if (settings_steam_deck()) settings_apply_deck_defaults(values);
+        return -1;
+    }
     char line[4096];
     int legacy = 0;
     while (fgets(line, sizeof(line), f)) {
@@ -300,7 +328,10 @@ int settings_apply(int argc, char **argv) {
     settings_path(path, sizeof(path));
     FILE *f = fopen(path, "r");
     if (!f && !(custom && *custom)) {
-        write_file(path, NULL);
+        static char defaults[setting_count][SETTINGS_VALUE_SIZE];
+        for (int i = 0; i < setting_count; ++i) snprintf(defaults[i], SETTINGS_VALUE_SIZE, "%s", settings_entries[i].fallback);
+        if (settings_steam_deck()) settings_apply_deck_defaults(defaults);
+        write_file(path, defaults);
         fprintf(stderr, "settings: wrote the defaults to %s\n", path);
         f = fopen(path, "r");
     }

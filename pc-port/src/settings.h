@@ -31,6 +31,11 @@ extern const SettingsEntry settings_entries[];
 extern const int settings_entry_count;
 enum { SETTINGS_VALUE_SIZE = 1024 };
 
+// 1 on a Steam Deck. A new settings file gets the Deck's defaults (settings_apply_deck_defaults:
+// 1280x800 fullscreen, Options on Menu, the back buttons as touchpad and stick clicks).
+int settings_steam_deck(void);
+void settings_apply_deck_defaults(char (*values)[SETTINGS_VALUE_SIZE]);
+
 // The settings file: $ISS_SETTINGS, else $XDG_CONFIG_HOME/iss-pc/settings.toml.
 void settings_path(char *out, size_t size);
 // The data folder (caches, saves): $ISS_USER_DIR, else user/ next to the program, else
